@@ -131,8 +131,28 @@ Gateway test binaries; keeping it sequenced prevents testhost and `bin/obj`
 races. The warning-baseline rebuild runs after the solution phase so shared
 MSBuild `bin/obj` outputs are never written concurrently. The summary is written
 atomically at startup and after each phase starts or completes, retaining
-`running` and terminal states if the host is interrupted. On a local Windows SDK machine, the preflight
-automatically selects `C:/KBs/KBTeste` for GeneXus 18 or `C:/KBs/KBTeste17`
+`running` and terminal states if the host is interrupted.
+
+Every phase that actually started a process also records `stdoutPath` and
+`stderrPath`, pointing at `<summary>.<phase-slug>.stdout.log` and
+`.stderr.log` next to the summary. The contract is that the phase carries the
+*path* and the content stays in the file: the console tail is ambiguous in the
+parallel wave (every header prints before any tail, with no phase label) and
+gone once the terminal closes, so the log is what makes a red phase triageable
+after the fact. Both files are written even when the command produced nothing —
+an empty log is evidence, a missing file is indistinguishable from a phase that
+never ran. Output is redacted with the full union of the repository's credential
+patterns (`ghp_`/`github_pat_`/`npm_` prefixes, `token`/`password`/`pwd`/
+`secret`/`api_key`/`authorization`/`connection string` pairs, and `user id`/
+`userid` pairs) and is **not** truncated to the 1200-character cap that bounds
+summary messages. A phase that never ran — skipped, dry-run, reused, or with no
+executable on `PATH` — carries `null` for both. An `unavailable` phase records
+its reason instead of leaving it `null`. The `Write-Error` at the end of a
+failed preflight cites the log paths, because it previously pointed only at the
+summary that held no output.
+
+On a local Windows SDK machine, the preflight automatically selects
+`C:/KBs/KBTeste` for GeneXus 18 or `C:/KBs/KBTeste17`
 for GeneXus 17 when `GXMCP_TEST_KB` is unset. `GXMCP_TEST_FIXTURE` is optional
 for normal live validation and is only needed for attested benchmark
 populations. Set `GXMCP_REQUIRE_LIVE_BUILD_ALL=1` to make the live Build All

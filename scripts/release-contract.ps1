@@ -150,13 +150,30 @@ function Get-GxMcpReleaseRequiredAssetNames {
     return @('publish.zip', 'publish.zip.sha256', "nexus-ide-$versionValue.vsix")
 }
 
-function Protect-GxMcpReleaseMessage {
+# Issue #323: redaction with no length cap, for artifacts that must keep the
+# whole log. This is the union of every pattern the repository already applies to
+# diagnostics: the release-contract literal token prefixes, the release-contract
+# key/value credential pairs, and the integration-preflight credential words.
+# Protect-GxMcpReleaseMessage is this function plus the 1200-character cap; the
+# cap has to stay in the shared place because release-doctor and release-status
+# rely on it to bound their reports, but the union belongs here so a persisted
+# phase log cannot leak a secret that the console tail would have masked.
+function Protect-GxMcpReleaseText {
     param([AllowNull()][object]$Value)
 
     $text = [string]$Value
-    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($text)) { return '' }
     $text = $text -replace '(?i)(ghp_|github_pat_|npm_)[A-Za-z0-9_]+', '$1[REDACTED]'
     $text = $text -replace '(?i)(token|password|pwd|secret|api[_-]?key|authorization|connection\s*string)(\s*[:=]\s*)[^\s,;]+', '$1$2[REDACTED]'
+    $text = [regex]::Replace($text, '(?i)\b(user\s*id|userid)(\s*[:=]\s*)[^\s;,\r\n]+', '$1$2<redacted>')
+    return $text
+}
+
+function Protect-GxMcpReleaseMessage {
+    param([AllowNull()][object]$Value)
+
+    $text = Protect-GxMcpReleaseText $Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
     if ($text.Length -gt 1200) { $text = $text.Substring(0, 1200) + '…' }
     return $text
 }

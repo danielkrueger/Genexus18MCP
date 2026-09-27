@@ -222,6 +222,11 @@ function New-PreflightPhaseState {
         startedAtUtc = [DateTime]::UtcNow.ToString('o')
         endedAtUtc = $null
         reason = $null
+        # Issue #323: filled in only for a phase that actually starts a process.
+        # A skipped, dry-run, reused or not-found phase produced no output, and a
+        # null path says so unambiguously.
+        stdoutPath = $null
+        stderrPath = $null
     }
     if ($SkipReason) {
         $phase.status = 'skipped'
@@ -264,6 +269,13 @@ function New-PreflightPhaseState {
 
     Write-Host "`n>>> Preflight: $Name" -ForegroundColor Cyan
     Write-Host "    $ $command" -ForegroundColor DarkGray
+    # Issue #323: the console tail is ambiguous in the parallel wave (all six
+    # headers print before any tail, with no phase label) and gone once the
+    # terminal closes. Persist the full redacted output next to the summary that
+    # names it, so triage after the fact does not require rerunning the phase.
+    $phaseSlug = ($Name -replace '[^A-Za-z0-9_.-]', '-')
+    $phase.stdoutPath = "$SummaryPath.$phaseSlug.stdout.log"
+    $phase.stderrPath = "$SummaryPath.$phaseSlug.stderr.log"
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $process = [Diagnostics.Process]::new()
     try {
@@ -300,6 +312,44 @@ function New-PreflightPhaseState {
     }
 }
 
+function Write-PreflightPhaseLog {
+    param(
+        [AllowNull()][string]$Path,
+        [AllowNull()][string]$Text
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    $directory = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    # Written even when the command produced nothing: an empty log is evidence,
+    # while a missing file is indistinguishable from a phase that never ran.
+    [IO.File]::WriteAllText($Path, (Protect-GxMcpReleaseText $Text), [Text.UTF8Encoding]::new($false))
+}
+
+function Get-PreflightPhaseLogPaths {
+    param([AllowNull()][object]$Phase)
+
+    if ($null -eq $Phase) { return '' }
+    $paths = @(
+        foreach ($propertyName in @('stdoutPath', 'stderrPath')) {
+            $property = $Phase.PSObject.Properties[$propertyName]
+            if ($null -ne $property) { [string]$property.Value }
+        }
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if ($paths.Count -eq 0) { return '' }
+    return ($paths -join '; ')
+}
+
+function Format-PreflightPhaseLogHint {
+    param([AllowNull()][object]$Phase)
+
+    $paths = Get-PreflightPhaseLogPaths $Phase
+    if ([string]::IsNullOrWhiteSpace($paths)) { return '' }
+    return " Output: $paths."
+}
+
 function Start-PreflightPhase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -332,6 +382,10 @@ function Complete-PreflightPhase {
                 $phase.exitCode = $State.Process.ExitCode
                 $phase.status = if ($phase.exitCode -eq 0) { 'passed' } elseif ($phase.exitCode -eq 2 -and $State.AllowUnavailable) { 'unavailable' } else { 'failed' }
                 if ($phase.status -eq 'failed') { $phase.reason = "Command exited with code $($phase.exitCode)." }
+                # Issue #323: an unavailable phase used to end with reason = null,
+                # which is the one terminal status that carried neither a verdict
+                # nor any explanation.
+                if ($phase.status -eq 'unavailable') { $phase.reason = "Command reported unavailable with exit code $($phase.exitCode)." }
             }
         } catch {
             $phase.status = 'failed'
@@ -340,6 +394,13 @@ function Complete-PreflightPhase {
         } finally {
             try { $State.Stdout = $State.StdoutTask.GetAwaiter().GetResult() } catch { $State.Stdout = '' }
             try { $State.Stderr = $State.StderrTask.GetAwaiter().GetResult() } catch { $State.Stderr = '' }
+            # Issue #323: persist the evidence here, in the finally, so timeout and
+            # the WaitForExit/ExitCode catch are covered by the same ordering as the
+            # normal exit. $State.Stdout/$State.Stderr deliberately stay raw: the
+            # host-blocker classifier below must see the original text, so redaction
+            # can never mask the signature it is supposed to match.
+            Write-PreflightPhaseLog -Path $phase.stdoutPath -Text $State.Stdout
+            Write-PreflightPhaseLog -Path $phase.stderrPath -Text $State.Stderr
             if ($null -ne $State.Watch) {
                 $State.Watch.Stop()
                 $phase.durationSeconds = [Math]::Round($State.Watch.Elapsed.TotalSeconds, 3)
@@ -418,7 +479,7 @@ function Invoke-PreflightParallel {
         $summary.status = 'failed'
         Write-PreflightSummary
         $firstFailure = $blocking | Select-Object -First 1
-        Write-Error "Preflight failed in '$($firstFailure.name)': $($firstFailure.reason)"
+        Write-Error "Preflight failed in '$($firstFailure.name)': $($firstFailure.reason)$(Format-PreflightPhaseLogHint $firstFailure)"
         exit 1
     }
     @($results)
@@ -443,7 +504,7 @@ function Invoke-PreflightPhase {
     if ($phaseBlocked) {
         $summary.status = 'failed'
         Write-PreflightSummary
-        Write-Error "Preflight failed in '$Name': $($phase.reason)"
+        Write-Error "Preflight failed in '$Name': $($phase.reason)$(Format-PreflightPhaseLogHint $phase)"
         exit 1
     }
     $phase
@@ -624,5 +685,11 @@ if ($summary.status -eq 'passed') {
     Write-Host "`nPreflight passed. Summary: $SummaryPath" -ForegroundColor Green
     exit 0
 }
-Write-Error "Preflight failed. Summary: $SummaryPath"
+$failingPhaseHints = @(
+    foreach ($failedPhase in @($summary.phases | Where-Object { [string]$_.status -in @('failed', 'timeout') })) {
+        Format-PreflightPhaseLogHint $failedPhase
+    }
+) | Where-Object { $_ }
+$logHint = if ($failingPhaseHints.Count -gt 0) { " Phase output: $($failingPhaseHints -join '')" } else { '' }
+Write-Error "Preflight failed. Summary: $SummaryPath$logHint"
 exit 1

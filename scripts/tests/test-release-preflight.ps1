@@ -7,6 +7,15 @@ $requiredSummary = Join-Path $env:TEMP ('gxmcp-preflight-required-' + [guid]::Ne
 $localSummary = Join-Path $env:TEMP ('gxmcp-preflight-local-' + [guid]::NewGuid().ToString('N') + '.json')
 $fixtureRoot = Join-Path $env:TEMP ('gxmcp-preflight-fixtures-' + [guid]::NewGuid().ToString('N'))
 $SummaryPath = $null
+# Every summary path this test assigns, so the finally can also remove the phase
+# logs derived from it (Issue #323). Without this, each run leaks one log pair
+# per phase into %TEMP%.
+$allSummaryPaths = New-Object System.Collections.Generic.List[string]
+function New-TestSummaryPath([string]$Prefix) {
+    $path = Join-Path $env:TEMP ('gxmcp-preflight-' + $Prefix + '-' + [guid]::NewGuid().ToString('N') + '.json')
+    $allSummaryPaths.Add($path)
+    return $path
+}
 $requiredNames = @(
     'release metadata parity', 'tool contract validation', 'operation contract inventory',
     'v3 plan readiness', 'warning baseline documentation parity', 'Python script tests', 'PowerShell script tests',
@@ -167,7 +176,8 @@ try {
     $functionNames = @(
         'Format-PreflightCommand', 'Write-PreflightSummary', 'Test-PreflightPhaseStatus', 'Get-PreflightTrxTestCount',
         'Get-ReusablePreflightPhase', 'New-PreflightPhaseState', 'Start-PreflightPhase', 'Complete-PreflightPhase',
-        'Add-PreflightPhaseResult', 'Invoke-PreflightParallel'
+        'Add-PreflightPhaseResult', 'Invoke-PreflightParallel', 'Write-PreflightPhaseLog',
+        'Get-PreflightPhaseLogPaths', 'Format-PreflightPhaseLogHint'
     )
     foreach ($name in $functionNames) {
         $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
@@ -185,7 +195,7 @@ try {
         phases = New-Object System.Collections.Generic.List[object]
         status = 'running'
     }
-    $SummaryPath = Join-Path $env:TEMP ('gxmcp-preflight-parallel-' + [guid]::NewGuid().ToString('N') + '.json')
+    $SummaryPath = New-TestSummaryPath 'parallel'
     $DryRun = $true
     $PhaseTimeoutSeconds = 30
     $resumeEnabled = $false
@@ -194,7 +204,7 @@ try {
     # Starting a phase must persist its running state before completion so an
     # interrupted host leaves a resumable incremental summary.
     $DryRun = $false
-    $SummaryPath = Join-Path $env:TEMP ('gxmcp-preflight-running-' + [guid]::NewGuid().ToString('N') + '.json')
+    $SummaryPath = New-TestSummaryPath 'running'
     $runningState = Start-PreflightPhase -Name 'incremental phase' -Executable 'cmd.exe' -Arguments @('/c', 'exit', '0') -WorkingDirectory $root
     $runningSummary = Get-Content -LiteralPath $SummaryPath -Raw | ConvertFrom-Json
     $runningPhases = @($runningSummary.phases | ForEach-Object { $_ })
@@ -210,7 +220,7 @@ try {
         throw 'Completing a phase must update its existing summary entry without duplication.'
     }
     $DryRun = $true
-    $SummaryPath = Join-Path $env:TEMP ('gxmcp-preflight-parallel-' + [guid]::NewGuid().ToString('N') + '.json')
+    $SummaryPath = New-TestSummaryPath 'parallel'
     $summary.phases.Clear()
     $artifactRoot = Join-Path $fixtureRoot 'artifact'
     New-Item -ItemType Directory -Path (Join-Path $artifactRoot 'publish/worker') -Force | Out-Null
@@ -358,7 +368,7 @@ try {
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts\release-preflight.ps1'), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw $errors[0] }
-    foreach ($name in @('Format-PreflightCommand', 'Write-PreflightSummary', 'Invoke-PreflightPhase')) {
+    foreach ($name in @('Format-PreflightCommand', 'Write-PreflightSummary', 'Invoke-PreflightPhase', 'Format-PreflightPhaseLogHint')) {
         $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
         if (-not $definition) { throw "Missing $name production function." }
         . ([scriptblock]::Create($definition.Extent.Text))
@@ -368,16 +378,132 @@ try {
         phases = New-Object System.Collections.Generic.List[object]
         endedAtUtc = $null
     }
-    $SummaryPath = Join-Path $env:TEMP ('gxmcp-preflight-phase-' + [guid]::NewGuid().ToString('N') + '.json')
+    $SummaryPath = New-TestSummaryPath 'phase'
     $DryRun = $false
-    $phase = Invoke-PreflightPhase -Name 'mock failure' -Executable 'cmd.exe' -Arguments @('/c', 'exit', '7') -AllowFailure
+    $phase = Invoke-PreflightPhase -Name 'mock failure' -Executable 'cmd.exe' -Arguments @(
+        '/c', 'echo MOCK-EVIDENCE & echo MOCK-STDERR 1>&2 & exit 7'
+    ) -AllowFailure
     if ($phase.exitCode -ne 7 -or $phase.status -ne 'failed') { throw 'Nonzero phase exit code was not preserved.' }
     if (-not (Test-Path -LiteralPath $SummaryPath)) { throw 'Phase summary was not written atomically.' }
+
+    # Issue #323: the summary is what survives the terminal, and until now it
+    # carried no output at all, so a red phase left no evidence beyond an
+    # unlabelled console tail.
+    if ([string]::IsNullOrWhiteSpace([string]$phase.stdoutPath)) { throw 'A phase that ran must record where its output went.' }
+    if ([string]::IsNullOrWhiteSpace([string]$phase.stderrPath)) { throw 'A phase that ran must record where its errors went.' }
+    $evidenceSummary = Get-Content -LiteralPath $SummaryPath -Raw | ConvertFrom-Json
+    $evidencePhase = @($evidenceSummary.phases | Where-Object name -eq 'mock failure') | Select-Object -First 1
+    if ($null -eq $evidencePhase) { throw 'The failed phase must be present in the persisted summary.' }
+    $capturedOut = (Get-Content -LiteralPath ([string]$evidencePhase.stdoutPath) -Raw)
+    $capturedErr = (Get-Content -LiteralPath ([string]$evidencePhase.stderrPath) -Raw)
+    if ($capturedOut -notmatch 'MOCK-EVIDENCE') { throw 'Phase output must be persisted where the summary points at.' }
+    if ($capturedErr -notmatch 'MOCK-STDERR') { throw 'Phase error output must be persisted where the summary points at.' }
+    $loggedSummaryJson = Get-Content -LiteralPath $SummaryPath -Raw
+    # Contract: the phase carries the path; the content stays in the file. The
+    # summary must not grow an inline stdout/stderr field.
+    foreach ($inlineField in @('stdout', 'stderr', 'output', 'outputText')) {
+        if ($null -ne $evidencePhase.PSObject.Properties[$inlineField]) {
+            throw "The phase must reference its log by path, not inline it: $inlineField"
+        }
+    }
+    # JSON escapes the separators, so match on the file name, which has none.
+    if ($loggedSummaryJson -notmatch [regex]::Escape([IO.Path]::GetFileName([string]$evidencePhase.stdoutPath))) {
+        throw 'The persisted summary must name the log file the reader needs.'
+    }
+    if ((Format-PreflightPhaseLogHint $evidencePhase) -notmatch [regex]::Escape([string]$evidencePhase.stdoutPath)) {
+        throw 'The failure hint must cite the log path so triage does not need the console scrollback.'
+    }
+
+    # Redaction: a secret in any of the three shapes the repository recognizes
+    # must not survive into the persisted log.
+    $secretPhase = Invoke-PreflightPhase -Name 'mock secret' -Executable 'cmd.exe' -Arguments @(
+        '/c', 'echo token=abc123 & echo ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 & echo user id=sa& echo MOCK-SECRET-TAIL', '1>&2'
+    ) -AllowFailure
+    $secretLog = Get-Content -LiteralPath ([string]$secretPhase.stdoutPath) -Raw
+    $secretErrLog = Get-Content -LiteralPath ([string]$secretPhase.stderrPath) -Raw
+    foreach ($secret in @('abc123', 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345', 'user id=sa')) {
+        if ($secretLog -match [regex]::Escape($secret)) { throw "A token value leaked into the persisted stdout log: $secret" }
+        if ($secretErrLog -match [regex]::Escape($secret)) { throw "A token value leaked into the persisted stderr log: $secret" }
+    }
+    if (($secretLog + $secretErrLog) -notmatch 'MOCK-SECRET-TAIL') { throw 'Redaction must not swallow unrelated output.' }
+
+    # A long log is the whole point of the artifact, so the 1200-character
+    # summary cap must not apply to it.
+    $longPhase = Invoke-PreflightPhase -Name 'mock long' -Executable 'cmd.exe' -Arguments @(
+        '/c', 'for /L %i in (1,1,400) do @echo LONG-LINE-%i-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    ) -AllowFailure
+    $longLog = Get-Content -LiteralPath ([string]$longPhase.stdoutPath) -Raw
+    if ($longLog.Length -le 1200) { throw 'A long phase log must be persisted in full, not truncated to the summary cap.' }
+    if ($longLog -notmatch 'LONG-LINE-400') { throw 'The persisted log must contain the end of the output, not just its head.' }
+    if ([string](Protect-GxMcpReleaseMessage $longLog) -match 'LONG-LINE-400') {
+        throw 'Protect-GxMcpReleaseMessage must keep bounding its own callers to 1200 characters.'
+    }
+
+    # A phase that never started a process has no log to point at, and says so
+    # with a null path rather than a path to nothing.
+    $resumeEnabled = $true
+    $resumePhases = @{ 'mock reused' = [pscustomobject]@{ status = 'passed'; command = 'cmd.exe /c exit 0'; exitCode = 0 } }
+    # A phase that never started a process carries no log key at all, or a key
+    # explicitly null. Either way it must not point at a file that holds nothing:
+    # a reader would have to guess whether the phase ran.
+    $resumeEnabled = $true
+    $resumePhases = @{ 'mock reused' = [pscustomobject]@{ status = 'passed'; command = 'cmd.exe /c exit 0'; exitCode = 0 } }
+    $reusedResult = Start-PreflightPhase -Name 'mock reused' -Executable 'cmd.exe' -Arguments @('/c', 'exit', '0') -WorkingDirectory $root
+    if (-not $reusedResult.Phase.reused) { throw 'Sanity: the reuse fixture must actually reuse.' }
+    if ($reusedResult.Phase.Contains('stdoutPath') -or $reusedResult.Phase.Contains('stderrPath')) {
+        throw 'A reused phase must not advertise a log: the command never ran.'
+    }
+    $resumeEnabled = $false
+    $resumePhases = @{}
+    foreach ($neverRan in @(
+            [pscustomobject]@{ Label = 'skipped'; Phase = (Start-PreflightPhase -Name 'mock skipped' -Executable 'cmd.exe' -SkipReason 'disabled by the test').Phase }
+            [pscustomobject]@{ Label = 'missing executable'; Phase = (Start-PreflightPhase -Name 'mock missing' -Executable 'gxmcp-no-such-executable-3f1a').Phase })) {
+        foreach ($logField in @('stdoutPath', 'stderrPath')) {
+            if (-not $neverRan.Phase.Contains($logField)) {
+                throw "A $($neverRan.Label) phase must declare $logField as null, not omit it."
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$neverRan.Phase[$logField])) {
+                throw "A $($neverRan.Label) phase must not advertise a log: the command never ran."
+            }
+        }
+    }
+
+    # Issue #323: an unavailable phase used to finish with reason = null, the one
+    # terminal status carrying neither verdict nor explanation.
+    $unavailablePhase = Invoke-PreflightPhase -Name 'mock unavailable' -Executable 'cmd.exe' -Arguments @('/c', 'exit', '2') -AllowUnavailable
+    if ($unavailablePhase.status -ne 'unavailable') { throw 'Exit code 2 with -AllowUnavailable must report unavailable.' }
+    if ([string]::IsNullOrWhiteSpace([string]$unavailablePhase.reason)) { throw 'An unavailable phase must explain itself in its reason.' }
+
+    # The host-blocker classifier must keep seeing the raw text: redaction runs
+    # only on the way to the file, and the signature is a literal that a
+    # redactor could not match anyway. It is scoped to the Nexus phase by name,
+    # so the fixture has to use that name.
+    $rawState = Start-PreflightPhase -Name 'Nexus IDE checks' -Executable 'cmd.exe' -Arguments @(
+        '/c', 'echo Code is currently being updated& exit 7'
+    ) -WorkingDirectory $root -AllowFailure
+    $rawResult = Complete-PreflightPhase -State $rawState
+    if ($rawResult.status -ne 'failed') { throw 'The host-blocker fixture must fail.' }
+    if ($null -eq $rawResult.details) {
+        throw 'The host blocker must still be classified from the unredacted output.'
+    }
+    $hostBlockerLog = Get-Content -LiteralPath ([string]$rawResult.stdoutPath) -Raw
+    if ($hostBlockerLog -notmatch 'Code is currently being updated') {
+        throw 'The persisted log must still carry the classified signature.'
+    }
 
     Write-Host 'release-preflight: order, summary shape, skip and exit propagation passed' -ForegroundColor Green
 }
 finally {
-    foreach ($path in @($drySummary, $matrixDrySummary, $requiredSummary, $localSummary, $SummaryPath, $fixtureRoot)) {
+    # Issue #323: the phase logs live next to the summary that names them, so
+    # both have to go or %TEMP% accumulates a log set per run. Logs first and
+    # unconditionally: by this point the summary itself may already be gone, and
+    # gating on its presence is exactly what leaks the log pair.
+    foreach ($summaryToClean in $allSummaryPaths) {
+        if (-not $summaryToClean) { continue }
+        Get-ChildItem -LiteralPath (Split-Path -Parent $summaryToClean) -Filter "$([IO.Path]::GetFileName($summaryToClean)).*.log" -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($path in @($drySummary, $matrixDrySummary, $requiredSummary, $localSummary, $fixtureRoot) + @($allSummaryPaths)) {
         if (-not $path -or -not (Test-Path -LiteralPath $path)) { continue }
         if ($path -eq $fixtureRoot) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
