@@ -596,7 +596,7 @@ namespace GxMcp.Worker.Services
                     "Artech.Packages.Patterns.Objects.PatternInstancePartSerializer", false);
                 MethodInfo method = serializer?.GetMethod("SerializeData", BindingFlags.Public | BindingFlags.Static,
                     null, new[] { part.GetType() }, null)
-                    ?? serializer?.GetMethod("SerializeData", BindingFlags.Public | BindingFlags.Static);
+                    ?? serializer?.GetMethod("SerializeData", Compatibility.SdkMemberProbe.Static);
                 return method?.Invoke(null, new object[] { part }) as byte[];
             }
             catch { return null; }
@@ -617,7 +617,7 @@ namespace GxMcp.Worker.Services
                 "Artech.Packages.Patterns.Objects.PatternInstancePartSerializer", false);
             MethodInfo deserialize = serializer?.GetMethod("DeserializeData", BindingFlags.Public | BindingFlags.Static,
                 null, new[] { part.GetType(), typeof(byte[]) }, null)
-                ?? serializer?.GetMethod("DeserializeData", BindingFlags.Public | BindingFlags.Static);
+                ?? serializer?.GetMethod("DeserializeData", Compatibility.SdkMemberProbe.Static);
             if (deserialize == null) throw new InvalidOperationException("PatternInstancePartSerializer is unavailable.");
             deserialize.Invoke(null, new object[] { part, bytes });
         }

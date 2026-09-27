@@ -562,7 +562,7 @@ namespace GxMcp.Worker.Services
                 if (entityKey == null) { Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: KBObject.Key not found"); return false; }
 
                 // Resolve the live IRunService instance.
-                var runProp = _typeGenexusBLServices.GetProperty("Run", BindingFlags.Public | BindingFlags.Static);
+                var runProp = _typeGenexusBLServices.GetProperty("Run", Compatibility.SdkMemberProbe.Static);
                 object runService = runProp?.GetValue(null);
                 if (runService == null) { Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: GenexusBLServices.Run returned null"); return false; }
 
@@ -621,7 +621,7 @@ namespace GxMcp.Worker.Services
 
                 // Resolve every object name → EntityKey via ObjectNameHelper.Get(designModel, name).
                 // Mirrors BuildOne.Execute line: KBObject kBObject = ObjectNameHelper.Get(base.KB.DesignModel, ObjectName).
-                var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                var getMi = _typeObjectNameHelper.GetMethods(Compatibility.SdkMemberProbe.Static)
                     .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
                 if (getMi == null)
                 {
@@ -687,7 +687,7 @@ namespace GxMcp.Worker.Services
 
                 using (var cts = new CancellationTokenSource())
                 {
-                    var buildProp = _typeGenexusBLServices.GetProperty("Build", BindingFlags.Public | BindingFlags.Static);
+                    var buildProp = _typeGenexusBLServices.GetProperty("Build", Compatibility.SdkMemberProbe.Static);
                     object buildService = buildProp?.GetValue(null);
                     if (buildService == null)
                     {
@@ -783,7 +783,7 @@ namespace GxMcp.Worker.Services
 
                 using (var cts = new CancellationTokenSource())
                 {
-                    var buildProp = _typeGenexusBLServices.GetProperty("Build", BindingFlags.Public | BindingFlags.Static);
+                    var buildProp = _typeGenexusBLServices.GetProperty("Build", Compatibility.SdkMemberProbe.Static);
                     object buildService = buildProp?.GetValue(null);
                     if (buildService == null)
                     {
@@ -977,7 +977,7 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    var getMi = _typeObjectNameHelper.GetMethods(Compatibility.SdkMemberProbe.Static)
                         .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
                     if (getMi != null)
                     {
@@ -1188,7 +1188,7 @@ namespace GxMcp.Worker.Services
                     // and IBuildServiceBL.BuildWithTheseOnly(workingSet, IEnumerable<EntityKey>, CancellationToken).
                     if (_typeGenexusBLServices != null && _typeDevelopmentWorkingSet != null)
                     {
-                        var buildProp = _typeGenexusBLServices.GetProperty("Build", BindingFlags.Public | BindingFlags.Static);
+                        var buildProp = _typeGenexusBLServices.GetProperty("Build", Compatibility.SdkMemberProbe.Static);
                         var serviceType = buildProp?.PropertyType;
                         if (serviceType != null)
                         {
@@ -1221,7 +1221,7 @@ namespace GxMcp.Worker.Services
                     // Resolve IRunService.Compile(KBModel, EntityKey) → bool.
                     if (_typeGenexusBLServices != null)
                     {
-                        var runProp = _typeGenexusBLServices.GetProperty("Run", BindingFlags.Public | BindingFlags.Static);
+                        var runProp = _typeGenexusBLServices.GetProperty("Run", Compatibility.SdkMemberProbe.Static);
                         var runServiceType = runProp?.PropertyType;
                         if (runServiceType != null)
                         {
@@ -1282,7 +1282,7 @@ namespace GxMcp.Worker.Services
                             commonHelpers = Assembly.LoadFrom(Path.Combine(gxDir, "Artech.Common.Helpers.dll"));
                         }
                         var bagType = commonHelpers?.GetType("Artech.Common.Helpers.SharedMemory.InProcessBag", false);
-                        var getBagMi = bagType?.GetMethod("GetBag", BindingFlags.Public | BindingFlags.Static);
+                        var getBagMi = bagType?.GetMethod("GetBag", Compatibility.SdkMemberProbe.Static);
                         var bag = getBagMi?.Invoke(null, new object[] { "DAEMON" }) as System.Collections.IDictionary;
                         if (bag != null)
                         {

@@ -300,13 +300,13 @@ namespace GxMcp.Worker.Helpers
         private static MethodInfo ResolveSetEnumValuesMethod()
         {
             var attType = ResolveType("Artech.Genexus.Common.Properties+ATT");
-            return attType?.GetMethod("SetEnumValues", BindingFlags.Public | BindingFlags.Static);
+            return attType?.GetMethod("SetEnumValues", Compatibility.SdkMemberProbe.Static);
         }
 
         private static MethodInfo ResolveGetEnumValuesMethod()
         {
             var attType = ResolveType("Artech.Genexus.Common.Properties+ATT");
-            return attType?.GetMethod("GetEnumValues", BindingFlags.Public | BindingFlags.Static);
+            return attType?.GetMethod("GetEnumValues", Compatibility.SdkMemberProbe.Static);
         }
 
         private static Type ResolveType(string fullName)

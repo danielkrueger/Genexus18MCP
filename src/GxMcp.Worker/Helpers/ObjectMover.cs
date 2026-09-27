@@ -118,7 +118,7 @@ namespace GxMcp.Worker.Helpers
         {
             MethodInfo best = null;
             int bestScore = -1;
-            foreach (var mi in emType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+            foreach (var mi in emType.GetMethods(Compatibility.SdkMemberProbe.StaticOrInstanceAnyVisibility))
             {
                 if (mi.Name != name) continue;
                 var ps = mi.GetParameters();
@@ -201,13 +201,13 @@ namespace GxMcp.Worker.Helpers
 
         private static object ResolveInstance(Type emType)
         {
-            var instProp = emType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static);
+            var instProp = emType.GetProperty("Instance", Compatibility.SdkMemberProbe.Static);
             if (instProp != null)
             {
                 var v = instProp.GetValue(null, null);
                 if (v != null) return v;
             }
-            var instField = emType.GetField("Instance", BindingFlags.Public | BindingFlags.Static)
+            var instField = emType.GetField("Instance", Compatibility.SdkMemberProbe.Static)
                           ?? emType.GetField("_instance", BindingFlags.NonPublic | BindingFlags.Static)
                           ?? emType.GetField("m_Instance", BindingFlags.NonPublic | BindingFlags.Static);
             return instField?.GetValue(null);

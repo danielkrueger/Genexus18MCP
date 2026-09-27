@@ -483,7 +483,7 @@ namespace GxMcp.Worker.Helpers
                 // (part, kbObject, prefs) where prefs is some KBObjectSavePreferences-like type.
                 MethodInfo target = null;
                 object emInstance = null;
-                foreach (var mi in emType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+                foreach (var mi in emType.GetMethods(Compatibility.SdkMemberProbe.StaticOrInstanceAnyVisibility))
                 {
                     if (mi.Name != "SaveWithParent") continue;
                     var ps = mi.GetParameters();
@@ -496,7 +496,7 @@ namespace GxMcp.Worker.Helpers
                 if (target == null)
                 {
                     Logger.Info("[DirectSWP] no SaveWithParent overload matched (part, kbObject, ...). Dumping candidates:");
-                    foreach (var mi in emType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+                    foreach (var mi in emType.GetMethods(Compatibility.SdkMemberProbe.StaticOrInstanceAnyVisibility))
                         if (mi.Name.Contains("Save"))
                             Logger.Info("[DirectSWP]   " + mi);
                     return;
@@ -506,11 +506,11 @@ namespace GxMcp.Worker.Helpers
                 if (!target.IsStatic)
                 {
                     // Try resolve a singleton: EntityManager.Instance or static field.
-                    var instProp = emType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static);
+                    var instProp = emType.GetProperty("Instance", Compatibility.SdkMemberProbe.Static);
                     if (instProp != null) emInstance = instProp.GetValue(null, null);
                     if (emInstance == null)
                     {
-                        var instField = emType.GetField("Instance", BindingFlags.Public | BindingFlags.Static)
+                        var instField = emType.GetField("Instance", Compatibility.SdkMemberProbe.Static)
                                       ?? emType.GetField("_instance", BindingFlags.NonPublic | BindingFlags.Static)
                                       ?? emType.GetField("m_Instance", BindingFlags.NonPublic | BindingFlags.Static);
                         if (instField != null) emInstance = instField.GetValue(null);

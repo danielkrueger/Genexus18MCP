@@ -127,6 +127,33 @@ fixture contract live in [`live-kb-test-harness.md`](live-kb-test-harness.md).
   `Type.GetProperty("Type", BindingFlags.Public | BindingFlags.Instance)` throws .NET's
   `AmbiguousMatchException`. Always use `ReflectionHelper.TryGetMember` to traverse
   `DeclaredOnly` properties from the most-derived type upward.
+- **Probing an optional SDK member:** use `Compatibility.SdkMemberProbe` rather than
+  a raw `GetMethod`/`GetMethods`. Two things it encodes:
+  - `FlattenHierarchy` is **load-bearing only for static probes**. Measured on .NET
+    Framework 4.8: an *instance* member on a base class is found without it (instance
+    lookup walks the hierarchy anyway), while a *static* member on a base class is
+    found **only** with it. A static helper that a major hoists up its hierarchy
+    would otherwise be reported as a missing capability. `DeclaredOnly` sites keep
+    passing it explicitly — it means the opposite of what a compatibility probe wants.
+  - `AmbiguousMatchException` is caught and reported as *absent*, so a member declared
+    on both a type and its base degrades the capability instead of binding arbitrarily.
+- **Verifying that a member actually exists on every supported major:** the catalog is
+  a GeneXus-*major* contract, and a direct call to a member that only exists on the
+  primary major breaks the build on the others. Measured on this repo's installs,
+  `IModuleManagerService` exposes 17 members on GeneXus 16, 23 on 17 and 28 on 18;
+  `IsBuiltInModule` is 17+, `GetBuiltinModuleVersion` is 18-only, `GetSettings` is 17+.
+  `genexus_module install_builtin` therefore fails closed per major:
+  `ModuleBuiltinCheckUnsupported` (16: no `IsBuiltInModule`),
+  `ModuleBuiltinVersionUnsupported` (16/17: no `GetBuiltinModuleVersion`), then
+  `ModuleBuiltinNotRegistered` / `ModuleBuiltinVersionConflict` /
+  `ModuleBuiltinVersionUnavailable`. **"Unsupported" is a refusal, never a skip** —
+  an unverifiable module is not installed.
+- **Testing a "member absent" branch on a primary-SDK build:** these probes take the
+  type to probe as a *parameter* (`TryIsBuiltInModuleOn(Type, object, string, out bool)`).
+  That seam exists because on a GeneXus 18 build every real `IModuleManagerService`
+  implementation necessarily carries the member, so the absent branch is otherwise
+  unreachable from any test. Pass a type that genuinely lacks the member.
+  See `SdkMemberCompatibilityTests`.
 
 ### Windows shell and process gotchas
 

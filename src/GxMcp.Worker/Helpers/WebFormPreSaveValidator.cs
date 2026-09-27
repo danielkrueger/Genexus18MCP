@@ -71,7 +71,7 @@ namespace GxMcp.Worker.Helpers
                 // Locate Validate(part, OutputMessages) — signatures vary across SDK versions:
                 //   Validate(WebFormPart, OutputMessages)
                 //   Validate(KBObject, OutputMessages)
-                MethodInfo validate = helperType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                MethodInfo validate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
                     .FirstOrDefault(m =>
                     {
                         if (m.Name != "Validate") return false;

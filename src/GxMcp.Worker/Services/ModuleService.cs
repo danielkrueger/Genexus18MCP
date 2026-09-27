@@ -10,6 +10,7 @@ using Module = Artech.Architecture.Common.Objects.Module;
 using System.Xml;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Services;
+using GxMcp.Worker.Compatibility;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
@@ -432,14 +433,55 @@ namespace GxMcp.Worker.Services
 
         private string PreviewInstallByName(string name, string version, bool builtIn = false)
         {
-            bool present = false;
+            object module = null;
             try
             {
-                present = ResolveModule(name) != null;
+                module = ResolveModule(name);
             }
             catch
             {
             }
+            bool present = module != null;
+
+            // A name-based preview used to report no dependencies at all, so a caller
+            // could not tell "this module needs nothing" from "the SDK was never
+            // asked". IModuleManagerService.GetReferencesFromPackagableObjects is
+            // GeneXus 18-only, so it is probed rather than called; on 16/17 the
+            // preview keeps working and says why the list is absent.
+            var dependencies = new JArray();
+            string dependencySource = "unavailable";
+            if (present)
+            {
+                var probed = TryGetPackagedModuleDependencies(module);
+                if (probed != null)
+                {
+                    dependencySource = "sdk";
+                    foreach (var dependency in probed)
+                    {
+                        string dependencyName = ReadDependencyString(dependency, "Name");
+                        bool installedInKb = false;
+                        try
+                        {
+                            installedInKb = !string.IsNullOrWhiteSpace(dependencyName)
+                                && ResolveModule(dependencyName) != null;
+                        }
+                        catch
+                        {
+                        }
+                        dependencies.Add(new JObject
+                        {
+                            ["name"] = dependencyName,
+                            ["version"] = ReadDependencyString(dependency, "Version"),
+                            ["minimumVersion"] = ReadDependencyString(dependency, "MinimumVersion"),
+                            ["maximumVersion"] = ReadDependencyString(dependency, "MaximumVersion"),
+                            ["id"] = ReadDependencyGuid(dependency, "Guid"),
+                            ["expose"] = ReadDependencyBool(dependency, "Expose"),
+                            ["installedInKb"] = installedInKb
+                        });
+                    }
+                }
+            }
+
             return McpResponse.Ok(code: builtIn ? "ModuleInstallBuiltInPreview" : "ModuleInstallPreview", result: new JObject
             {
                 ["action"] = builtIn ? "install_builtin" : "install",
@@ -449,10 +491,96 @@ namespace GxMcp.Worker.Services
                 ["alreadyInstalled"] = present,
                 ["modulePresent"] = present,
                 ["persisted"] = false,
+                ["dependencies"] = dependencies,
+                ["dependencyCount"] = dependencies.Count,
+                // "sdk" = the GeneXus 18 SDK reported the real packaged dependencies.
+                // "unavailable" = the module is not in this KB, or the installed SDK
+                // predates GetReferencesFromPackagableObjects, so nothing was read.
+                ["dependencySource"] = dependencySource,
                 ["note"] = builtIn
                     ? "Read-only preview: the built-in module name was validated and the KB was inspected without calling the SDK install."
-                    : "Read-only preview: the KB was inspected without contacting module servers and no install/save was called. Package identity and dependencies resolve through the configured module servers at execution time."
+                    : dependencySource == "sdk"
+                        ? "Read-only preview: the KB was inspected without contacting module servers and no install/save was called. The dependencies above are the ones the installed SDK reports for this module; the package identity it resolves at execution time still comes from the configured module servers."
+                        : "Read-only preview: the KB was inspected without contacting module servers and no install/save was called. No dependency list could be read (see dependencySource), so package identity and dependencies resolve through the configured module servers at execution time."
             });
+        }
+
+        /// <summary>
+        /// Reads <c>IModuleManagerService.GetReferencesFromPackagableObjects</c>,
+        /// which exists only on GeneXus 18. Returns null when the installed SDK does
+        /// not expose it, or when the read fails, so the caller can distinguish "no
+        /// dependencies" from "not asked". Never throws: this enriches a read-only
+        /// preview and must not be able to fail it.
+        /// </summary>
+        private static System.Collections.IEnumerable TryGetPackagedModuleDependencies(object module)
+        {
+            if (module == null) return null;
+            try
+            {
+                var manager = Helpers.SdkServiceResolver.Resolve<IModuleManagerService>();
+                if (manager == null) return null;
+                var method = SdkMemberProbe.Resolve(manager.GetType(), "GetReferencesFromPackagableObjects",
+                    SdkMemberProbe.Instance, new[] { module.GetType() });
+                // A future major may widen or narrow the parameter type; fall back to
+                // any single-argument overload rather than reporting a false absence.
+                if (method == null)
+                {
+                    method = manager.GetType()
+                        .GetMethods(SdkMemberProbe.Instance)
+                        .FirstOrDefault(m => string.Equals(m.Name, "GetReferencesFromPackagableObjects", StringComparison.Ordinal)
+                            && m.GetParameters().Length == 1);
+                }
+                if (method == null) return null;
+                return method.Invoke(manager, new[] { module }) as System.Collections.IEnumerable;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("GetReferencesFromPackagableObjects probe failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static string ReadDependencyString(object dependency, string propertyName)
+        {
+            try
+            {
+                var value = dependency?.GetType()
+                    .GetProperty(propertyName, SdkMemberProbe.Instance)?.GetValue(dependency, null);
+                return value == null ? null : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool ReadDependencyBool(object dependency, string propertyName)
+        {
+            try
+            {
+                var value = dependency?.GetType()
+                    .GetProperty(propertyName, SdkMemberProbe.Instance)?.GetValue(dependency, null);
+                return value is bool flag && flag;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string ReadDependencyGuid(object dependency, string propertyName)
+        {
+            try
+            {
+                if (dependency?.GetType().GetProperty(propertyName, SdkMemberProbe.Instance)?.GetValue(dependency, null) is Guid id)
+                {
+                    return id.ToString("D", System.Globalization.CultureInfo.InvariantCulture);
+                }
+            }
+            catch
+            {
+            }
+            return null;
         }
 
         private JObject PackageResultDetails(OpcPackageIdentity package, string requestedVersion, bool presentBefore, bool presentAfter, int countBefore, int countAfter)
@@ -621,14 +749,31 @@ namespace GxMcp.Worker.Services
         /// answer cannot be established, which the caller must treat as
         /// unverifiable rather than as "not a built-in module".
         /// </summary>
-        private static bool TryIsBuiltInModule(IModuleManagerService manager, string name, out bool registered)
+        internal static bool TryIsBuiltInModule(IModuleManagerService manager, string name, out bool registered)
         {
             registered = false;
             if (manager == null) return false;
-            var method = manager.GetType().GetMethod("IsBuiltInModule", BindingFlags.Public | BindingFlags.Instance,
-                null, new[] { typeof(string) }, null);
+            return TryIsBuiltInModuleOn(manager.GetType(), manager, name, out registered);
+        }
+
+        /// <summary>
+        /// The testable half of <see cref="TryIsBuiltInModule"/>. The member lookup
+        /// takes the type to probe as a parameter so a test can exercise the
+        /// "member absent" branch on a GeneXus 18 build, where every real
+        /// <see cref="IModuleManagerService"/> implementation necessarily carries
+        /// the member. Without that seam the unsupported branch - the entire reason
+        /// this probe exists - is unreachable from any test compiled against the
+        /// primary SDK, so a regression that treated a failed probe as success
+        /// would pass the whole suite.
+        /// </summary>
+        internal static bool TryIsBuiltInModuleOn(Type probeType, object target, string name, out bool registered)
+        {
+            registered = false;
+            if (probeType == null || target == null) return false;
+            var method = SdkMemberProbe.Resolve(probeType, "IsBuiltInModule",
+                SdkMemberProbe.Instance, new[] { typeof(string) });
             if (method == null || method.ReturnType != typeof(bool)) return false;
-            try { registered = (bool)method.Invoke(manager, new object[] { name }); return true; }
+            try { registered = (bool)method.Invoke(target, new object[] { name }); return true; }
             catch (Exception ex) { Logger.Warn("IsBuiltInModule probe failed for '" + name + "': " + ex.Message); return false; }
         }
 
@@ -638,14 +783,25 @@ namespace GxMcp.Worker.Services
         /// the caller refuses the install instead of installing an unverified
         /// version.
         /// </summary>
-        private static bool TryGetBuiltinModuleVersion(IModuleManagerService manager, string name, out string version)
+        internal static bool TryGetBuiltinModuleVersion(IModuleManagerService manager, string name, out string version)
         {
             version = null;
             if (manager == null) return false;
-            var method = manager.GetType().GetMethod("GetBuiltinModuleVersion", BindingFlags.Public | BindingFlags.Instance,
-                null, new[] { typeof(string) }, null);
+            return TryGetBuiltinModuleVersionOn(manager.GetType(), manager, name, out version);
+        }
+
+        /// <summary>
+        /// The testable half of <see cref="TryGetBuiltinModuleVersion"/>; see
+        /// <see cref="TryIsBuiltInModuleOn"/> for why the probed type is a parameter.
+        /// </summary>
+        internal static bool TryGetBuiltinModuleVersionOn(Type probeType, object target, string name, out string version)
+        {
+            version = null;
+            if (probeType == null || target == null) return false;
+            var method = SdkMemberProbe.Resolve(probeType, "GetBuiltinModuleVersion",
+                SdkMemberProbe.Instance, new[] { typeof(string) });
             if (method == null || method.ReturnType != typeof(string)) return false;
-            try { version = method.Invoke(manager, new object[] { name }) as string; return true; }
+            try { version = method.Invoke(target, new object[] { name }) as string; return true; }
             catch (Exception ex) { Logger.Warn("GetBuiltinModuleVersion probe failed for '" + name + "': " + ex.Message); return false; }
         }
 

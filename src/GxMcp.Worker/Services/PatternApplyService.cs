@@ -1651,7 +1651,7 @@ namespace GxMcp.Worker.Services
             if (webView)
             {
                 var settingsTypes = interfaceType
-                    .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .GetMethods(Compatibility.SdkMemberProbe.Static)
                     .Where(m => string.Equals(m.Name, "CreatePatternInstanceWithTemplate", StringComparison.Ordinal))
                     .Select(m => m.GetParameters())
                     .Where(p => p.Length == 5 && p[2].ParameterType.IsEnum && p[3].ParameterType == typeof(string) && p[4].ParameterType.IsByRef)
@@ -1663,7 +1663,7 @@ namespace GxMcp.Worker.Services
                     arguments = null;
                     byRefArgumentIndex = 4;
                     candidates = string.Join("; ", interfaceType
-                        .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                        .GetMethods(Compatibility.SdkMemberProbe.Static)
                         .Where(m => string.Equals(m.Name, "CreatePatternInstanceWithTemplate", StringComparison.Ordinal))
                         .Select(FormatMethodSignature));
                     resolutionError = "The WWP package does not expose one unambiguous five-parameter SettingsView.Web overload.";
@@ -1718,7 +1718,7 @@ namespace GxMcp.Worker.Services
 
             arguments = arguments ?? Array.Empty<object>();
             var candidates = declaringType
-                .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .GetMethods(Compatibility.SdkMemberProbe.Static)
                 .Where(m => string.Equals(m.Name, methodName, StringComparison.Ordinal))
                 .OrderBy(m => m.MetadataToken)
                 .ToList();
@@ -2380,8 +2380,8 @@ namespace GxMcp.Worker.Services
                 var patternEngine = asm.GetType("Artech.Packages.Patterns.PatternEngine", false);
                 var patternInstance = asm.GetType("Artech.Packages.Patterns.Objects.PatternInstance", false);
 
-                dump["engineStatics"] = DumpMethods(patternEngine, BindingFlags.Public | BindingFlags.Static);
-                dump["instanceStatics"] = DumpMethods(patternInstance, BindingFlags.Public | BindingFlags.Static);
+                dump["engineStatics"] = DumpMethods(patternEngine, Compatibility.SdkMemberProbe.Static);
+                dump["instanceStatics"] = DumpMethods(patternInstance, Compatibility.SdkMemberProbe.Static);
                 dump["instanceInstance"] = DumpMethods(patternInstance, BindingFlags.Public | BindingFlags.Instance);
 
                 // F16: deep-probe DVelop.Patterns.WorkWithPlus — the WWP-specific impl
@@ -2416,7 +2416,7 @@ namespace GxMcp.Worker.Services
                             t.Name.IndexOf("Engine", StringComparison.OrdinalIgnoreCase) < 0)
                             continue;
                         var entry = new JObject { ["fullName"] = t.FullName };
-                        entry["publicStatic"] = DumpMethods(t, BindingFlags.Public | BindingFlags.Static);
+                        entry["publicStatic"] = DumpMethods(t, Compatibility.SdkMemberProbe.Static);
                         entry["publicInstance"] = DumpMethods(t, BindingFlags.Public | BindingFlags.Instance);
                         // Add properties for tasks (MSBuild tasks expose inputs as props).
                         var propArr = new JArray();
@@ -2446,7 +2446,7 @@ namespace GxMcp.Worker.Services
                         tmplTypes.Add(new JObject
                         {
                             ["fullName"] = t.FullName,
-                            ["methods"] = DumpMethods(t, BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance)
+                            ["methods"] = DumpMethods(t, Compatibility.SdkMemberProbe.StaticOrInstanceAnyVisibility)
                         });
                     }
                     dump["templateTypes"] = tmplTypes;

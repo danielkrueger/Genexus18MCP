@@ -56,7 +56,7 @@ namespace GxMcp.Worker.Helpers
             object[] enumArgs = null;
             if (partDocForEnum != null && partKbObj != null)
             {
-                enumerate = helperType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
                     .FirstOrDefault(m =>
                     {
                         if (m.Name != "EnumerateWebTag") return false;
@@ -67,7 +67,7 @@ namespace GxMcp.Worker.Helpers
             }
             if (enumerate == null)
             {
-                enumerate = helperType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
                     .FirstOrDefault(m =>
                     {
                         if (m.Name != "EnumerateWebTag") return false;
@@ -447,7 +447,7 @@ namespace GxMcp.Worker.Helpers
                 object[] enumArgs = null;
                 if (partKbObj != null)
                 {
-                    enumerate = helperType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
                         .FirstOrDefault(m =>
                         {
                             if (m.Name != "EnumerateWebTag") return false;
@@ -458,7 +458,7 @@ namespace GxMcp.Worker.Helpers
                 }
                 if (enumerate == null)
                 {
-                    enumerate = helperType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
                         .FirstOrDefault(m =>
                         {
                             if (m.Name != "EnumerateWebTag") return false;

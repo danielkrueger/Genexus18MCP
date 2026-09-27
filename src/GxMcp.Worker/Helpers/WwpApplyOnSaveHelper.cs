@@ -44,7 +44,7 @@ namespace GxMcp.Worker.Helpers
                 if (wwpAsm == null) { Logger.Debug("[APPLY-ON-SAVE] DVelop.Patterns.WorkWithPlus not loaded"); return false; }
                 var ifaceType = wwpAsm.GetType("DVelop.Patterns.WorkWithPlus.Helpers.PatternInstancePackageInterface", false);
                 if (ifaceType == null) { Logger.Debug("[APPLY-ON-SAVE] PatternInstancePackageInterface not found"); return false; }
-                var setApplyMethod = ifaceType.GetMethod("SetPatternApplyOnSave", BindingFlags.Public | BindingFlags.Static);
+                var setApplyMethod = ifaceType.GetMethod("SetPatternApplyOnSave", Compatibility.SdkMemberProbe.Static);
                 if (setApplyMethod == null) { Logger.Debug("[APPLY-ON-SAVE] SetPatternApplyOnSave method not found"); return false; }
                 setApplyMethod.Invoke(null, new object[] { host });
                 System.Threading.Interlocked.Increment(ref _invocationCount);

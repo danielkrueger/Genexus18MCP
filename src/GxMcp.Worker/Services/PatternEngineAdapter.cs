@@ -91,7 +91,7 @@ namespace GxMcp.Worker.Services
                         // null, and reapply silently failed. Disambiguate by EXACT type now —
                         // the first overload is (KBObject, PatternDefinition), the reapply is
                         // (PatternInstance, ApplySettings).
-                        foreach (var m in _patternEngineType.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                        foreach (var m in _patternEngineType.GetMethods(Compatibility.SdkMemberProbe.Static))
                         {
                             if (m.Name != "ApplyPattern") continue;
                             var ps = m.GetParameters();
