@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.9.2 - 2026-09-27
+
+
 ### Tracked issues
 
 - [#321](https://github.com/lennix1337/Genexus18MCP/issues/321) — [Docs] `GXMCP_BUSY_REJECT_MS` exige reinício do Worker, e o knob `busyWaitMs` por comando segue promovido sem encaminhamento
