@@ -45,10 +45,36 @@ The GeneXus model is single-threaded: only one SDK operation runs at a time on t
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `GXMCP_BUSY_WAIT_MS` | Maximum queue age tolerated for an SDK command. Evaluated when the command is dequeued on the STA thread: an item that waited longer than this is rejected with `WorkerBusy` rather than executed late. Raise it for long builds, lower it to fail fast in interactive use. Per-command tuning (`busyWaitMs`) still wins over this environment value. | `15000` ms |
+| `GXMCP_BUSY_WAIT_MS` | Maximum queue age tolerated for an SDK command. Evaluated when the command is dequeued on the STA thread: an item that waited longer than this is rejected with `WorkerBusy` rather than executed late. Raise it for long builds, lower it to fail fast in interactive use. | `15000` ms |
 | `GXMCP_BUSY_REJECT_MS` | Immediate-rejection window for low-priority commands that arrive while a long operation is already running: they are rejected with `WorkerBusy` without entering the queue once the in-flight operation has run for at least this long. `0` or a negative value disables the rejection and always queues instead. | `3000` ms |
 
-Both are read per request, so changing them affects the next command without restarting the Worker. See the `WorkerBusy` hints returned by the affected tools for the actionable value.
+- Both values come from the **Worker process environment**, which is fixed when the
+  Worker starts. `GXMCP_BUSY_WAIT_MS` is consulted for every queued command and
+  `GXMCP_BUSY_REJECT_MS` is read once at startup, but neither takes effect until a
+  new Worker starts from a process that already has the new value.
+- `GXMCP_BUSY_WAIT_MS`: a non-positive or non-numeric value falls back to the
+  default (15000 ms) — `0` does **not** disable it.
+- `GXMCP_BUSY_REJECT_MS`: `0` or a negative value disables the rejection; a
+  non-numeric value falls back to the default (3000 ms).
+- To apply a change, set the variable as described at the top of this page, then
+  restart the process that starts the Worker:
+  - `isolated` (default): restart the MCP client so it starts a new Gateway.
+    Reloading only the Worker keeps the Gateway's old environment.
+  - `shared-host` (requires `GatewayMode=stdio-isolated`): close every client
+    attached to the KB and wait for the WorkerHost broker to exit on its own; it
+    exits only after it has had no attachments and no background activity for the
+    idle timeout (`Server.WorkerIdleTimeoutMinutes`; for the broker a value `<= 0`
+    means 60 minutes, not "never"). The next Gateway then starts a new broker
+    with the new value. Restarting one client, reloading the Worker or recovering
+    the connection while the broker is alive only reattaches to the old broker.
+  - Legacy HTTP / shared Gateway (`http-shared`, isolated Workers): restart the
+    master Gateway process.
+- There is no published per-command override. The Worker resolves a `busyWaitMs`
+  knob from the RPC envelope, but no Gateway conversion path forwards a tool
+  argument or client `_meta` to it, so the environment variable above is the only
+  reachable control today.
+- See the `WorkerBusy` hints returned by the affected tools for the actionable
+  value.
 
 | Variable | Purpose | Default |
 |----------|---------|---------|

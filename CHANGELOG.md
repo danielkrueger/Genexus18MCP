@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Tracked issues
+
+- [#321](https://github.com/lennix1337/Genexus18MCP/issues/321) — [Docs] `GXMCP_BUSY_REJECT_MS` exige reinício do Worker, e o knob `busyWaitMs` por comando segue promovido sem encaminhamento
+- [#322](https://github.com/lennix1337/Genexus18MCP/issues/322) — [Bug][Follow-up #317] `test-release-doctor` falha com `$env:TEMP` em forma 8.3
+
+### Changed
+
+- Corrected the `docs/environment_variables.md` STA scheduler section from [#319](https://github.com/lennix1337/Genexus18MCP/issues/319): both variables are read from the **Worker process environment**, so neither takes effect until a new Worker starts from a process that already carries the new value, and the per-mode restart procedure (`isolated`, `shared-host` broker lifetime, legacy shared Gateway) is now spelled out. The `WorkerBusy` wait hint no longer advertises a per-command `busyWaitMs` override, which no Gateway conversion path forwards: routing either nests tool arguments one level below where the Worker reads the knob, or maps a closed field list, and the client `_meta` is rebuilt by the Gateway. The published per-command override is a separate runtime change; the doc states plainly that the environment variable is the only reachable control today. This is an erratum only, and it also covers the `busyWaitMs` mention in the [#293](https://github.com/lennix1337/Genexus18MCP/issues/293) (v3.9.0) entry. No functional change; the only altered MCP output is the `WorkerBusy` hint text. ([#321](https://github.com/lennix1337/Genexus18MCP/issues/321))
+
+### Fixed
+
+- `Test-GxMcpReleasePreflightCompatibility` compared the recorded and expected `root`, `gxPath`, `liveKbPath` and `liveFixtureManifest` by raw string equality, so a preflight summary and freshly derived inputs that named the same directory differently (8.3 short name, dot segments, trailing separator) were rejected and the operator lost a reusable artifact for reasons unrelated to repository state. Both sides are now normalized through one helper before comparison, and the process-smoke temp prefix check normalizes both of its sides through the same helper instead of mixing `GetFullPath` with an unnormalized temp root. Rooted paths only: a relative value has no stable base and stays a strict comparison, and a genuinely different root still invalidates reuse. `test-release-contract` pins the equivalent forms and the genuinely-different case. ([#322](https://github.com/lennix1337/Genexus18MCP/issues/322))
+- `test-release-doctor` recorded a fixture `root` built from the raw `$env:TEMP`, while the doctor derives its expected root with `[IO.Path]::GetFullPath`. On a host whose `%TEMP%` is an 8.3 short path the two were different strings, the certificate was refused, and the matching-preflight case threw `Doctor did not recommend the safe artifact reuse for a matching preflight`. The fixture now records the root the way the real preflight does. Verified by running the suite with `TEMP=C:\Projetos\GENEXU~1`: it fails against the pre-fix code and passes after. ([#322](https://github.com/lennix1337/Genexus18MCP/issues/322))
+
 ## v3.9.1 - 2026-09-25
 
 

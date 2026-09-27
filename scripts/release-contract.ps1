@@ -61,6 +61,24 @@ function Get-GxMcpReleaseTempRoot {
     return [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
 }
 
+# Issue #322: compares a path-shaped preflight/summary field across two sides
+# that may carry equivalent but differently spelled forms of the same directory
+# (8.3 short name vs long name, dot segments, trailing separator). Only rooted
+# paths are normalized: a relative value has no stable base, so it is returned
+# verbatim and stays a strict comparison.
+function Get-GxMcpReleaseComparablePath {
+    param([AllowNull()][object]$Value)
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $text }
+    try {
+        if (-not [IO.Path]::IsPathRooted($text)) { return $text }
+        return (ConvertTo-GxMcpReleasePath -Path $text)
+    } catch {
+        return $text
+    }
+}
+
 function Get-GxMcpPreflightTrxTestCount {
     param([Parameter(Mandatory = $true)][string]$ResultsDirectory)
 
@@ -362,13 +380,13 @@ function Test-GxMcpReleasePreflightCompatibility {
     $summaryMap = @($Summary.liveGxPathMap | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
     $expectedMap = @($Expected.liveGxPathMap | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
 
-    return [string]$Summary.root -eq [string]$Expected.root -and
+    return (Get-GxMcpReleaseComparablePath $Summary.root) -eq (Get-GxMcpReleaseComparablePath $Expected.root) -and
         [string]$Summary.version -eq [string]$Expected.version -and
         [string]$Summary.sourceCommit -eq [string]$Expected.sourceCommit -and
-        [string]$Summary.gxPath -eq [string]$Expected.gxPath -and
-        [string]$Summary.liveKbPath -eq [string]$Expected.liveKbPath -and
+        (Get-GxMcpReleaseComparablePath $Summary.gxPath) -eq (Get-GxMcpReleaseComparablePath $Expected.gxPath) -and
+        (Get-GxMcpReleaseComparablePath $Summary.liveKbPath) -eq (Get-GxMcpReleaseComparablePath $Expected.liveKbPath) -and
         [string]$Summary.liveKbSource -eq [string]$Expected.liveKbSource -and
-        [string]$Summary.liveFixtureManifest -eq [string]$Expected.liveFixtureManifest -and
+        (Get-GxMcpReleaseComparablePath $Summary.liveFixtureManifest) -eq (Get-GxMcpReleaseComparablePath $Expected.liveFixtureManifest) -and
         [string]$Summary.liveFixtureSource -eq [string]$Expected.liveFixtureSource -and
         [string]$Summary.liveMode -eq [string]$Expected.liveMode -and
         ($summaryMajors -join "`n") -ceq ($expectedMajors -join "`n") -and
@@ -454,8 +472,11 @@ function Test-GxMcpReleasePreflightCertificate {
     $resultsPath = [string]$Summary.processSmokeResultsPath
     if ([string]::IsNullOrWhiteSpace($resultsPath)) { return $false }
     try {
-        $fullResultsPath = [IO.Path]::GetFullPath($resultsPath)
-        $tempRoot = Get-GxMcpReleaseTempRoot
+        # Issue #322: normalize both sides through the same helper so a short
+        # (8.3) form of the temp root is not rejected against its long form.
+        $fullResultsPath = Get-GxMcpReleaseComparablePath $resultsPath
+        $tempRoot = Get-GxMcpReleaseComparablePath (Get-GxMcpReleaseTempRoot)
+        if (-not [IO.Path]::IsPathRooted($fullResultsPath)) { return $false }
         if (-not $fullResultsPath.StartsWith($tempRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return $false }
         if ((Get-GxMcpPreflightTrxTestCount -ResultsDirectory $fullResultsPath) -ne $testCount) { return $false }
     } catch { return $false }

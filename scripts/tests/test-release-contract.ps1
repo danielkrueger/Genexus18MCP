@@ -193,6 +193,40 @@ try {
         throw 'A legacy summary without live gate identity must fail closed.'
     }
 
+    # Issue #322: a recorded path and a freshly derived one can be the same
+    # directory spelled differently (8.3 short name, dot segments, trailing
+    # separator). Strict string equality rejected the summary and the operator
+    # lost the reusable artifact for a reason unrelated to the repository state.
+    # These forms are host-independent, so the guard runs everywhere; the real
+    # 8.3 form cannot be synthesized on a volume with 8.3 creation disabled.
+    $summary | Add-Member -NotePropertyName 'liveFixtureManifest' -NotePropertyValue $inputs.liveFixtureManifest -Force
+    foreach ($equivalentRoot in @(
+            (Join-Path $artifactRoot '.'),
+            (Join-Path (Join-Path $artifactRoot 'publish') '..'),
+            ($artifactRoot + [IO.Path]::DirectorySeparatorChar))) {
+        $summary.root = $equivalentRoot
+        if ($equivalentRoot -ceq $inputs.root) {
+            throw "Equivalent-path regression case is not actually different: $equivalentRoot"
+        }
+        if (-not (Test-GxMcpReleasePreflightCompatibility -Summary $summary -Expected $inputs -RequirePassed)) {
+            throw "An equivalent spelling of the same root must stay reusable: $equivalentRoot"
+        }
+        if (-not (Test-GxMcpReleasePreflightCertificate -Summary $summary -Expected $inputs)) {
+            throw "An equivalent spelling of the same root must stay certifiable: $equivalentRoot"
+        }
+    }
+    $summary.root = $inputs.root
+    $summary.liveKbPath = (Join-Path 'C:\KBs' '.\Fixture')
+    if (-not (Test-GxMcpReleasePreflightCompatibility -Summary $summary -Expected $inputs -RequirePassed)) {
+        throw 'An equivalent spelling of the live KB path must stay reusable.'
+    }
+    $summary.liveKbPath = $inputs.liveKbPath
+    $summary.root = (Join-Path $temp 'other-repo')
+    if (Test-GxMcpReleasePreflightCompatibility -Summary $summary -Expected $inputs -RequirePassed) {
+        throw 'A genuinely different root must still invalidate preflight reuse.'
+    }
+    $summary.root = $inputs.root
+
     $remoteAssets[0].digest = 'sha256:' + (Get-FileHash -LiteralPath (Join-Path $artifactRoot 'publish.zip') -Algorithm SHA256).Hash.ToLowerInvariant()
     $snapshotRecord = [pscustomobject]@{ number = 42; title = 'Issue'; url = 'https://example.invalid/issues/42' }
     $snapshot = [pscustomobject]@{

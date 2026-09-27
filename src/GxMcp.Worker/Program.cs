@@ -1091,7 +1091,7 @@ namespace GxMcp.Worker
                 code: "WorkerBusy",
                 message: "The worker is executing a long-running SDK operation (" + (_sdkBusyOp ?? "unknown")
                        + ", running " + Math.Round(ageMs / 1000.0, 1) + "s) and runs SDK commands one at a time. The bounded wait expired.",
-                hint: "The GeneXus model is single-threaded — only one SDK operation runs at a time. You can tune busyWaitMs per command or via GXMCP_BUSY_WAIT_MS.",
+                hint: "The GeneXus model is single-threaded — only one SDK operation runs at a time. Tune the bounded wait with GXMCP_BUSY_WAIT_MS (ms; environment is read when the Worker starts).",
                 retryAfterMs: Math.Max(1000, _busyRejectThresholdMs),
                 errorExtra: new JObject
                 {

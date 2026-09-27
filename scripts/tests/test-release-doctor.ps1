@@ -5,6 +5,12 @@ $doctor = Join-Path $root 'scripts/release-doctor.ps1'
 . (Join-Path $root 'scripts/release-contract.ps1')
 $temp = Join-Path $env:TEMP ('gxmcp-release-doctor-test-' + [guid]::NewGuid().ToString('N'))
 $fixture = Join-Path $temp 'repo'
+# Record the root the way the real preflight does (release-preflight.ps1:102 runs it
+# through ConvertTo-GxMcpReleasePath). On a host whose %TEMP% is an 8.3 short path the
+# raw $fixture is a different string than the normalized root the doctor derives from
+# its own inputs, which made the matching-preflight case fail for a reason that has
+# nothing to do with the repository state. See #322.
+$fixtureRoot = ConvertTo-GxMcpReleasePath -Path $fixture
 $publish = Join-Path $fixture 'publish'
 New-Item -ItemType Directory -Path (Join-Path $publish 'worker') -Force | Out-Null
 try {
@@ -61,7 +67,7 @@ try {
     } | ConvertTo-Json | Set-Content -LiteralPath $statusPath -Encoding utf8
     [ordered]@{
         schemaVersion = 'gxmcp-release-preflight/1'; status = 'failed'; artifactFingerprint = 'fixture'
-        root = $fixture; version = '3.0.1'; sourceCommit = $fixtureCommit; gxPath = $env:GX_PATH
+        root = $fixtureRoot; version = '3.0.1'; sourceCommit = $fixtureCommit; gxPath = $env:GX_PATH
         liveMode = 'single'; liveKbPath = 'C:\KBs\Fixture'; liveKbSource = 'explicit'; liveFixtureManifest = $null
         liveFixtureSource = 'none'; liveMajors = @(); liveGxPathMap = @(); requireLive = $false; requireBuildAll = $false
         skipLive = $false; skipWarningBaseline = $false; processSmokeMode = 'serial-after-parallel'; processSmokeTestCount = 1
@@ -83,7 +89,7 @@ try {
     } | ConvertTo-Json | Set-Content -LiteralPath $statusPath -Encoding utf8
     [ordered]@{
         schemaVersion = 'gxmcp-release-preflight/1'; status = 'passed'; artifactFingerprint = $matchingFingerprint
-        root = $fixture; version = '3.0.1'; sourceCommit = $fixtureCommit; gxPath = $env:GX_PATH
+        root = $fixtureRoot; version = '3.0.1'; sourceCommit = $fixtureCommit; gxPath = $env:GX_PATH
         liveMode = 'single'; liveKbPath = 'C:\KBs\Fixture'; liveKbSource = 'explicit'; liveFixtureManifest = $null
         liveFixtureSource = 'none'; liveMajors = @(); liveGxPathMap = @(); requireLive = $false; requireBuildAll = $false
         skipLive = $false; skipWarningBaseline = $false; processSmokeMode = 'serial-after-parallel'; processSmokeTestCount = 1
@@ -127,7 +133,7 @@ try {
 
     [ordered]@{
         schemaVersion = 'gxmcp-release-preflight/1'; status = 'passed'; artifactFingerprint = $matchingFingerprint
-        root = $fixture; version = '3.0.1'; sourceCommit = $fixtureCommit; gxPath = $env:GX_PATH
+        root = $fixtureRoot; version = '3.0.1'; sourceCommit = $fixtureCommit; gxPath = $env:GX_PATH
         liveMode = 'single'; liveKbPath = 'C:\KBs\Fixture'; liveKbSource = 'explicit'; liveFixtureManifest = $null
         liveFixtureSource = 'none'; liveMajors = @(); liveGxPathMap = @(); requireLive = $false; requireBuildAll = $false
         skipLive = $false; skipWarningBaseline = $false; processSmokeMode = 'serial-after-parallel'; processSmokeTestCount = 1
