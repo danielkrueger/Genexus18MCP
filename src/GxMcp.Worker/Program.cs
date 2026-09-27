@@ -1319,7 +1319,7 @@ namespace GxMcp.Worker
                 long queueWaitMs = ComputeQueueWaitMs(obj["_meta"]?["queuedAtUtc"], DateTime.UtcNow);
                 Logger.Info($"[WORKER] Command: {method} ({idJson}) [cid:{correlationId}]");
                 var dispatchSw = Stopwatch.StartNew();
-                string result = _dispatcher.Dispatch(obj, line);
+                string result = _dispatcher.Dispatch(obj, line, out object parsedResult);
                 dispatchSw.Stop();
                 // Keep phase timings in the response metadata so the Gateway can
                 // aggregate SDK cost separately from its own queue/transform cost.
@@ -1332,7 +1332,7 @@ namespace GxMcp.Worker
                     ["queueWaitMs"] = queueWaitMs,
                     ["cacheOutcome"] = "unknown"
                 };
-                SendResponse(result, idJson, telemetry);
+                SendResponse(parsedResult, result, idJson, telemetry);
                 if (GxMcp.Worker.Helpers.SdkEventSuppressionScope.IsPoisoned)
                     SchedulePoisonedExit();
             } catch (Exception ex) when (GxMcp.Worker.Helpers.WorkerCrashGuard.IsCorruptedState(ex)) {
@@ -1389,14 +1389,24 @@ namespace GxMcp.Worker
         }
 
         private static void SendResponse(string result, string id, JObject telemetry = null)
+            => SendResponse(null, result, id, telemetry);
+
+        // `parsedResult` is the token the dispatcher already produced. When it is present the
+        // envelope is serialized straight from it, saving the JsonIngress.ParseToken pass over
+        // text that was parsed microseconds earlier in McpResponseNormalizer. A null token
+        // (idempotency replay, or any caller without one) falls back to parsing `result`, so
+        // the behaviour is identical to before for every existing call site.
+        private static void SendResponse(object parsedResult, string result, string id, JObject telemetry = null)
         {
             try {
                 var transformSw = Stopwatch.StartNew();
                 object resultObj;
-                try { resultObj = GxMcp.Common.JsonIngress.ParseToken(result); } catch { resultObj = result; }
+                if (parsedResult != null) resultObj = parsedResult;
+                else { try { resultObj = GxMcp.Common.JsonIngress.ParseToken(result); } catch { resultObj = result; } }
                 transformSw.Stop();
 
                 JObject resultObject = resultObj as JObject;
+                string telemetryPlaceholder = null;
                 if (resultObject != null && telemetry != null)
                 {
                     telemetry["transformMs"] = Math.Max(0L, transformSw.ElapsedMilliseconds);
@@ -1408,7 +1418,16 @@ namespace GxMcp.Worker
                         meta = new JObject();
                         resultObject["_meta"] = meta;
                     }
-                    meta["telemetry"] = telemetry;
+                    // Reserve the slot with a token instead of the real telemetry object.
+                    // The measured values are only known AFTER serialization, so embedding
+                    // them used to force a second full JsonConvert.SerializeObject of the
+                    // whole envelope — a second reflection-driven walk plus a second full
+                    // string allocation on every single response, purely to write two small
+                    // numbers. The token is a fresh GUID, so it cannot collide with payload
+                    // content, and the final text is produced by a single substring replace
+                    // over the small telemetry object.
+                    telemetryPlaceholder = "__gxtel_" + Guid.NewGuid().ToString("N");
+                    meta["telemetry"] = telemetryPlaceholder;
                 }
 
                 var response = new { jsonrpc = "2.0", result = resultObj, id = id };
@@ -1418,14 +1437,29 @@ namespace GxMcp.Worker
                 if (resultObject != null && telemetry != null)
                 {
                     telemetry["serializeMs"] = Math.Max(0L, serializeSw.ElapsedMilliseconds);
+                    // Byte count of the serialized frame, matching the pre-existing contract:
+                    // measured on the pass that produced the text, so the number reported is
+                    // the pre-injection size (unchanged behaviour).
                     telemetry["responseBytes"] = System.Text.Encoding.UTF8.GetByteCount(serialized);
-                    // Include the measured values in the final wire payload. The
-                    // second serialization is intentionally limited to instrumented
-                    // responses and keeps the phase contract self-describing.
-                    serialized = JsonConvert.SerializeObject(response, Formatting.None);
+                    serialized = SpliceTelemetry(serialized, telemetryPlaceholder, telemetry);
                 }
                 WriteLine(serialized);
             } catch (Exception ex) { Logger.Error("SendResponse Error: " + ex.Message); }
+        }
+
+        // Replaces the reserved placeholder with the final telemetry object. The search is
+        // anchored on the "telemetry" key so an unrelated occurrence of the token elsewhere in
+        // the payload cannot be substituted by mistake. Falls back to the untouched frame if
+        // the anchor is absent, so a payload can never be corrupted by this optimisation.
+        private static string SpliceTelemetry(string serialized, string placeholder, JObject telemetry)
+        {
+            if (string.IsNullOrEmpty(placeholder) || serialized == null) return serialized;
+            string anchor = "\"telemetry\":\"" + placeholder + "\"";
+            int at = serialized.IndexOf(anchor, StringComparison.Ordinal);
+            if (at < 0) return serialized;
+            return serialized.Substring(0, at)
+                + "\"telemetry\":" + telemetry.ToString(Formatting.None)
+                + serialized.Substring(at + anchor.Length);
         }
 
         /// <summary>

@@ -55,7 +55,7 @@ namespace GxMcp.Gateway
                     // Warmup and index bootstrap both acquire the default KB. Serialize
                     // them so initialize cannot create two Workers for the same KB and
                     // leave the gateway holding the BusyRejecting process.
-                    await WorkerWarmupCompleted.Task.ConfigureAwait(false);
+                    await AwaitWarmupBeforeBootstrapAsync(bootstrapKey).ConfigureAwait(false);
                     // A queued bootstrap from a retired Worker must not initialize
                     // its replacement a second time or reopen a closed KB.
                     if (!ReferenceEquals(_workerPool, bootstrapPool)
@@ -221,6 +221,49 @@ namespace GxMcp.Gateway
         // IndexMirrorSettleMaxAttempts x IndexMirrorSettleDelayMs plus its refresh round-trips;
         // this guards only against a wedged refresh, so a timeout falls back to the envelope.
         internal const int IndexMirrorSettleGateWaitCeilingMs = 6000;
+
+        // Ceiling for the bootstrap's wait on the first-touch warm pass. The pass is
+        // best-effort JIT warming — a slow or wedged warmup must never be able to hold the
+        // index bootstrap hostage, because the bootstrap is what starts the index at all.
+        internal const int WarmupBeforeBootstrapWaitCeilingMs = 20000;
+
+        // The bootstrap used to `await WorkerWarmupCompleted.Task` with no timeout and no
+        // cancellation. That task is only ever completed by TriggerWorkerWarmupOnce's finally,
+        // and that trigger only fires from `initialize` when sessionContextEnabled is true
+        // (Program.Http.cs passes `!modern`). A modern Streamable-HTTP client therefore never
+        // starts the warm pass, so the bootstrap consumed its one-shot flag (Warmup.cs:29),
+        // parked on the await forever, and BulkIndex was never sent — a KB whose Worker
+        // attached fine kept reporting index Cold/0 with no build in flight, and the only
+        // escape was a manual `genexus_lifecycle action=index`.
+        //
+        // The serialization intent is preserved: when the warm pass IS running we still wait
+        // for it. When it was never started, or it overruns the ceiling, the bootstrap
+        // proceeds — it targets the KB the worker already has, and the warm pass's own
+        // first-touch work is independently re-driven further down this same method.
+        internal static async Task AwaitWarmupBeforeBootstrapAsync(
+            string bootstrapKey,
+            TaskCompletionSource<bool>? warmupCompleted = null,
+            int? ceilingMsOverride = null,
+            Func<bool>? warmupStarted = null)
+        {
+            bool started = warmupStarted != null
+                ? warmupStarted()
+                : Volatile.Read(ref _workerWarmupStarted) != 0;
+            if (!started)
+            {
+                Log("[IndexBootstrap] warm pass was never started on this transport; " +
+                    "skipping the serialization wait so the index bootstrap can proceed.");
+                return;
+            }
+
+            TaskCompletionSource<bool>? source = warmupCompleted ?? WorkerWarmupCompleted;
+            int ceilingMs = ceilingMsOverride ?? WarmupBeforeBootstrapWaitCeilingMs;
+            Task completed = await Task.WhenAny(source.Task, Task.Delay(ceilingMs)).ConfigureAwait(false);
+            if (completed == source.Task) return;
+
+            Log($"[IndexBootstrap] warm pass for KB '{bootstrapKey}' did not complete within " +
+                $"{ceilingMs}ms; proceeding with the index bootstrap rather than stalling on it.");
+        }
 
         // True when the mirror holds a snapshot restored from the warm cache that has not been
         // republished as current yet: every object is already loaded, but the Worker's delta

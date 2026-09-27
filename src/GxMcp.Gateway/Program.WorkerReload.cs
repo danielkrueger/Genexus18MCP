@@ -310,6 +310,34 @@ namespace GxMcp.Gateway
             // respawn suppressed) so it can't lose the race to a respawn. Previously
             // sourceDir was ignored here (plain drain+respawn ran the OLD binary).
             string? reloadSrcDir = softReloadMode == "hard" ? args?["sourceDir"]?.ToString() : null;
+            // Reject an unusable sourceDir BEFORE the drain. The swap itself runs inside the
+            // drain window (see DrainAndReplaceAsync), so a typo'd path used to stop a healthy
+            // worker, clear the pool entry and then fail — leaving the KB with no live worker
+            // and the old binary. Validate first so that failure mode cannot happen.
+            if (!string.IsNullOrWhiteSpace(reloadSrcDir))
+            {
+                try
+                {
+                    ValidateWorkerBinarySwapSource(reloadSrcDir);
+                }
+                catch (Exception ex)
+                {
+                    return BuildToolTextResponse(idToken,
+                        new JObject
+                        {
+                            ["status"] = "Error",
+                            ["code"] = "WorkerSwapSourceInvalid",
+                            ["error"] = new JObject
+                            {
+                                ["code"] = "WorkerSwapSourceInvalid",
+                                ["message"] = ex.Message,
+                                ["hint"] = "Point sourceDir at a built Worker output directory containing GxMcp.Worker.exe and GxMcp.Worker.exe.config (for example src\\GxMcp.Worker\\bin\\Debug). The running worker was left untouched."
+                            },
+                            ["workerRestarted"] = false
+                        },
+                        isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                }
+            }
             try
             {
                 InvalidateIndexStateForKb(reloadKb.NormalizedAlias);

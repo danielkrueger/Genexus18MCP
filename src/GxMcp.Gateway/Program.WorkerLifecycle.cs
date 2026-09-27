@@ -157,27 +157,77 @@ namespace GxMcp.Gateway
             };
         }
 
+        // The Worker's build output is a SINGLE net48 EXE assembly: GxMcp.Worker.csproj sets
+        // OutputType=Exe, so no GxMcp.Worker.dll exists in bin/ or in publish/worker/ — the
+        // exe IS the assembly. An earlier revision listed that dll in requiredFiles, which made
+        // mode=hard fail on 100% of calls, and not cleanly: the guard runs inside the drain
+        // window, so the old worker had already been stopped and entry.Worker cleared by the
+        // time it threw. Fail loudly is still the right behaviour — it just has to name files
+        // that can exist.
+        private static readonly string[] RequiredWorkerSwapFiles =
+        {
+            "GxMcp.Worker.exe",        // the assembly itself
+            "GxMcp.Worker.exe.config", // binding redirects + SDK probing; the swapped worker will not resolve the SDK without it
+        };
+
+        // Copied only when present. The .dll entry is forward-compat for the day the Worker
+        // becomes a library; it does not exist today and its absence is not an error.
+        private static readonly string[] OptionalWorkerSwapFiles =
+        {
+            "GxMcp.Worker.pdb",
+            "GxMcp.Worker.dll",
+        };
+
+        /// <summary>
+        /// Validates a hard-reload source directory WITHOUT touching the running worker, so a
+        /// bad sourceDir is rejected before anything is drained. Call this ahead of the drain;
+        /// CopyWorkerBinaries re-checks as defence in depth.
+        /// </summary>
+        internal static void ValidateWorkerBinarySwapSource(string? sourceDir)
+        {
+            if (string.IsNullOrWhiteSpace(sourceDir) || !System.IO.Directory.Exists(sourceDir))
+            {
+                throw new InvalidOperationException(
+                    $"Worker binary swap source directory is unavailable (sourceDir='{sourceDir ?? "<null>"}').");
+            }
+
+            foreach (var file in RequiredWorkerSwapFiles)
+            {
+                if (!System.IO.File.Exists(System.IO.Path.Combine(sourceDir!, file)))
+                {
+                    throw new InvalidOperationException(
+                        $"Worker binary swap source is missing required file '{file}' (sourceDir='{sourceDir}').");
+                }
+            }
+        }
+
         // mode=hard worker-binary swap. Called from DrainAndReplaceAsync's post-drain hook —
         // old worker has exited (exe unlocked) and eager respawn is suppressed, so the copy is
         // race-free (this is what the old best-effort path lost against the respawn). Copies
         // only the GxMcp.Worker.* assembly files; the dependency DLLs already sit in targetDir.
         private static void CopyWorkerBinaries(string sourceDir, string? targetDir)
         {
-            if (string.IsNullOrWhiteSpace(targetDir) || !System.IO.Directory.Exists(sourceDir))
+            ValidateWorkerBinarySwapSource(sourceDir);
+            if (string.IsNullOrWhiteSpace(targetDir))
             {
-                throw new InvalidOperationException($"Worker binary swap source or target is unavailable (sourceDir='{sourceDir}', targetDir='{targetDir ?? "<null>"}').");
+                throw new InvalidOperationException(
+                    $"Worker binary swap target directory is unresolved (sourceDir='{sourceDir}').");
             }
 
-            string[] requiredFiles = { "GxMcp.Worker.exe", "GxMcp.Worker.dll" };
-            foreach (var file in requiredFiles)
+            // sourceDir == the running worker's own directory is a self-swap: the bytes are
+            // already in place, so there is nothing to do. It must be a no-op rather than a
+            // copy, because copying a file onto itself throws a sharing violation once the
+            // outgoing worker still holds the exe handle — observed live as "The process
+            // cannot access the file ... GxMcp.Worker.exe because it is being used by another
+            // process", which failed the reload AFTER the drain and left the KB with no worker.
+            if (IsSameDirectory(sourceDir, targetDir))
             {
-                if (!System.IO.File.Exists(System.IO.Path.Combine(sourceDir, file)))
-                    throw new InvalidOperationException($"Worker binary swap source is missing required file '{file}'.");
+                Log($"[Gateway] worker_reload source and target are the same directory; nothing to swap: {targetDir}");
+                return;
             }
 
-            string[] files = { "GxMcp.Worker.exe", "GxMcp.Worker.dll", "GxMcp.Worker.pdb", "GxMcp.Worker.exe.config" };
             int copied = 0;
-            foreach (var file in files)
+            foreach (var file in RequiredWorkerSwapFiles.Concat(OptionalWorkerSwapFiles))
             {
                 string src = System.IO.Path.Combine(sourceDir, file);
                 if (!System.IO.File.Exists(src)) continue;
@@ -189,6 +239,20 @@ namespace GxMcp.Gateway
                 }
             }
             Log($"[Gateway] worker_reload swapped {copied} worker binary file(s): {sourceDir} -> {targetDir}");
+        }
+
+        private static bool IsSameDirectory(string left, string right)
+        {
+            try
+            {
+                string a = System.IO.Path.GetFullPath(left).TrimEnd('\\', '/');
+                string b = System.IO.Path.GetFullPath(right).TrimEnd('\\', '/');
+                return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static void RestartWorker(Configuration config)

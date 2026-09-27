@@ -89,7 +89,7 @@ namespace GxMcp.Gateway
         // background push from the worker, so this mirror can lag reality until something
         // refreshes it — the short-circuit below compensates with a synchronous re-check rather
         // than trusting a stale snapshot. Do not assume search/list/lifecycle calls keep it warm.
-        private sealed class IndexStateSnapshot
+        internal sealed class IndexStateSnapshot
         {
             public string? KbAlias;
             public string Status = "Cold";
@@ -123,6 +123,17 @@ namespace GxMcp.Gateway
             // Persisted source-store/backfill progress is worker-owned but mirrored here
             // with the index state so whoami and doctor remain useful when the worker is busy.
             public JObject? SourceStore;
+            // A snapshot the gateway INVENTED rather than read from the worker. Set when the
+            // 400ms index-state round-trip fails at open time: the placeholder suppresses
+            // further round-trips for the freshness window (that part is a real optimisation),
+            // but its Status is a guess. Before this flag existed the guess was published as a
+            // plain `Cold`, byte-identical to a genuinely cold index, so whoami's own
+            // suggestedNext told the agent to run `lifecycle action=index force=true` against a
+            // KB that was already indexed (observed live: placeholder Cold/0 -> seconds later
+            // Ready/current, 620 objects, canDelta=true, slotGeneration=145). Consumers must
+            // treat a provisional snapshot as UNKNOWN, never as evidence about the KB.
+            // IsIndexUsableForReads still fails closed on it — this only governs advice.
+            public bool Provisional;
         }
         private static IndexStateSnapshot _lastKnownIndexState = new IndexStateSnapshot();
         private static readonly object _lastKnownIndexStateLock = new object();
@@ -561,6 +572,10 @@ namespace GxMcp.Gateway
                     ? InferIndexFreshness(snap.Status)
                     : snap.Freshness,
                 ["totalObjects"] = snap.TotalObjects,
+                // Distinguishes a worker-reported state from a gateway placeholder written
+                // when the round-trip timed out. Absent/false means the values below were
+                // read from the worker.
+                ["provisional"] = snap.Provisional,
                 ["lastSuccessfulScanAt"] = snap.LastSuccessfulScanAt.HasValue
                     ? (JToken)snap.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
                     : JValue.CreateNull(),
@@ -669,6 +684,43 @@ namespace GxMcp.Gateway
                 lastSuccessfulScanAt: lastIndexedAt,
                 kbAlias: alias);
         }
+
+        // Reproduces the placeholder a timed-out index-state round-trip leaves behind, so
+        // tests can assert the advice path treats an invented Cold as UNKNOWN.
+        internal static void MarkIndexStateProvisionalForTest(string alias)
+        {
+            string? key = NormalizeKbAlias(alias);
+            if (string.IsNullOrEmpty(key)) return;
+            lock (_lastKnownIndexStateLock)
+            {
+                _lastKnownIndexStatesByKb[key!] = CreateProvisionalIndexSnapshot(key, null);
+            }
+        }
+
+        // The one place a gateway-invented index snapshot is constructed. Kept named and
+        // internal so the provenance flag is covered by a test that exercises THIS code,
+        // not a stand-in. Status stays "Cold" deliberately: that is what keeps the read gate
+        // failing closed while the real state is unknown.
+        internal static IndexStateSnapshot CreateProvisionalIndexSnapshot(string? kbAlias, JArray? recentlyChanged)
+        {
+            return new IndexStateSnapshot
+            {
+                KbAlias = kbAlias,
+                Status = "Cold",
+                TotalObjects = 0,
+                // Stamped now so the 15s cacheFresh window suppresses further round-trips
+                // against a busy worker — that suppression is the point of the placeholder.
+                RefreshedAtUtc = DateTime.UtcNow,
+                RecentlyChanged = recentlyChanged,
+                Provisional = true
+            };
+        }
+
+        internal static bool IsIndexStateProvisionalForTest(string? kbAlias)
+            => GetLastKnownIndexState(kbAlias).Provisional;
+
+        internal static bool IsIndexUsableForReadsForTest(string? kbAlias)
+            => IsIndexUsableForReads(GetLastKnownIndexState(kbAlias));
 
         private static IndexStateSnapshot GetLastKnownIndexState(string? kbAlias)
         {
@@ -1036,17 +1088,7 @@ namespace GxMcp.Gateway
                         IndexStateSnapshot current = GetLastKnownIndexState(whoamiAlias);
                         if (current.RefreshedAtUtc == DateTime.MinValue)
                         {
-                            // Stamp a "Unknown" placeholder. Status stays Cold so the
-                            // agent can still see that the index hasn't reported yet;
-                            // we just stop hammering the round-trip every call.
-                            var placeholder = new IndexStateSnapshot
-                            {
-                                KbAlias = whoamiAlias,
-                                Status = "Cold",
-                                TotalObjects = 0,
-                                RefreshedAtUtc = DateTime.UtcNow,
-                                RecentlyChanged = current.RecentlyChanged
-                            };
+                            var placeholder = CreateProvisionalIndexSnapshot(whoamiAlias, current.RecentlyChanged);
                             if (!string.IsNullOrEmpty(whoamiAlias))
                                 _lastKnownIndexStatesByKb[whoamiAlias!] = placeholder;
                             else
@@ -1863,7 +1905,7 @@ namespace GxMcp.Gateway
                 // BUILT index with 0 objects is a genuinely empty KB, so the nudge must
                 // not loop force=true reindexing forever (there is nothing to index).
                 IndexStateSnapshot snap = GetLastKnownIndexState(kbAlias);
-                var indexSuggestion = BuildIndexSuggestion(snap.Status, snap.TotalObjects);
+                var indexSuggestion = BuildIndexSuggestionForSnapshot(snap);
                 if (indexSuggestion != null) arr.Add(indexSuggestion);
 
                 // Update available — surface as a soft hint, not blocking.
@@ -1953,6 +1995,34 @@ namespace GxMcp.Gateway
         // LiteReady / Enriching — e.g. a KB whose LocalDB model is missing) means the walk
         // already completed and found nothing, so re-running the reindex cannot help.
         // Only a Cold/Unknown (never-built) index gets the force=true nudge.
+        // A gateway-invented placeholder carries no evidence about the KB, so it must never
+        // drive a mutating recommendation. Re-read first: the placeholder only exists while
+        // the worker's index-state round-trip is slow, and the next poll normally resolves it
+        // to a real Ready/Cold verdict (measured live: placeholder Cold/0 -> Ready/current
+        // with 620 objects within seconds).
+        internal static JObject BuildProvisionalIndexSuggestion()
+        {
+            return new JObject
+            {
+                ["tool"] = "genexus_whoami",
+                ["args"] = new JObject(),
+                ["why"] = "Index state is not confirmed yet — the worker's index-status read timed out, so index.status/totalObjects are a placeholder, not an observation. Re-call whoami; do not reindex on this (index.provisional=true)."
+            };
+        }
+
+        // Index advice, routed on the snapshot's PROVENANCE before its content. A mirror the
+        // gateway invented (a timed-out index-state round-trip, stamped Cold/0) must never
+        // produce a mutating recommendation: that is how an agent was told to force-reindex a
+        // KB that was already indexed. It asks for a re-read instead, and the next poll turns
+        // it into a real verdict.
+        internal static JObject? BuildIndexSuggestionForSnapshot(IndexStateSnapshot snap)
+        {
+            if (snap == null) return BuildIndexSuggestion("Cold", 0);
+            return snap.Provisional
+                ? BuildProvisionalIndexSuggestion()
+                : BuildIndexSuggestion(snap.Status, snap.TotalObjects);
+        }
+
         internal static JObject BuildIndexSuggestion(string status, int totalObjects)
         {
             string s = status ?? string.Empty;

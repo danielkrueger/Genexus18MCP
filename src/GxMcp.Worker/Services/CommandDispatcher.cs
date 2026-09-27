@@ -543,7 +543,16 @@ namespace GxMcp.Worker.Services
         // request já parseado; rawLine é mantido apenas para o caminho de fallback
         // (não é usado no corpo). Chamado pelo caminho MTA do Program.cs.
         public string Dispatch(JObject request, string rawLine)
+            => Dispatch(request, rawLine, out _);
+
+        // Same dispatch, but also surfaces the already-parsed response token. ProcessCommand
+        // serializes it directly instead of handing SendResponse a string it would immediately
+        // re-parse — the dispatcher had parsed the very same text a moment earlier.
+        public string Dispatch(JObject request, string rawLine, out object parsedResponse)
         {
+            // Assigned up front so the idempotency-replay early return below still satisfies
+            // definite assignment; a replay is a string the caller will parse as before.
+            parsedResponse = null;
             // v2.8.0 — idempotency. When the caller threads a `clientRequestId`
             // through the RPC params, this dispatcher serves a cached response
             // for the same id within a 5-minute TTL. Lets LLM clients retry
@@ -572,8 +581,13 @@ namespace GxMcp.Worker.Services
             string result;
             try
             {
-                result = GxMcp.Worker.Helpers.McpResponseNormalizer.Normalize(
-                    DispatchInternal(request));
+                string raw = DispatchInternal(request);
+                JToken token = GxMcp.Worker.Helpers.McpResponseNormalizer.NormalizeToken(
+                    raw, out bool rewritten);
+                // The idempotency cache and the string contract keep the original bytes when
+                // nothing was rewritten; the token is handed on for direct serialization.
+                result = rewritten ? token.ToString(Newtonsoft.Json.Formatting.None) : raw;
+                parsedResponse = token;
             }
             catch
             {

@@ -17,6 +17,14 @@ namespace GxMcp.Worker.Services
         private readonly VectorService _vectorService = new VectorService();
         private static readonly BoundedStringCache _queryCache = new BoundedStringCache(512);
         private static DateTime _lastIndexTime = DateTime.MinValue;
+        // The query cache must also be dropped when the object GRAPH changes. A write
+        // (genexus_edit / genexus_io / pattern apply) goes through IndexCacheService.UpdateEntry,
+        // which calls TouchGraph and bumps GraphRevision WITHOUT advancing LastUpdated —
+        // LastUpdated only moves on a bulk walk (AddOrUpdateBatch / ReplaceAll). Clearing on
+        // LastUpdated alone therefore left a pre-edit result in the cache for the life of its
+        // LRU slot, and this cache has no TTL. ListService already keyed its own cache on both
+        // counters; this mirrors that so a query cannot outlive the edit it describes.
+        private static long _lastGraphRevision;
 
         // PERFORMANCE (perf-review): these hot-path patterns only vary by a fixed
         // filter name, so precompile once instead of compiling a fresh Regex per
@@ -37,6 +45,30 @@ namespace GxMcp.Worker.Services
         {
             _indexCacheService = indexCacheService;
             _objectService = objectService;
+        }
+
+        // Extracted from Search so the invalidation rule is testable without a live SDK
+        // index. Returns true when the cache was actually dropped.
+        internal static bool InvalidateQueryCacheIfStale(SearchIndex index)
+        {
+            if (index == null) return false;
+            if (index.LastUpdated <= _lastIndexTime
+                && index.GraphRevision == _lastGraphRevision)
+            {
+                return false;
+            }
+
+            _queryCache.Clear();
+            _lastIndexTime = index.LastUpdated;
+            _lastGraphRevision = index.GraphRevision;
+            return true;
+        }
+
+        internal static void ResetQueryCacheForTest()
+        {
+            _queryCache.Clear();
+            _lastIndexTime = DateTime.MinValue;
+            _lastGraphRevision = 0;
         }
 
         public string Search(string query, string typeFilter = null, string domainFilter = null, int limit = 50, bool exactMatch = false,
@@ -93,7 +125,7 @@ namespace GxMcp.Worker.Services
                     return BuildPartialResponse(query, new object[0], 0, scanning: true);
                 }
 
-                if (index.LastUpdated > _lastIndexTime) { _queryCache.Clear(); _lastIndexTime = index.LastUpdated; }
+                InvalidateQueryCacheIfStale(index);
 
                 bool isQuick = !string.IsNullOrEmpty(query) && query.IndexOf("@quick", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (isQuick)

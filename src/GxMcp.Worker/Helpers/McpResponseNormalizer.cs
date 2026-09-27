@@ -24,8 +24,28 @@ namespace GxMcp.Worker.Helpers
             string fallbackCode = "LegacyWorkerError",
             string fallbackHint = "Inspect the worker diagnostics and retry after correcting the reported condition.")
         {
+            JToken token = NormalizeToken(json, out bool rewritten, fallbackCode, fallbackHint);
+            // Unchanged contract: a payload that needed no rewrite is returned verbatim, so
+            // callers that compare or store the string (idempotency replay) see the same bytes.
+            return rewritten ? token.ToString(Newtonsoft.Json.Formatting.None) : json;
+        }
+
+        // Parses the payload ONCE and hands the token back. The dispatcher used to return a
+        // string that SendResponse immediately re-parsed with JsonIngress.ParseToken, so every
+        // response paid two full JObject.Parse passes over identical text — expensive on a
+        // multi-megabyte genexus_read envelope and pure overhead on every other call.
+        internal static JToken NormalizeToken(
+            string json,
+            out bool rewritten,
+            string fallbackCode = "LegacyWorkerError",
+            string fallbackHint = "Inspect the worker diagnostics and retry after correcting the reported condition.")
+        {
+            rewritten = false;
             if (string.IsNullOrWhiteSpace(json))
-                return McpResponse.Err(fallbackCode, "Worker returned an empty response.", fallbackHint);
+            {
+                rewritten = true;
+                return JObject.Parse(McpResponse.Err(fallbackCode, "Worker returned an empty response.", fallbackHint));
+            }
 
             JObject payload;
             try
@@ -34,14 +54,15 @@ namespace GxMcp.Worker.Helpers
             }
             catch
             {
-                return McpResponse.Err(fallbackCode, "Worker returned invalid JSON.", fallbackHint);
+                rewritten = true;
+                return JObject.Parse(McpResponse.Err(fallbackCode, "Worker returned invalid JSON.", fallbackHint));
             }
 
             string status = payload["status"]?.ToString();
             JToken errorToken = payload["error"];
             bool hasTopLevelError = errorToken != null && errorToken.Type != JTokenType.Null;
             bool legacyStatus = !string.IsNullOrWhiteSpace(status) && LegacyErrorStatuses.Contains(status);
-            if (!hasTopLevelError && !legacyStatus) return json;
+            if (!hasTopLevelError && !legacyStatus) return payload;
 
             JObject error = errorToken as JObject;
             if (error == null) error = new JObject();
@@ -81,7 +102,8 @@ namespace GxMcp.Worker.Helpers
 
             payload["status"] = "error";
             payload["error"] = normalizedError;
-            return payload.ToString(Newtonsoft.Json.Formatting.None);
+            rewritten = true;
+            return payload;
         }
     }
 }
