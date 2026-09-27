@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
+using Artech.Architecture.Common.Parts;
 using GxMcp.Worker.Compatibility;
 using GxMcp.Worker.Services;
 using Xunit;
@@ -178,6 +180,81 @@ namespace GxMcp.Worker.Tests
             var result = SdkMemberProbe.Resolve(typeof(DerivedFromStaticOnBase),
                 "InheritedStatic", SdkMemberProbe.Static, Type.EmptyTypes);
             Assert.NotNull(result);
+        }
+
+        // ---- the cross-major dependency source used by the module preview -----
+
+        [Fact]
+        public void TryGetExportDependenciesOn_ReturnsNullForAnythingItCannotRead()
+        {
+            // The preview must be able to say "never asked" instead of reporting an
+            // empty dependency list as authoritative, so every unreadable shape
+            // returns null rather than an empty sequence.
+            Assert.Null(ModuleService.TryGetExportDependencies(null));
+            Assert.Null(ModuleService.TryGetExportDependencies(new object()));
+            Assert.Null(ModuleService.TryGetExportDependencies("not a module"));
+        }
+
+        [Fact]
+        public void TryGetExportDependenciesOn_NeverThrowsOnAThrowingModule()
+        {
+            // A hostile or half-initialized SDK object must not be able to fail a
+            // read-only preview; the call is an enrichment, not a gate.
+            var outcome = ModuleService.TryGetExportDependencies(new ExplodingModule());
+            Assert.Null(outcome);
+        }
+
+        private sealed class ExplodingModule
+        {
+            public ModuleContentPart Parts => throw new InvalidOperationException("sdk refused");
+        }
+
+        [Fact]
+        public void SelectDependencySource_PrefersTheCrossMajorPartOverTheGeneXus18OnlyService()
+        {
+            // The part is present on 16/17/18; the service member is 18-only. Reading
+            // the service member first reported "unavailable" on the older majors even
+            // though a working read was available, so the preference is asserted here
+            // as behaviour rather than as source text.
+            var part = new[] { "from-part" };
+            var service = new[] { "from-service" };
+
+            var chosen = ModuleService.SelectDependencySource(part, service, out string source);
+            Assert.Equal("modulePart", source);
+            Assert.Same(part, chosen);
+        }
+
+        [Fact]
+        public void SelectDependencySource_FallsBackToTheServiceWhenThePartIsAbsent()
+        {
+            var service = new[] { "from-service" };
+            var chosen = ModuleService.SelectDependencySource(null, service, out string source);
+            Assert.Equal("sdk", source);
+            Assert.Same(service, chosen);
+        }
+
+        [Fact]
+        public void SelectDependencySource_ReportsUnavailableRatherThanAnEmptyList()
+        {
+            // Both sources unreadable must yield null plus "unavailable", never an
+            // empty sequence, so the caller cannot present "never asked" as
+            // "needs nothing".
+            var chosen = ModuleService.SelectDependencySource(null, null, out string source);
+            Assert.Null(chosen);
+            Assert.Equal("unavailable", source);
+        }
+
+        [Fact]
+        public void SelectDependencySource_TreatsAnEmptyButReadablePartAsAuthoritative()
+        {
+            // A module that genuinely has no dependencies is different from a module
+            // whose dependencies could not be read; the empty list must survive as
+            // "modulePart" so the caller can tell them apart.
+            var emptyPart = new string[0];
+            var chosen = ModuleService.SelectDependencySource(emptyPart, new[] { "stale" }, out string source);
+            Assert.Equal("modulePart", source);
+            Assert.NotNull(chosen);
+            Assert.Empty(chosen);
         }
 
         // ---- Finding 2: the deletion adapter's candidate order --------------

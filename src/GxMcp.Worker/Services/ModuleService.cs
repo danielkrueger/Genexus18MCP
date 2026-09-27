@@ -9,6 +9,7 @@ using System.Threading;
 using Module = Artech.Architecture.Common.Objects.Module;
 using System.Xml;
 using Artech.Architecture.Common.Objects;
+using Artech.Architecture.Common.Parts;
 using Artech.Architecture.Common.Services;
 using GxMcp.Worker.Compatibility;
 using GxMcp.Worker.Helpers;
@@ -445,40 +446,48 @@ namespace GxMcp.Worker.Services
 
             // A name-based preview used to report no dependencies at all, so a caller
             // could not tell "this module needs nothing" from "the SDK was never
-            // asked". IModuleManagerService.GetReferencesFromPackagableObjects is
-            // GeneXus 18-only, so it is probed rather than called; on 16/17 the
-            // preview keeps working and says why the list is absent.
+            // asked". Two sources exist, in this order of preference:
+            //
+            //  1. ModuleContentPart.ExportDependencies, the same part the install
+            //     flow already reads for its own dependency comparison. Measured
+            //     present on GeneXus 16, 17 and 18.
+            //  2. IModuleManagerService.GetReferencesFromPackagableObjects, which is
+            //     GeneXus 18-only, kept as a fallback in case a future major moves
+            //     the part but keeps the service member.
+            //
+            // dependencySource records which one answered, so an empty list is never
+            // mistaken for an authoritative "needs nothing". The preference itself is
+            // a pure function so it is testable without a live KB.
             var dependencies = new JArray();
-            string dependencySource = "unavailable";
-            if (present)
+            string dependencySource;
+            var observed = SelectDependencySource(
+                TryGetExportDependencies(module),
+                TryGetPackagedModuleDependencies(module),
+                out dependencySource);
+            if (present && observed != null)
             {
-                var probed = TryGetPackagedModuleDependencies(module);
-                if (probed != null)
+                foreach (var dependency in observed)
                 {
-                    dependencySource = "sdk";
-                    foreach (var dependency in probed)
+                    string dependencyName = ReadDependencyString(dependency, "Name");
+                    bool installedInKb = false;
+                    try
                     {
-                        string dependencyName = ReadDependencyString(dependency, "Name");
-                        bool installedInKb = false;
-                        try
-                        {
-                            installedInKb = !string.IsNullOrWhiteSpace(dependencyName)
-                                && ResolveModule(dependencyName) != null;
-                        }
-                        catch
-                        {
-                        }
-                        dependencies.Add(new JObject
-                        {
-                            ["name"] = dependencyName,
-                            ["version"] = ReadDependencyString(dependency, "Version"),
-                            ["minimumVersion"] = ReadDependencyString(dependency, "MinimumVersion"),
-                            ["maximumVersion"] = ReadDependencyString(dependency, "MaximumVersion"),
-                            ["id"] = ReadDependencyGuid(dependency, "Guid"),
-                            ["expose"] = ReadDependencyBool(dependency, "Expose"),
-                            ["installedInKb"] = installedInKb
-                        });
+                        installedInKb = !string.IsNullOrWhiteSpace(dependencyName)
+                            && ResolveModule(dependencyName) != null;
                     }
+                    catch
+                    {
+                    }
+                    dependencies.Add(new JObject
+                    {
+                        ["name"] = dependencyName,
+                        ["version"] = ReadDependencyString(dependency, "Version"),
+                        ["minimumVersion"] = ReadDependencyString(dependency, "MinimumVersion"),
+                        ["maximumVersion"] = ReadDependencyString(dependency, "MaximumVersion"),
+                        ["id"] = ReadDependencyGuid(dependency, "Guid"),
+                        ["expose"] = ReadDependencyBool(dependency, "Expose"),
+                        ["installedInKb"] = installedInKb
+                    });
                 }
             }
 
@@ -503,6 +512,50 @@ namespace GxMcp.Worker.Services
                         ? "Read-only preview: the KB was inspected without contacting module servers and no install/save was called. The dependencies above are the ones the installed SDK reports for this module; the package identity it resolves at execution time still comes from the configured module servers."
                         : "Read-only preview: the KB was inspected without contacting module servers and no install/save was called. No dependency list could be read (see dependencySource), so package identity and dependencies resolve through the configured module servers at execution time."
             });
+        }
+
+        /// <summary>
+        /// Reads the module's own <c>ModuleContentPart.ExportDependencies</c>, the part
+        /// the install flow already trusts for its dependency comparison. Measured
+        /// present on GeneXus 16, 17 and 18, so unlike the service member below it is
+        /// the cross-major source. Returns null when the part or the member is
+        /// absent, so the caller can fall back rather than report an empty list as
+        /// authoritative. Never throws: this enriches a read-only preview.
+        /// </summary>
+        /// <summary>
+        /// Chooses which dependency source a preview reports, and names it. The
+        /// module's own part wins because it is measured present on GeneXus 16, 17
+        /// and 18, while the service member is 18-only: preferring the service member
+        /// would report "unavailable" on the older majors even though a working read
+        /// was available. Split out as a pure function so the preference is testable
+        /// without a live KB, which is the only way to prove it stays correct.
+        /// </summary>
+        /// <returns>The chosen dependency sequence, or null when neither source answered.</returns>
+        internal static System.Collections.IEnumerable SelectDependencySource(
+            System.Collections.IEnumerable fromPart,
+            System.Collections.IEnumerable fromService,
+            out string source)
+        {
+            if (fromPart != null) { source = "modulePart"; return fromPart; }
+            if (fromService != null) { source = "sdk"; return fromService; }
+            source = "unavailable";
+            return null;
+        }
+
+        internal static System.Collections.IEnumerable TryGetExportDependencies(object module)
+        {
+            if (module == null) return null;
+            try
+            {
+                var typed = module as Module;
+                var content = typed?.Parts.Get<ModuleContentPart>();
+                return content?.ExportDependencies as System.Collections.IEnumerable;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("ModuleContentPart.ExportDependencies read failed: " + ex.Message);
+                return null;
+            }
         }
 
         /// <summary>

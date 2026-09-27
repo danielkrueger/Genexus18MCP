@@ -142,6 +142,11 @@ fixture contract live in [`live-kb-test-harness.md`](live-kb-test-harness.md).
   primary major breaks the build on the others. Measured on this repo's installs,
   `IModuleManagerService` exposes 17 members on GeneXus 16, 23 on 17 and 28 on 18;
   `IsBuiltInModule` is 17+, `GetBuiltinModuleVersion` is 18-only, `GetSettings` is 17+.
+  Prefer the *narrowest-major* member you can: a member that exists on 16 is usable
+  everywhere, so reaching for an 18-only member first turns a working read into a
+  silent `unavailable` on the older majors. `ModuleContentPart.ExportDependencies`,
+  for example, carries the same `PackagedModuleDependency` data as
+  `GetReferencesFromPackagableObjects` and is present on 16, 17 and 18.
   `genexus_module install_builtin` therefore fails closed per major:
   `ModuleBuiltinCheckUnsupported` (16: no `IsBuiltInModule`),
   `ModuleBuiltinVersionUnsupported` (16/17: no `GetBuiltinModuleVersion`), then
