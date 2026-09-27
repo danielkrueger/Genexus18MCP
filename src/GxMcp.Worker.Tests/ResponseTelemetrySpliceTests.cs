@@ -31,7 +31,7 @@ namespace GxMcp.Worker.Tests
         }
 
         private static string Splice(string serialized, string placeholder, JObject telemetry)
-            => (string)SpliceTelemetryMethod().Invoke(null, new object[] { serialized, placeholder, telemetry })!;
+            => (string)SpliceTelemetryMethod().Invoke(null, new object[] { serialized, placeholder, telemetry });
 
         [Fact]
         public void Splices_Telemetry_IntoTheReservedSlot()
@@ -42,7 +42,7 @@ namespace GxMcp.Worker.Tests
             string spliced = Splice(frame, "__gxtel_TOKEN", telemetry);
 
             var parsed = JObject.Parse(spliced);
-            Assert.Equal(7L, parsed["result"]!["_meta"]!["telemetry"]!["transformMs"]!.ToObject<long>());
+            Assert.Equal(7L, parsed["result"]["_meta"]["telemetry"]["transformMs"].ToObject<long>());
         }
 
         [Fact]
@@ -61,8 +61,8 @@ namespace GxMcp.Worker.Tests
             // The placeholder was a STRING; after the splice it must be an OBJECT, exactly as
             // the previous double-serialization produced. A client reading
             // _meta.telemetry.serializeMs depends on this.
-            Assert.Equal(JTokenType.Object, parsed["result"]!["_meta"]!["telemetry"]!.Type);
-            Assert.Equal(11L, parsed["result"]!["_meta"]!["telemetry"]!["serializeMs"]!.ToObject<long>());
+            Assert.Equal(JTokenType.Object, parsed["result"]["_meta"]["telemetry"].Type);
+            Assert.Equal(11L, parsed["result"]["_meta"]["telemetry"]["serializeMs"].ToObject<long>());
         }
 
         [Fact]
@@ -73,11 +73,11 @@ namespace GxMcp.Worker.Tests
 
             var parsed = JObject.Parse(Splice(frame, "__gxtel_T", telemetry));
 
-            Assert.Equal("2.0", (string?)parsed["jsonrpc"]);
-            Assert.Equal(1, parsed["result"]!["a"]!.ToObject<int>());
-            Assert.Equal(3, ((JArray)parsed["result"]!["b"]!).Count);
-            Assert.Equal("text", (string?)parsed["result"]!["c"]);
-            Assert.Equal("abc", (string?)parsed["id"]);
+            Assert.Equal("2.0", (string)parsed["jsonrpc"]);
+            Assert.Equal(1, parsed["result"]["a"].ToObject<int>());
+            Assert.Equal(3, ((JArray)parsed["result"]["b"]).Count);
+            Assert.Equal("text", (string)parsed["result"]["c"]);
+            Assert.Equal("abc", (string)parsed["id"]);
         }
 
         [Fact]
@@ -95,7 +95,7 @@ namespace GxMcp.Worker.Tests
         {
             string frame = "{\"result\":{},\"id\":\"1\"}";
 
-            Assert.Equal(frame, Splice(frame, null!, new JObject()));
+            Assert.Equal(frame, Splice(frame, null, new JObject()));
             Assert.Equal(frame, Splice(frame, string.Empty, new JObject()));
         }
 
@@ -109,8 +109,8 @@ namespace GxMcp.Worker.Tests
 
             var parsed = JObject.Parse(Splice(frame, "__gxtel_T", telemetry));
 
-            Assert.Equal("__gxtel_T", (string?)parsed["a"]);
-            Assert.Equal(5L, parsed["_meta"]!["telemetry"]!["serializeMs"]!.ToObject<long>());
+            Assert.Equal("__gxtel_T", (string)parsed["a"]);
+            Assert.Equal(5L, parsed["_meta"]["telemetry"]["serializeMs"].ToObject<long>());
         }
 
         [Fact]
@@ -123,7 +123,7 @@ namespace GxMcp.Worker.Tests
             var parsed = JObject.Parse(Splice(frame, "__gxtel_T", telemetry));
 
             Assert.Equal("line\nbreak \"quoted\"",
-                (string?)parsed["_meta"]!["telemetry"]!["lastError"]);
+                (string)parsed["_meta"]["telemetry"]["lastError"]);
         }
     }
 }

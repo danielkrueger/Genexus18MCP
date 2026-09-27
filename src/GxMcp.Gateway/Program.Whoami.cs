@@ -2015,7 +2015,7 @@ namespace GxMcp.Gateway
         // produce a mutating recommendation: that is how an agent was told to force-reindex a
         // KB that was already indexed. It asks for a re-read instead, and the next poll turns
         // it into a real verdict.
-        internal static JObject? BuildIndexSuggestionForSnapshot(IndexStateSnapshot snap)
+        internal static JObject? BuildIndexSuggestionForSnapshot(IndexStateSnapshot? snap)
         {
             if (snap == null) return BuildIndexSuggestion("Cold", 0);
             return snap.Provisional

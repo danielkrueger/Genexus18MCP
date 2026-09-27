@@ -80,8 +80,8 @@ namespace GxMcp.Worker.Tests
             JToken token = McpResponseNormalizer.NormalizeToken("{not json", out bool rewritten);
 
             Assert.True(rewritten);
-            Assert.Equal("error", (string?)token["status"]);
-            Assert.Equal(JTokenType.Object, token["error"]!.Type);
+            Assert.Equal("error", (string)token["status"]);
+            Assert.Equal(JTokenType.Object, token["error"].Type);
         }
 
         [Fact]
@@ -90,7 +90,7 @@ namespace GxMcp.Worker.Tests
             JToken token = McpResponseNormalizer.NormalizeToken("   ", out bool rewritten);
 
             Assert.True(rewritten);
-            Assert.Equal("error", (string?)token["status"]);
+            Assert.Equal("error", (string)token["status"]);
         }
 
         [Fact]
@@ -98,10 +98,10 @@ namespace GxMcp.Worker.Tests
         {
             JToken token = McpResponseNormalizer.NormalizeToken(LegacyNotFound, out _);
 
-            Assert.Equal("error", (string?)token["status"]);
-            Assert.Equal("LegacyNotFound", (string?)token["error"]!["code"]);
-            Assert.Equal("NotFound", (string?)token["error"]!["legacyStatus"]);
-            Assert.Equal("no such object", (string?)token["error"]!["message"]);
+            Assert.Equal("error", (string)token["status"]);
+            Assert.Equal("LegacyNotFound", (string)token["error"]["code"]);
+            Assert.Equal("NotFound", (string)token["error"]["legacyStatus"]);
+            Assert.Equal("no such object", (string)token["error"]["message"]);
         }
 
         [Fact]
@@ -114,7 +114,7 @@ namespace GxMcp.Worker.Tests
             JToken token = McpResponseNormalizer.NormalizeToken(json, out bool rewritten);
 
             Assert.False(rewritten);
-            Assert.Equal("none", (string?)token["result"]!["error"]);
+            Assert.Equal("none", (string)token["result"]["error"]);
         }
     }
 }

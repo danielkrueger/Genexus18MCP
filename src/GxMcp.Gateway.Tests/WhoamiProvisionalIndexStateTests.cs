@@ -46,11 +46,13 @@ namespace GxMcp.Gateway.Tests
             var onProvisional = Program.BuildIndexSuggestionForSnapshot(provisional);
             var onObserved = Program.BuildIndexSuggestionForSnapshot(observed);
 
-            Assert.Equal("genexus_whoami", (string?)onProvisional["tool"]);
-            Assert.DoesNotContain("force", onProvisional.ToString());
+            Assert.NotNull(onProvisional);
+            Assert.NotNull(onObserved);
+            Assert.Equal("genexus_whoami", (string?)onProvisional!["tool"]);
+            Assert.DoesNotContain("force", onProvisional!.ToString());
 
-            Assert.Equal("genexus_lifecycle", (string?)onObserved["tool"]);
-            Assert.True(onObserved["args"]?["force"]?.ToObject<bool>());
+            Assert.Equal("genexus_lifecycle", (string?)onObserved!["tool"]);
+            Assert.True(onObserved!["args"]?["force"]?.ToObject<bool>());
         }
 
         [Fact]

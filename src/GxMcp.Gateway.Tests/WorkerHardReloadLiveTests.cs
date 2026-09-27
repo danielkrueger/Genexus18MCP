@@ -36,7 +36,7 @@ namespace GxMcp.Gateway.Tests
 
         public Task DisposeAsync() => Task.CompletedTask;
 
-        private static int? WorkerPidOf(JObject payload)
+        private static int? WorkerPidOf(JObject? payload)
             => payload?["worker"]?["pid"]?.Type == JTokenType.Integer
                 ? payload["worker"]!["pid"]!.Value<int>()
                 : (int?)null;
