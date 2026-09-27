@@ -22,7 +22,48 @@ function labelsOf(
   );
 }
 
-suite("GxInlineCompletionItemProvider - context-aware ghost text", () => {
+const AI_SETTING = "inlineCompletion.ai";
+
+// #324: the AI tests below are the only ones in the suite that do real
+// configuration I/O, and they target the Global store, so they depend on a
+// disk-backed settings.json under the (cwd-derived) .vscode-test user-data-dir.
+// Two consequences, both fixed here rather than by raising a timeout:
+//
+//  1. A mocha timeout does not cancel a pending async function. If the write of
+//     `true` lands after the test already timed out, the paired restore can run
+//     out of order, or never run at all if the host exits first, and
+//     `inlineCompletion.ai = true` persists into the profile and breaks the
+//     "disabled" test on every later run.
+//  2. A test whose precondition is "the profile happens to be clean" is not a
+//     test. Each test below now writes the value it needs before asserting, and
+//     the hooks neutralize whatever a previous or leaked run left behind, so the
+//     suite is self-healing instead of order- and history-dependent.
+async function setAiEnabled(enabled: boolean): Promise<void> {
+  await vscode.workspace
+    .getConfiguration("genexus")
+    .update(AI_SETTING, enabled, vscode.ConfigurationTarget.Global);
+}
+
+suite("GxInlineCompletionItemProvider - context-aware ghost text", function () {
+  // Justified by measurement, and scoped to this suite rather than the runner:
+  // the two configuration tests measured 46-426 ms in isolation and 184 ms under
+  // the release-preflight parallel wave, against mocha's 2000 ms default. A
+  // disk-backed Global write on a host contended by the CLI, Python, PowerShell
+  // and dotnet lanes can exceed 2 s without indicating a defect, so this suite
+  // gets headroom; the global timeout is untouched so the other 109 tests are
+  // not slowed or masked.
+  this.timeout(10000);
+
+  suiteSetup(async () => {
+    await setAiEnabled(false);
+  });
+
+  teardown(async () => {
+    // Runs after every test, including a timed-out one, so a leak from this run
+    // cannot become the next run's starting state.
+    await setAiEnabled(false);
+  });
+
   test("suggests real structure fields and methods after '&var.' when the variable is an SDT", async () => {
     const doc = await openDoc("&cliente.");
     const fsProvider = new GxFileSystemProvider();
@@ -65,7 +106,19 @@ suite("GxInlineCompletionItemProvider - context-aware ghost text", () => {
     assert.strictEqual(labelsOf(result).length, 0);
   });
 
-  test("AI path stays empty when genexus.inlineCompletion.ai is disabled (default)", async () => {
+  test("genexus.inlineCompletion.ai declares false as its default", () => {
+    // The declared default is what makes the AI path opt-in. Asserting it from
+    // the package contribution is a pure read, so it does not depend on a clean
+    // profile at all.
+    const declared = vscode.workspace
+      .getConfiguration("genexus")
+      .inspect<boolean>(AI_SETTING)?.defaultValue;
+    assert.strictEqual(declared, false, "the AI completion setting must default to off");
+  });
+
+  test("AI path stays empty when genexus.inlineCompletion.ai is disabled", async () => {
+    await setAiEnabled(false);
+
     const doc = await openDoc("&x = 1");
     const fsProvider = new GxFileSystemProvider();
     let called = false;
@@ -89,14 +142,11 @@ suite("GxInlineCompletionItemProvider - context-aware ghost text", () => {
   });
 
   test("AI path degrades cleanly (no throw, empty ghost text) when genexus_ai_complete reports AiEndpointNotConfigured", async () => {
-    const config = vscode.workspace.getConfiguration("genexus");
-    await config.update(
-      "inlineCompletion.ai",
-      true,
-      vscode.ConfigurationTarget.Global,
-    );
-
+    // Inside the try, so the restore is always paired with this invocation's
+    // write even if the body is interrupted.
     try {
+      await setAiEnabled(true);
+
       const doc = await openDoc("&x = 1");
       const fsProvider = new GxFileSystemProvider();
       (fsProvider as any).callMcpTool = async () => ({
@@ -115,23 +165,14 @@ suite("GxInlineCompletionItemProvider - context-aware ghost text", () => {
 
       assert.strictEqual(labelsOf(result).length, 0);
     } finally {
-      await config.update(
-        "inlineCompletion.ai",
-        undefined,
-        vscode.ConfigurationTarget.Global,
-      );
+      await setAiEnabled(false);
     }
   });
 
   test("AI path emits the completion as ghost text when configured and reachable", async () => {
-    const config = vscode.workspace.getConfiguration("genexus");
-    await config.update(
-      "inlineCompletion.ai",
-      true,
-      vscode.ConfigurationTarget.Global,
-    );
-
     try {
+      await setAiEnabled(true);
+
       const doc = await openDoc("&x = 1");
       const fsProvider = new GxFileSystemProvider();
       (fsProvider as any).callMcpTool = async () => ({
@@ -150,11 +191,7 @@ suite("GxInlineCompletionItemProvider - context-aware ghost text", () => {
 
       assert.ok(labelsOf(result).includes("&y = &x + 1"));
     } finally {
-      await config.update(
-        "inlineCompletion.ai",
-        undefined,
-        vscode.ConfigurationTarget.Global,
-      );
+      await setAiEnabled(false);
     }
   });
 
