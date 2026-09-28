@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Every release now completes its final publication check, and issues labeled `fixed-pending-release` are closed automatically again. The release script builds its status as an ordered dictionary, but the shared contract probed for a key with `PSObject.Properties['name']`, which never sees a dictionary's keys — every summary, snapshot, and evidence file arrives from `ConvertFrom-Json` as an object whose keys *do* surface there, so the shape difference stayed invisible until the one caller that used a dictionary. The resulting guard was permanently false, so a published release was still reported as `commits do not match` even when the tag, assets, workflow, and npm publication had all verified. That check is the gate immediately before the label-driven issue closure, so no release ever reached the close step and labeled issues stayed open indefinitely. A single dual-shape presence helper now backs all fifteen probes in the module. The same blind spot also let an ordered-dictionary status skip the repository consistency check entirely, so a status naming the wrong repository was accepted; it is now rejected.
+
 ## v3.9.2 - 2026-09-27
 
 

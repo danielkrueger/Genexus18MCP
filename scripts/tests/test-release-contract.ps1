@@ -249,6 +249,32 @@ try {
     if (-not (Test-GxMcpReleasePublicationEvidence -Status $publicationStatus -Publication $publicationEvidence -RepositoryRoot $artifactRoot).Valid) {
         throw 'Complete publication evidence must validate.'
     }
+    # release.ps1 does NOT pass a PSCustomObject here: it builds $statusState as an
+    # [ordered]@{} and hands that dictionary straight in. The commit guard used to read
+    # $Status.PSObject.Properties['tagCommit'], which is always null for a dictionary, so
+    # the check failed with 'publication evidence commits do not match' on every release —
+    # and because this check gates the label-driven issue closure, `fixed-pending-release`
+    # issues were never closed. The identical data must validate as a dictionary.
+    $publicationStatusDictionary = [ordered]@{
+        version = '3.9.1'; tag = 'v3.9.1'; tagCommit = ('a' * 40)
+    }
+    $dictionaryCheck = Test-GxMcpReleasePublicationEvidence -Status $publicationStatusDictionary -Publication $publicationEvidence -RepositoryRoot $artifactRoot
+    if (-not $dictionaryCheck.Valid) {
+        throw "An ordered-dictionary status must validate; release.ps1 passes exactly that shape. Got: $($dictionaryCheck.Error)"
+    }
+    # The dictionary must also keep REJECTING bad evidence: the repository guard is a
+    # positive presence test, so on the old shape-blind form a dictionary simply skipped
+    # it and a mismatched repository was accepted.
+    $publicationStatusDictionary['repository'] = 'someone-else/other-repo'
+    $mismatched = Test-GxMcpReleasePublicationEvidence -Status $publicationStatusDictionary -Publication $publicationEvidence -RepositoryRoot $artifactRoot
+    if ($mismatched.Valid) {
+        throw 'An ordered-dictionary status with a mismatched repository must not validate.'
+    }
+    $publicationStatusDictionary['repository'] = $null
+    if (-not (Test-GxMcpReleasePublicationEvidence -Status $publicationStatusDictionary -Publication $publicationEvidence -RepositoryRoot $artifactRoot).Valid) {
+        throw 'A blank repository on an ordered-dictionary status must not invalidate otherwise complete evidence.'
+    }
+    $publicationStatusDictionary.Remove('repository')
     $publicationEvidence.state = 'failed'
     if ((Test-GxMcpReleasePublicationEvidence -Status $publicationStatus -Publication $publicationEvidence).Valid) {
         throw 'Failed publication evidence must not validate.'
@@ -404,7 +430,34 @@ try {
         throw 'A blank mutex name must be unconfirmed rather than false.'
     }
 
-    Write-Host 'release-contract: canonical fingerprint, full preflight identity and exact workflow matching passed' -ForegroundColor Green
+    # Presence probes must work for BOTH shapes this repository passes into these
+    # contracts. Every summary/snapshot/evidence file arrives via ConvertFrom-Json as a
+    # PSCustomObject, but release.ps1 builds its own status as an [ordered]@{} — an
+    # OrderedDictionary — whose keys are invisible to PSObject.Properties. The old
+    # `$x.PSObject.Properties['key']` test was therefore always false for the release
+    # status, so the final publication recheck failed on EVERY release and the
+    # label-driven issue closure that follows it never ran.
+    $probeHashtable = [ordered]@{ tagCommit = 'a198d035ce7c54a8563382a9bc814fc241287e85'; repository = 'lennix1337/Genexus18MCP' }
+    $probeObject = [pscustomobject]@{ tagCommit = 'a198d035ce7c54a8563382a9bc814fc241287e85'; repository = 'lennix1337/Genexus18MCP' }
+    foreach ($probe in @($probeHashtable, $probeObject)) {
+        if (-not (Test-GxMcpReleaseHasField -Object $probe -Name 'tagCommit')) {
+            throw 'A present key must be detected on both an ordered dictionary and a PSCustomObject.'
+        }
+        if (-not (Test-GxMcpReleaseHasField -Object $probe -Name 'repository')) {
+            throw 'A present key must be detected on both shapes (repository).'
+        }
+        if (Test-GxMcpReleaseHasField -Object $probe -Name 'absent') {
+            throw 'An absent key must not be reported as present.'
+        }
+    }
+    if (Test-GxMcpReleaseHasField -Object $null -Name 'tagCommit') {
+        throw 'A null object must never report a present key.'
+    }
+    if (-not (Test-GxMcpReleaseHasField -Object $probeHashtable -Name 'tagCommit')) {
+        throw 'The ordered-dictionary status built by release.ps1 must satisfy the publication commit guard.'
+    }
+
+    Write-Host 'release-contract: canonical fingerprint, full preflight identity, exact workflow matching and dual-shape field probes passed' -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
 }

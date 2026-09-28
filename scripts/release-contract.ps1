@@ -1,4 +1,26 @@
-﻿function ConvertTo-GxMcpReleasePath {
+﻿function Test-GxMcpReleaseHasField {
+    param(
+        [AllowNull()][object]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    # Two shapes reach these contracts and only one of them exposes keys through
+    # PSObject.Properties. ConvertFrom-Json (every summary, snapshot, and evidence file)
+    # produces PSCustomObject, whose keys DO surface there. release.ps1 builds its own
+    # status as `[ordered]@{}` — an OrderedDictionary — whose keys do NOT.
+    #
+    # The old `$x.PSObject.Properties['key']` presence test was therefore always null for
+    # the release status, so Test-GxMcpReleasePublicationEvidence returned
+    # 'publication evidence commits do not match' on EVERY release even when the tag,
+    # assets, workflow, and npm publication all verified. Because that check is the gate
+    # immediately before the label-driven issue closure, no release ever reached the
+    # close step and `fixed-pending-release` issues stayed open.
+    if ($null -eq $Object) { return $false }
+    if ($Object -is [System.Collections.IDictionary]) { return $Object.Contains($Name) }
+    return ($null -ne $Object.PSObject.Properties[$Name])
+}
+
+function ConvertTo-GxMcpReleasePath {
     param(
         [AllowNull()][string]$Path,
         [string]$BasePath
@@ -118,7 +140,7 @@ function Get-GxMcpReleaseProcessSmokeFingerprint {
         $publishPath = Join-Path $RepositoryRoot ($pair.Publish -replace '/', '\')
         if (-not (Test-Path -LiteralPath $publishPath -PathType Leaf)) { return $null }
         $sourcePaths = @($pair.Source)
-        if ($pair.PSObject.Properties['AlternateSource']) { $sourcePaths += [string]$pair.AlternateSource }
+        if (Test-GxMcpReleaseHasField -Object $pair -Name 'AlternateSource') { $sourcePaths += [string]$pair.AlternateSource }
         $publishHash = (Get-FileHash -LiteralPath $publishPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $matchedSourceHash = $null
         foreach ($sourceRelative in $sourcePaths) {
@@ -366,7 +388,7 @@ function Test-GxMcpReleasePreflightCompatibility {
         'skipWarningBaseline', 'artifactFingerprint'
     )
     foreach ($propertyName in $requiredProperties) {
-        if ($null -eq $Summary.PSObject.Properties[$propertyName]) { return $false }
+        if (-not (Test-GxMcpReleaseHasField -Object $Summary -Name $propertyName)) { return $false }
     }
     if ($Summary.schemaVersion -ne 'gxmcp-release-preflight/1') { return $false }
     if ([string]$Summary.status -notin @('failed', 'running', 'passed')) { return $false }
@@ -476,12 +498,12 @@ function Test-GxMcpReleasePreflightCertificate {
     )
 
     if (-not (Test-GxMcpReleasePreflightCompatibility -Summary $Summary -Expected $Expected -RequirePassed)) { return $false }
-    if ($null -eq $Summary.PSObject.Properties['processSmokeMode'] -or
+    if (-not (Test-GxMcpReleaseHasField -Object $Summary -Name 'processSmokeMode') -or
         [string]$Summary.processSmokeMode -ne 'serial-after-parallel' -or
-        $null -eq $Summary.PSObject.Properties['processSmokeTestCount'] -or
-        $null -eq $Summary.PSObject.Properties['processSmokeResultsPath'] -or
-        $null -eq $Summary.PSObject.Properties['processSmokeBinaryFingerprint'] -or
-        $null -eq $Summary.PSObject.Properties['phases']) {
+        -not (Test-GxMcpReleaseHasField -Object $Summary -Name 'processSmokeTestCount') -or
+        -not (Test-GxMcpReleaseHasField -Object $Summary -Name 'processSmokeResultsPath') -or
+        -not (Test-GxMcpReleaseHasField -Object $Summary -Name 'processSmokeBinaryFingerprint') -or
+        -not (Test-GxMcpReleaseHasField -Object $Summary -Name 'phases')) {
         return $false
     }
     $testCount = ConvertTo-GxMcpReleasePositiveInteger $Summary.processSmokeTestCount
@@ -521,9 +543,9 @@ function Test-GxMcpReleasePreflightCertificate {
         } elseif ($name -eq 'Release warning baseline' -and $skipWarning) {
             @('passed', 'skipped')
         } else { @('passed') }
-        $exitCodeValid = $status -in @('passed', 'skipped') -and $null -ne $phase.PSObject.Properties['exitCode'] -and [int]$phase.exitCode -eq 0
+        $exitCodeValid = $status -in @('passed', 'skipped') -and (Test-GxMcpReleaseHasField -Object $phase -Name 'exitCode') -and [int]$phase.exitCode -eq 0
         if ($status -eq 'unavailable' -and $name -eq 'live KB gate') {
-            $exitCodeValid = $null -ne $phase.PSObject.Properties['exitCode'] -and [int]$phase.exitCode -eq 2
+            $exitCodeValid = (Test-GxMcpReleaseHasField -Object $phase -Name 'exitCode') -and [int]$phase.exitCode -eq 2
         }
         if ($status -notin $allowed -or -not $exitCodeValid) { return $false }
         if (-not (Test-GxMcpReleasePreflightPhaseCommand -Name $name -Command $phase.command -AllowSkipped:$allowSkipped)) { return $false }
@@ -620,13 +642,13 @@ function Test-GxMcpReleaseIssueSnapshotShape {
     param([Parameter(Mandatory = $true)][object]$Snapshot)
 
     if ($Snapshot.schema -ne 'gxmcp-release-issues/1') { return [pscustomobject]@{ Valid = $false; Error = 'snapshot schema is invalid' } }
-    if ($null -eq $Snapshot.PSObject.Properties['version'] -or $null -eq $Snapshot.PSObject.Properties['tag'] -or
-        $null -eq $Snapshot.PSObject.Properties['issues'] -or $null -eq $Snapshot.issues) {
+    if (-not (Test-GxMcpReleaseHasField -Object $Snapshot -Name 'version') -or -not (Test-GxMcpReleaseHasField -Object $Snapshot -Name 'tag') -or
+        -not (Test-GxMcpReleaseHasField -Object $Snapshot -Name 'issues') -or $null -eq $Snapshot.issues) {
         return [pscustomobject]@{ Valid = $false; Error = 'snapshot issues must be a non-null array' }
     }
     $seen = [System.Collections.Generic.HashSet[int]]::new()
     foreach ($record in @($Snapshot.issues)) {
-        if ($null -eq $record -or $null -eq $record.PSObject.Properties['number'] -or [int]$record.number -le 0 -or
+        if ($null -eq $record -or -not (Test-GxMcpReleaseHasField -Object $record -Name 'number') -or [int]$record.number -le 0 -or
             [string]::IsNullOrWhiteSpace([string]$record.title) -or [string]::IsNullOrWhiteSpace([string]$record.url) -or
             -not $seen.Add([int]$record.number)) {
             return [pscustomobject]@{ Valid = $false; Error = 'snapshot contains an invalid or duplicate issue record' }
@@ -651,7 +673,7 @@ function Test-GxMcpReleasePublicationEvidence {
         [string]$Publication.tag -cne [string]$Status.tag -or [string]$Publication.version -cne [string]$Status.version) {
         return [pscustomobject]@{ Valid = $false; Error = 'publication evidence tag or version does not match status' }
     }
-    if ($Status.PSObject.Properties['repository'] -and -not [string]::IsNullOrWhiteSpace([string]$Status.repository) -and
+    if ((Test-GxMcpReleaseHasField -Object $Status -Name 'repository') -and -not [string]::IsNullOrWhiteSpace([string]$Status.repository) -and
         [string]$Status.repository -cne $Repository) {
         return [pscustomobject]@{ Valid = $false; Error = 'publication evidence repository does not match status' }
     }
@@ -660,7 +682,7 @@ function Test-GxMcpReleasePublicationEvidence {
         return [pscustomobject]@{ Valid = $false; Error = 'publication evidence is missing a valid source commit' }
     }
     if (@($commits | Select-Object -Unique).Count -ne 1 -or
-        $null -eq $Status.PSObject.Properties['tagCommit'] -or
+        -not (Test-GxMcpReleaseHasField -Object $Status -Name 'tagCommit') -or
         -not (Test-GxMcpReleaseCommitId $Status.tagCommit) -or [string]$Status.tagCommit -cne $commits[0]) {
         return [pscustomobject]@{ Valid = $false; Error = 'publication evidence commits do not match' }
     }
@@ -698,7 +720,7 @@ function Test-GxMcpReleasePublicationEvidence {
         $digestText = [string]$asset.digest
         $digestValid = $digestText -match '^sha256:[0-9a-fA-F]{64}$'
         if ([string]$asset.state -cne 'uploaded' -or
-            $null -eq $asset.PSObject.Properties['size'] -or
+            -not (Test-GxMcpReleaseHasField -Object $asset -Name 'size') -or
             [int64]$asset.size -le 0 -or (-not $AllowLegacy -and -not $digestValid)) {
             return [pscustomobject]@{ Valid = $false; Error = "publication evidence asset '$name' is invalid" }
         }
