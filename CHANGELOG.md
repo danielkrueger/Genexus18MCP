@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v3.9.3 - 2026-09-28
+
+
+### Tracked issues
+
+- [#325](https://github.com/lennix1337/Genexus18MCP/issues/325) — [Bug] history_get pode exceder o prazo do cliente sem permitir acompanhar o resultado
+
+
 ### Fixed
 
 - A long `genexus_versioning` read could outlast the client's window and leave the caller with no documented way to reach the result the Gateway had already stored ([#325](https://github.com/lennix1337/Genexus18MCP/issues/325)). A read-only `history_get` was measured in the field at 352 s of wall clock, of which 345 s was SDK time, while the caller gave up at 60 s. Every signal needed to recover pointed the wrong way: the operationId existed only in the reply that never arrived, so the only way to obtain it was to read gateway telemetry; and the record itself, once the worker finally answered, read as a contradiction - `timedOut: true` beside `status: Completed` and a populated `workerPayload` - which looks like a failure rather than a result waiting to be read. The mutation tools already answered this shape of problem with an accept-then-poll envelope; the version-store reads had no equivalent, which is the actual gap. `history_get`, `history_list`, `diff`, `diff_generated` and `blame` now accept `async: true` and return `{ operationId, job_id, pollTarget: 'op:<id>', status: 'running' }` BEFORE the SDK call starts, running the read detached and storing its envelope, so the result stays fetchable through `genexus_lifecycle action=status/result` (and cancellable through `action=cancel`) no matter when the original turn ends. The KB-mutating actions (`history_save`, `history_restore`, `undo`, `time_travel`) are deliberately excluded: they keep the mutation path, whose recovery fences assume a write may already have persisted. Separately, the three signals a caller conflated are now published as three fields on every timed-out operation - `timedOut` (the wait expired), `status` (the worker's own outcome) and the new `resultAvailable` (a payload is stored to read) - with a hint that names the retrieval call, so a terminal record carrying a result reads as a result instead of a contradiction. Untimed operations are unchanged: no `resultAvailable`, no hint.

@@ -1,43 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.9.2",
-  "tag": "v3.9.2",
-  "collectedAtUtc": "2026-09-27T23:12:00.8894592Z",
+  "version": "3.9.3",
+  "tag": "v3.9.3",
+  "collectedAtUtc": "2026-09-29T02:08:09.2942046Z",
   "issues": [
     {
-      "number": 321,
-      "title": "[Docs] Follow-up de #319: `GXMCP_BUSY_REJECT_MS` exige reinício do Worker, e o knob `busyWaitMs` por comando segue promovido sem encaminhamento",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/321",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 322,
-      "title": "[Bug][Follow-up #317] test-release-doctor falha com $env:TEMP em forma 8.3",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/322",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 323,
-      "title": "[Bug] release-preflight não persiste a saída das fases: summary de uma fase vermelha fica sem evidência",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/323",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 324,
-      "title": "[Bug] nexus-ide: teste de inline completion que grava configuração Global excede o timeout de 2000 ms (1 ocorrência; causa não isolada)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/324",
+      "number": 325,
+      "title": "[Bug] history_get pode exceder o prazo do cliente sem permitir acompanhar o resultado",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/325",
       "state": "open",
       "labels": [
         "fixed-pending-release"
