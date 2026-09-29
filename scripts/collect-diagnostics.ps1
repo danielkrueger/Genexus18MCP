@@ -12,8 +12,11 @@
 #
 # What it does NOT collect: your source code, object contents, or full logs.
 # Absolute paths, your Windows user/host name, and KB paths are redacted to
-# placeholders (<HOME>, <USER>, <HOST>, <KB>). ALWAYS skim the output before
-# pasting — if you spot anything sensitive, delete that line.
+# placeholders (<HOME>, <USER>, <HOST>, <KB>), and credential values (tokens,
+# passwords, api keys, authorization headers, connection strings, user ids, and
+# the ghp_/github_pat_/npm_ token prefixes) are replaced with [REDACTED].
+# ALWAYS skim the output before pasting — if you spot anything sensitive, delete
+# that line.
 #
 # Usage:
 #   pwsh -File scripts\collect-diagnostics.ps1
@@ -29,11 +32,19 @@ param(
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
+. (Join-Path $PSScriptRoot 'release-contract.ps1')
 $sb = New-Object System.Text.StringBuilder
 function Add-Line([string]$s = '') { [void]$sb.AppendLine($s) }
 function Section([string]$t) { Add-Line ''; Add-Line "===== $t =====" }
 
 # ── Redaction ────────────────────────────────────────────────────────────
+# Two layers. This script's own layer is identity redaction: it knows the local
+# home/user/host values and replaces them, which no shared helper can do. The
+# canonical credential layer is delegated to release-contract.ps1 (issue #327):
+# the crash ledger and the worker_debug.log excerpts below routinely carry
+# connection strings and tool arguments, and the bug-report template tells users
+# to paste this bundle into a public issue, so those lines needed the same
+# credential redaction the release pipeline already applies.
 $home_ = $env:USERPROFILE
 $user  = $env:USERNAME
 $host_ = $env:COMPUTERNAME
@@ -46,11 +57,16 @@ function Redact([string]$text) {
     if ($host_) { $text = [Regex]::Replace($text, [Regex]::Escape($host_), '<HOST>') }
     # Any remaining C:\Users\<name>\... → <HOME>\...
     $text = [Regex]::Replace($text, '(?i)[A-Z]:\\Users\\[^\\"\s]+', '<HOME>')
+    # Credential redaction last: it is the canonical union (token/password/pwd/
+    # secret/api_key/authorization/connection string/user id plus the ghp_/
+    # github_pat_/npm_ literal prefixes), with the value read as a unit so a
+    # phrase secret or a quoted value cannot leak its tail.
+    $text = Protect-GxMcpReleaseText $text
     return $text
 }
 
 Add-Line "GeneXus 18 MCP diagnostics"
-Add-Line "(paths / user / host / KB names redacted — skim before sharing)"
+Add-Line "(paths / user / host / KB names and credential values redacted — skim before sharing)"
 
 # ── Versions ─────────────────────────────────────────────────────────────
 Section 'Versions'

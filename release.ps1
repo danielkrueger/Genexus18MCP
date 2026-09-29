@@ -381,6 +381,89 @@ function Assert-ChangelogIssueReferences {
     }
 }
 
+# Issue #328: `## Unreleased` with no subsection under it is the state a plain
+# heading insertion leaves behind. It passes the "the heading disappeared" guard,
+# and the natural next edit - append a bullet to the first visible `### Fixed` -
+# files new work under the release that was just published. These two helpers
+# make the anchor explicit and keep the "substantive notes" guard honest about
+# what counts as an entry.
+function Get-ReleaseChangelogUnreleasedAnchor {
+    # An HTML comment plus the standard empty subsections: the comment names the
+    # contract for whoever edits next, and the headings give the bullet a home
+    # without inventing content.
+    return @(
+        '<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`',
+        '     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->',
+        '',
+        '### Added',
+        '',
+        '### Changed',
+        '',
+        '### Fixed',
+        '',
+        '### Internal'
+    ) -join "`r`n"
+}
+
+function Test-ReleaseChangelogSubstantiveBody {
+    param([AllowNull()][string]$Body)
+
+    # Substantive means: a line that is not blank, not part of an HTML comment,
+    # and not a bare heading. The anchor above is deliberately all three, so an
+    # untouched `## Unreleased` still fails the guard and cannot ship an empty
+    # release. Comments are stripped as blocks because the anchor wraps across
+    # two lines.
+    if ([string]::IsNullOrWhiteSpace($Body)) { return $false }
+    $withoutComments = [regex]::Replace($Body, '(?s)<!--.*?-->', '')
+    foreach ($line in ($withoutComments -split "`r?`n")) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed -match '^#{1,6}\s') { continue }
+        return $true
+    }
+    return $false
+}
+
+# Returns a result object: status is 'promoted', 'already-present' or
+# 'no-unreleased'. Kept as a function so the promotion is unit-testable against
+# a fixture instead of only through a real release.
+function Update-ReleaseChangelogPromotion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Date
+    )
+
+    $result = [ordered]@{ status = 'no-unreleased'; content = $null; anchored = $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        $result.status = 'missing-file'
+        return [pscustomobject]$result
+    }
+    $raw = [System.IO.File]::ReadAllText($Path)
+    if ($raw -match "(?m)^##[ \t]+v$([Regex]::Escape($Version))(?=[ \t]|$)") {
+        $result.status = 'already-present'
+        $result.content = $raw
+        return [pscustomobject]$result
+    }
+    if ($raw -notmatch '(?m)^##[ \t]+Unreleased[ \t]*\r?\n') { return [pscustomobject]$result }
+
+    $promoted = [Regex]::Replace(
+        $raw,
+        '(?m)^##[ \t]+Unreleased[ \t]*\r?\n',
+        "## Unreleased`r`n`r`n## v$Version - $Date`r`n`r`n")
+    # The promoted body is now the version's; `## Unreleased` is bare. Insert the
+    # anchor right under the new Unreleased heading, before the version heading.
+    $anchor = Get-ReleaseChangelogUnreleasedAnchor
+    $anchored = [Regex]::Replace(
+        $promoted,
+        '(?m)^##[ \t]+Unreleased[ \t]*\r?\n',
+        "## Unreleased`r`n`r`n" + $anchor + "`r`n", 1)
+    [System.IO.File]::WriteAllText($Path, $anchored, [System.Text.UTF8Encoding]::new($false))
+    $result.status = 'promoted'
+    $result.content = $anchored
+    $result.anchored = $true
+    return [pscustomobject]$result
+}
+
 function Write-ReleaseIssueSnapshot {
     param([object[]]$Records)
     $snapshot = [ordered]@{
@@ -918,8 +1001,11 @@ if ($changelog -match $versionHeadingPattern) {
     $unreleasedMatch = [Regex]::Match(
         $changelog,
         '(?ms)^##[ \t]+Unreleased[ \t]*\r?\n(?<body>.*?)(?=\r?\n##[ \t]|\z)')
+    # Issue #328: the promotion now seeds `## Unreleased` with an anchor comment
+    # and empty `###` headings, so "non-whitespace" would let an untouched
+    # section ship an empty release. Substantive means a real entry line.
     if (-not $unreleasedMatch.Success -or
-        [string]::IsNullOrWhiteSpace($unreleasedMatch.Groups['body'].Value)) {
+        -not (Test-ReleaseChangelogSubstantiveBody $unreleasedMatch.Groups['body'].Value)) {
         Fail "CHANGELOG.md has no substantive '## Unreleased' section to promote into '## v$Version'."
     }
     Ok "CHANGELOG has release notes ready to promote into ## v$Version."
@@ -1080,23 +1166,22 @@ if ($resumeRelease) {
     if (Test-Path $changelogPath) {
         if (-not $DryRun) {
             $dateStr = (Get-Date).ToString('yyyy-MM-dd')
-            $rawCl = [System.IO.File]::ReadAllText($changelogPath)
-            if ($rawCl -notmatch $versionHeadingPattern) {
-                if ($rawCl -match '(?m)^##[ \t]+Unreleased[ \t]*\r?\n') {
-                    $bumpedCl = [Regex]::Replace($rawCl,
-                        '(?m)^##[ \t]+Unreleased[ \t]*\r?\n',
-                        "## Unreleased`r`n`r`n## v$Version - $dateStr`r`n`r`n")
-                    [System.IO.File]::WriteAllText($changelogPath, $bumpedCl, [System.Text.UTF8Encoding]::new($false))
-                    Ok "CHANGELOG.md -> promoted ## Unreleased to ## v$Version"
-                } else {
-                    # No '## Unreleased' heading (e.g. freshly released without
-                    # one), so the promotion regex matched nothing above, which
-                    # would silently skip the entry. Fail loudly instead of
-                    # shipping a release whose notes fall back to generic text.
-                    Fail "CHANGELOG.md has no '## Unreleased' section to promote into '## v$Version'. Add the section (and the version's entries under it), then retry."
-                }
-            } else {
+            $promotion = Update-ReleaseChangelogPromotion -Path $changelogPath -Version $Version -Date $dateStr
+            if ($promotion.status -eq 'promoted') {
+                Ok "CHANGELOG.md -> promoted ## Unreleased to ## v$Version"
+                # Issue #328: the promotion must leave the fresh `## Unreleased`
+                # with an explicit anchor, or the next bullet lands in the
+                # release that was just published.
+                if ($promotion.anchored) { Ok "CHANGELOG.md -> anchored the new '## Unreleased' section." }
+                else { Warn "CHANGELOG.md -> could not anchor '## Unreleased'; add a '### Added/Changed/Fixed' subsection before the next release." }
+            } elseif ($promotion.status -eq 'already-present') {
                 Ok "CHANGELOG.md -> ## v$Version already present."
+            } else {
+                # No '## Unreleased' heading (e.g. freshly released without one),
+                # so the promotion would silently skip the entry. Fail loudly
+                # instead of shipping a release whose notes fall back to generic
+                # text.
+                Fail "CHANGELOG.md has no '## Unreleased' section to promote into '## v$Version'. Add the section (and the version's entries under it), then retry."
             }
             $promoted = [System.IO.File]::ReadAllText($changelogPath)
             if ($promoted -notmatch $versionHeadingPattern) {

@@ -40,11 +40,12 @@ $evidence = [ordered]@{
     error = $null
 }
 
+# Issue #326: the pattern set is the canonical one in release-contract.ps1, so
+# this site keeps only its own 600-character cap instead of a narrower local
+# copy that silently missed pwd/api_key/authorization/connection string/user id.
 function Protect-PublicationMessage([object]$Value) {
-    $text = [string]$Value
+    $text = Protect-GxMcpReleaseText $Value
     if ([string]::IsNullOrWhiteSpace($text)) { return $null }
-    $text = $text -replace '(?i)(ghp_|github_pat_|npm_)[A-Za-z0-9_]+', '$1[REDACTED]'
-    $text = $text -replace '(?i)(token|password|secret)(\s*[:=]\s*)[^\s,;]+', '$1$2[REDACTED]'
     if ($text.Length -gt 600) { $text = $text.Substring(0, 600) + '…' }
     return $text
 }

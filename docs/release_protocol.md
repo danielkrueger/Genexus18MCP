@@ -141,11 +141,21 @@ parallel wave (every header prints before any tail, with no phase label) and
 gone once the terminal closes, so the log is what makes a red phase triageable
 after the fact. Both files are written even when the command produced nothing —
 an empty log is evidence, a missing file is indistinguishable from a phase that
-never ran. Output is redacted with the full union of the repository's credential
-patterns (`ghp_`/`github_pat_`/`npm_` prefixes, `token`/`password`/`pwd`/
-`secret`/`api_key`/`authorization`/`connection string` pairs, and `user id`/
-`userid` pairs) and is **not** truncated to the 1200-character cap that bounds
-summary messages. A phase that never ran — skipped, dry-run, reused, or with no
+never ran. Output is redacted with the canonical credential set in
+`scripts/release-contract.ps1` — `Protect-GxMcpReleaseText` — and is **not**
+truncated to the 1200-character cap that bounds summary messages. That set is the
+single implementation for the repository: the `ghp_`/`github_pat_`/`npm_` literal
+prefixes plus `token`/`password`/`passwd`/`pwd`/`secret`/`api_key`/
+`api_secret`/`auth_token`/`authorization`/`connection string`/`user id`/
+`userid`/`client secret`/`private key`/`credential` pairs, all replaced with
+`[REDACTED]`. A value is read as a unit — a quoted value is one unit whatever it
+contains, and an unquoted value runs to the first structural boundary (`,`, `;`,
+`&`, `|`, a newline, or the next `name=value` pair). That boundary is a
+deliberate over-masking limit: prose after a credential on the same line with no
+following pair is masked too, because the boundary between "more secret" and
+"more sentence" is not recoverable from the text. The publication verifier
+(600-character cap), the integration preflight, and the diagnostics collector
+delegate to the same function instead of keeping local pattern copies. A phase that never ran — skipped, dry-run, reused, or with no
 executable on `PATH` — carries `null` for both. An `unavailable` phase records
 its reason instead of leaving it `null`. The `Write-Error` at the end of a
 failed preflight cites the log paths, because it previously pointed only at the
@@ -200,7 +210,15 @@ version catalog before its dirty-tree gate. It refuses a missing or ambiguous
 generated block and the CI/release metadata check fails if those files drift.
 The release script requires a substantive `## Unreleased` section when the
 target version heading is absent, promotes that section, verifies the exact
-version heading, and refuses to publish generic release notes.
+version heading, and refuses to publish generic release notes. Promotion also
+leaves an anchor in the fresh `## Unreleased`: an HTML comment naming the
+contract plus empty `### Added` / `### Changed` / `### Fixed` / `### Internal`
+headings. Without it, `## Unreleased` is present but has no subsection, and the
+natural next edit — appending a bullet to the first visible `### Fixed` — files
+new work under the release just published. The anchor is deliberately *not*
+substantive: the guard that refuses an empty release counts a line only when it
+is not blank, not inside an HTML comment, and not a bare heading, so an
+untouched anchored section still fails the release.
 If a local build fails after the metadata commit, leave that untagged commit in
 place, fix the cause, and rerun the same version; do not manually rewrite the
 manifest or tag a different source tree. If the full solution test suite and

@@ -121,10 +121,8 @@ function Get-GxMcpPreflightTrxTestCount {
     return $total
 }
 
-function Get-GxMcpReleaseProcessSmokeFingerprint {
-    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
-
-    $pairs = @(
+function Get-GxMcpReleaseProcessSmokePairs {
+    return @(
         [pscustomobject]@{
             Source = 'src/GxMcp.Gateway/bin/Release/net10.0-windows/GxMcp.Gateway.exe'
             Publish = 'publish/GxMcp.Gateway.exe'
@@ -135,6 +133,12 @@ function Get-GxMcpReleaseProcessSmokeFingerprint {
             AlternateSource = 'src/GxMcp.Worker/bin/Release/GxMcp.Worker.exe'
         }
     )
+}
+
+function Get-GxMcpReleaseProcessSmokeFingerprint {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+    $pairs = Get-GxMcpReleaseProcessSmokePairs
     $parts = New-Object System.Collections.Generic.List[string]
     foreach ($pair in $pairs) {
         $publishPath = Join-Path $RepositoryRoot ($pair.Publish -replace '/', '\')
@@ -161,6 +165,82 @@ function Get-GxMcpReleaseProcessSmokeFingerprint {
     }
 }
 
+# Issue #329: Get-GxMcpReleaseProcessSmokeFingerprint returns $null for three
+# different reasons, and the caller reported all of them with one sentence that
+# named neither the cause nor the remedy. This reports each pair's actual state
+# so the message can say WHICH file is missing or WHICH bytes differ, and can
+# name .\build.ps1 as the remedy for the dominant case: publish\ built before a
+# commit, where the SDK's revision stamp makes the rebuilt src\ binary differ.
+function Get-GxMcpReleaseProcessSmokeBindingDetail {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+    $details = New-Object System.Collections.Generic.List[string]
+    $missingPublish = $false
+    $missingSource = $false
+    $mismatched = $false
+    foreach ($pair in (Get-GxMcpReleaseProcessSmokePairs)) {
+        $publishPath = Join-Path $RepositoryRoot ($pair.Publish -replace '/', '\')
+        $sourcePaths = @([string]$pair.Source)
+        if (Test-GxMcpReleaseHasField -Object $pair -Name 'AlternateSource') { $sourcePaths += [string]$pair.AlternateSource }
+        if (-not (Test-Path -LiteralPath $publishPath -PathType Leaf)) {
+            $missingPublish = $true
+            [void]$details.Add(('  - {0}: MISSING (expected in publish/)' -f $publishPath))
+            continue
+        }
+        $publishHash = (Get-FileHash -LiteralPath $publishPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $existing = @($sourcePaths | Where-Object {
+            Test-Path -LiteralPath (Join-Path $RepositoryRoot ($_ -replace '/', '\')) -PathType Leaf
+        })
+        if ($existing.Count -eq 0) {
+            $missingSource = $true
+            [void]$details.Add(('  - {0}: present, but no source build output exists at {1}' -f $publishPath, ($sourcePaths -join ' or ')))
+            continue
+        }
+        $matched = $false
+        foreach ($sourceRelative in $existing) {
+            $sourcePath = Join-Path $RepositoryRoot ($sourceRelative -replace '/', '\')
+            $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($sourceHash -ceq $publishHash) { $matched = $true; break }
+        }
+        if ($matched) {
+            [void]$details.Add(('  - {0}: matches its source build output' -f $publishPath))
+            continue
+        }
+        $mismatched = $true
+        $sourcePath = Join-Path $RepositoryRoot (($existing[0] -replace '/', '\'))
+        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [void]$details.Add(('  - {0}: sha256 {1} does not match {2} sha256 {3}' -f $publishPath, $publishHash, $sourcePath, $sourceHash))
+    }
+    return [pscustomobject]@{
+        missingPublishArtifact = $missingPublish
+        missingSourceBuild = $missingSource
+        byteMismatch = $mismatched
+        lines = @($details)
+    }
+}
+
+function Format-GxMcpReleaseProcessSmokeBindingFailure {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)]$Detail
+    )
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('Process smoke binaries could not be bound to the current publish artifacts.')
+    [void]$lines.Add('Compared paths:')
+    foreach ($line in $Detail.lines) { [void]$lines.Add([string]$line) }
+    $probable = if ($Detail.missingPublishArtifact) {
+        'a publish artifact is missing; the process smoke lane certified a build that publish\ does not contain.'
+    } elseif ($Detail.missingSourceBuild) {
+        'the source build output the comparison needs does not exist; the process smoke lane ran against a different output than the one compared here.'
+    } else {
+        'publish\ is stale: it was built before the current commit. The SDK stamps the revision into the assembly, so a rebuilt src\... binary no longer matches the published bytes.'
+    }
+    [void]$lines.Add("Probable cause: $probable")
+    [void]$lines.Add('Remedy: run .\build.ps1 from the repository root, then re-run scripts\release-preflight.ps1.')
+    return ($lines -join [Environment]::NewLine)
+}
+
 function Get-GxMcpReleaseRequiredAssetNames {
     param(
         [Parameter(Mandatory = $true)][string]$Version,
@@ -173,22 +253,71 @@ function Get-GxMcpReleaseRequiredAssetNames {
 }
 
 # Issue #323: redaction with no length cap, for artifacts that must keep the
-# whole log. This is the union of every pattern the repository already applies to
-# diagnostics: the release-contract literal token prefixes, the release-contract
-# key/value credential pairs, and the integration-preflight credential words.
-# Protect-GxMcpReleaseMessage is this function plus the 1200-character cap; the
-# cap has to stay in the shared place because release-doctor and release-status
-# rely on it to bound their reports, but the union belongs here so a persisted
-# phase log cannot leak a secret that the console tail would have masked.
+# whole log. This is the single canonical credential-redaction implementation for
+# the repository: every other site (release-preflight phase logs, the publication
+# verifier, the integration preflight, the diagnostics collector) delegates here
+# and keeps only its own length cap. Protect-GxMcpReleaseMessage is this function
+# plus the 1200-character cap; the cap has to stay in the shared place because
+# release-doctor and release-status rely on it to bound their reports, but the
+# union belongs here so a persisted phase log cannot leak a secret that the
+# console tail would have masked.
 function Protect-GxMcpReleaseText {
     param([AllowNull()][object]$Value)
 
+    # Issue #326: a credential value is a UNIT, not a run of non-space characters.
+    # The previous `[^\s,;]+` value class stopped at the first space, so a
+    # phrase password, a multi-word bearer token, or any quoted value leaked
+    # everything after that space into a persisted phase log and into a public
+    # diagnostics bundle. The value now ends at the first structural boundary:
+    # a `,`/`;`/`&`/`|`/newline, or the start of the next `name=value` pair. That
+    # is a deliberate over-masking limit: prose after a credential on the SAME
+    # line with no following pair is masked too, because the boundary between
+    # "more secret" and "more sentence" is not recoverable from the text. Text on
+    # a later line, and `name=value` pairs that follow the credential, survive.
     $text = [string]$Value
     if ([string]::IsNullOrWhiteSpace($text)) { return '' }
     $text = $text -replace '(?i)(ghp_|github_pat_|npm_)[A-Za-z0-9_]+', '$1[REDACTED]'
-    $text = $text -replace '(?i)(token|password|pwd|secret|api[_-]?key|authorization|connection\s*string)(\s*[:=]\s*)[^\s,;]+', '$1$2[REDACTED]'
-    $text = [regex]::Replace($text, '(?i)\b(user\s*id|userid)(\s*[:=]\s*)[^\s;,\r\n]+', '$1$2<redacted>')
-    return $text
+
+    # Word-bounded so `usertoken=x` and `tokenizer=ok` are not credentials, while
+    # `user id`, `userid`, `api_key` and `api-key` are.
+    $key = '(?i:token|password|passwd|pwd|secret|api[_-]?key|api[_-]?secret|auth[_-]?token|authorization|connection\s*string|user[\s_-]?id|userid|client[\s_-]?secret|private[\s_-]?key|credential)'
+    $quote = '["'']'
+    # A quoted value is one unit regardless of what it contains. The quotes are
+    # preserved so JSON and connection-string shapes stay readable.
+    $text = [regex]::Replace(
+        $text,
+        '(?<![A-Za-z0-9_-])(' + $key + ')(?![A-Za-z0-9_-])(' + $quote + '?)(\s*[:=]\s*)(' + $quote + ')(?:(?!\4)[^\r\n])*\4',
+        '$1$2$3$4[REDACTED]$4')
+    $keyValue = [regex]::new(
+        '(?<![A-Za-z0-9_-])(' + $key + ')(?![A-Za-z0-9_-])(' + $quote + '?)(\s*[:=]\s*)',
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $nextPairPattern = [regex]::new('[ \t]+[A-Za-z_][A-Za-z0-9_.-]*([ \t]+[A-Za-z_][A-Za-z0-9_.-]*)*?[ \t]*[:=]')
+
+    $result = New-Object System.Text.StringBuilder
+    $cursor = 0
+    foreach ($match in $keyValue.Matches($text)) {
+        if ($match.Index -lt $cursor) { continue }
+        $valueStart = $match.Index + $match.Length
+        if ($valueStart -ge $text.Length) { continue }
+        # A quoted value was already replaced above; this pass must not mask the
+        # closing quote of `"token":"[REDACTED]"`.
+        if ($text[$valueStart] -eq '"' -or $text[$valueStart] -eq "'") { continue }
+        $length = $text.Length - $valueStart
+        # `&` and `|` bound a value in a URL query, a header line, and shell
+        # output, all of which land in these logs; treating them as boundaries is
+        # what keeps an unrelated trailing token on the same line readable.
+        foreach ($delimiter in @(';', ',', '&', '|', "`r", "`n")) {
+            $index = $text.IndexOf($delimiter, $valueStart)
+            if ($index -ge 0 -and ($index - $valueStart) -lt $length) { $length = $index - $valueStart }
+        }
+        $nextPair = $nextPairPattern.Match($text, $valueStart, $length)
+        if ($nextPair.Success -and $nextPair.Index -gt $valueStart) { $length = $nextPair.Index - $valueStart }
+        [void]$result.Append($text.Substring($cursor, $valueStart - $cursor))
+        [void]$result.Append('[REDACTED]')
+        $cursor = $valueStart + $length
+    }
+    [void]$result.Append($text.Substring($cursor))
+    return $result.ToString()
 }
 
 function Protect-GxMcpReleaseMessage {

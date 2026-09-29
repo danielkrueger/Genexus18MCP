@@ -26,6 +26,26 @@ if (($assets -join '|') -ne "publish.zip|publish.zip.sha256|nexus-ide-$version.v
 $redacted = Protect-PublicationMessage 'token=super-secret npm_abcdefghijkl'
 if ($redacted -match 'super-secret|abcdefghijkl') { throw 'Publication diagnostics did not redact sensitive values.' }
 if ([string]::IsNullOrWhiteSpace($redacted)) { throw 'Publication diagnostic redaction returned no message.' }
+# Issue #326: this site used a local pattern set that covered only
+# token|password|secret, so a publication error mentioning pwd, api_key,
+# authorization or a connection string was persisted unmasked. It now delegates
+# to the canonical contract and keeps only its 600-character cap.
+foreach ($leak in @(
+        'pwd=phrase with spaces',
+        'api_key=sk-abc def',
+        'authorization: Bearer eyJhbGciOi payload',
+        'connection string=Server=tcp:srv;Password=hunter2',
+        'user id=sa')) {
+    $masked = [string](Protect-PublicationMessage $leak)
+    if ($masked -match 'phrase|sk-abc|eyJhbGciOi|tcp:srv|hunter2|(^|\W)sa(\W|$)') {
+        throw "Publication diagnostics leaked a credential value: '$leak' => '$masked'."
+    }
+}
+$longMessage = 'token=abc ' + ('x' * 800)
+if (([string](Protect-PublicationMessage $longMessage)).Length -gt 601) {
+    throw 'The publication cap of 600 characters must survive the delegation.'
+}
+if ([string](Protect-PublicationMessage '   ') -ne '') { throw 'A blank publication message must stay blank.' }
 
 $temp = Join-Path $env:TEMP ('gxmcp-publication-test-' + [guid]::NewGuid().ToString('N') + '.json')
 $artifactRoot = Join-Path $env:TEMP ('gxmcp-publication-artifacts-' + [guid]::NewGuid().ToString('N'))

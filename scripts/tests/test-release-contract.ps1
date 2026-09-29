@@ -457,7 +457,154 @@ try {
         throw 'The ordered-dictionary status built by release.ps1 must satisfy the publication commit guard.'
     }
 
-    Write-Host 'release-contract: canonical fingerprint, full preflight identity, exact workflow matching and dual-shape field probes passed' -ForegroundColor Green
+    # --- Credential redaction (issue #326) ----------------------------------
+    # The four measured under-masking cases from the issue. Each is a value that
+    # the old `[^\s,;]+` value class truncated at the first space, leaving the
+    # tail of the secret in the artifact.
+    $redactionCases = [ordered]@{
+        'password=my secret passphrase' = 'secret passphrase'
+        'token=my secret'               = 'my secret'
+        'authorization: Bearer abc def' = 'abc def'
+        'api_key=sk-abc def'            = 'sk-abc def'
+    }
+    foreach ($entry in $redactionCases.GetEnumerator()) {
+        $leaked = Protect-GxMcpReleaseText $entry.Key
+        if ($leaked -match [regex]::Escape($entry.Value)) {
+            throw "A credential value survived the space-terminated boundary: '$($entry.Key)' => '$leaked'."
+        }
+        if ($leaked -notmatch '\[REDACTED\]') { throw "No redaction marker in: '$leaked'." }
+    }
+
+    # A quoted value is one unit whatever it contains, and the shape survives.
+    $quotedSecret = Protect-GxMcpReleaseText 'password="my quoted secret"'
+    if ($quotedSecret -match 'quoted secret' -or $quotedSecret -notmatch 'password="\[REDACTED\]"') {
+        throw "A quoted credential value must be masked as one unit: '$quotedSecret'."
+    }
+
+    # Multiple credentials on one line: every value goes, none eats the next key.
+    $multi = Protect-GxMcpReleaseText 'token=abc123 user id=sa pwd=hunter2'
+    foreach ($secret in @('abc123', 'sa', 'hunter2')) {
+        if ($multi -match [regex]::Escape($secret)) { throw "A credential value survived on a multi-credential line: $secret => $multi" }
+    }
+    if ($multi -notmatch 'token=\[REDACTED\].*user id=\[REDACTED\].*pwd=\[REDACTED\]') {
+        throw "Every credential on the line must be masked in place: $multi"
+    }
+
+    # A connection string is a semicolon-delimited compound; every part goes.
+    $connection = Protect-GxMcpReleaseText 'connection string=Server=x;User Id=sa;Password=y'
+    foreach ($secret in @('Server=x', 'sa', 'y')) {
+        if ($connection -match [regex]::Escape($secret)) { throw "A connection string component survived: $secret => $connection" }
+    }
+
+    # The separator spelling of each multi-word key must be recognized.
+    foreach ($compound in @(
+            'client_secret=abc def', 'client secret: abc def', 'api_secret=abc def',
+            'private_key=abc def', 'auth_token=abc def', 'credential=abc def',
+            'user_id=admin host=x', 'api-key: abc def', 'passwd=abc def')) {
+        $masked = Protect-GxMcpReleaseText $compound
+        if ($masked -match 'abc def|admin' -and $masked -notmatch 'host=x') {
+            throw "A compound credential key was not masked: '$compound' => '$masked'."
+        }
+    }
+
+    # The literal token prefixes, including in a JSON payload.
+    foreach ($prefixed in @('ghp_ABCDEF1234567890abcdefghij', 'github_pat_11ABCDEFG0abcdefghij', 'npm_abcdefghijkl')) {
+        if ((Protect-GxMcpReleaseText $prefixed) -notmatch '\[REDACTED\]') { throw "The literal token prefix was not masked: $prefixed" }
+    }
+    $json = Protect-GxMcpReleaseText '{"error":"bad","token":"abc","user":"bob"}'
+    if ($json -match '"abc"' -or $json -notmatch '"user":"bob"') { throw "JSON redaction must mask the value and keep the shape: $json" }
+
+    # Deliberate over-masking limit, pinned: a following name=value pair survives
+    # so diagnostics stay readable, while unpaired trailing prose on the same
+    # line is treated as part of the value.
+    $followed = Protect-GxMcpReleaseText 'token=x foo=bar'
+    if ($followed -notmatch 'foo=bar') { throw "A following name=value pair must survive redaction: $followed" }
+    if ((Protect-GxMcpReleaseText 'token=abc and then it failed') -notmatch '^token=\[REDACTED\]$') {
+        throw 'Unpaired trailing prose must be masked with the credential value.'
+    }
+    $multiline = Protect-GxMcpReleaseText "line one`nsecret=alpha beta`nline three token=gamma delta"
+    if ($multiline -notmatch 'line one' -or $multiline -notmatch 'line three' -or $multiline -match 'alpha beta' -or $multiline -match 'gamma delta') {
+        throw "A multi-line log must keep its non-credential lines and mask both values: $multiline"
+    }
+
+    # Word boundaries: a key that merely contains a credential word is not one.
+    if ((Protect-GxMcpReleaseText 'usertoken=nope tokenizer=ok') -notmatch 'usertoken=nope') {
+        throw 'A credential word embedded in another identifier must not be redacted.'
+    }
+    # Idempotence: a masked line must stay masked, not grow a second marker.
+    $once = Protect-GxMcpReleaseText 'token=abc'
+    if ((Protect-GxMcpReleaseText $once) -cne $once) { throw 'Redaction must be idempotent.' }
+    if ([string](Protect-GxMcpReleaseText 'plain text with no credential') -ne 'plain text with no credential') {
+        throw 'Text without a credential must pass through unchanged.'
+    }
+    # One marker for the whole repository (issue #326, item 3).
+    if ((Protect-GxMcpReleaseText 'user id=sa') -notmatch '\[REDACTED\]' -or (Protect-GxMcpReleaseText 'user id=sa') -match '<redacted>') {
+        throw 'The redaction marker must be unified across every credential class.'
+    }
+
+    # Secondary sites delegate instead of keeping a narrower local copy.
+    foreach ($delegating in @(
+            @{ path = 'scripts/verify-release-publication.ps1'; helper = 'Protect-PublicationMessage' },
+            @{ path = 'scripts/integration-preflight.ps1'; helper = 'Redact-DiagnosticText' })) {
+        $siteSource = Get-Content -LiteralPath (Join-Path $root ($delegating.path -replace '/', '\')) -Raw
+        if ($siteSource -notmatch 'Protect-GxMcpReleaseText') {
+            throw "$($delegating.path) must delegate redaction to the canonical contract."
+        }
+        $localPattern = [regex]::Match($siteSource, "(?s)function\s+$([regex]::Escape($delegating.helper))\b.*?\n}")
+        if ($localPattern.Success -and $localPattern.Value -match 'ghp_|github_pat_|\[\\s\^\s') {
+            throw "$($delegating.path) still carries a local credential pattern instead of delegating."
+        }
+    }
+    # The diagnostics collector (issue #327) must redact credentials too: its
+    # bundle is what the bug-report template asks users to paste publicly.
+    $collectorSource = Get-Content -LiteralPath (Join-Path $root 'scripts/collect-diagnostics.ps1') -Raw
+    if ($collectorSource -notmatch 'Protect-GxMcpReleaseText') {
+        throw 'collect-diagnostics.ps1 must apply the canonical credential redaction to the bundle it produces.'
+    }
+    if ($collectorSource -notmatch 'release-contract\.ps1') {
+        throw 'collect-diagnostics.ps1 must load the shared release contract.'
+    }
+
+    # --- Process smoke binding diagnostics (issue #329) ---------------------
+    $bindingDetail = Get-GxMcpReleaseProcessSmokeBindingDetail -RepositoryRoot $artifactRoot
+    if ($bindingDetail.byteMismatch -or $bindingDetail.missingPublishArtifact -or $bindingDetail.missingSourceBuild) {
+        throw 'Identical publish/source bytes must not report a binding problem.'
+    }
+    $boundMessage = Format-GxMcpReleaseProcessSmokeBindingFailure -RepositoryRoot $artifactRoot -Detail $bindingDetail
+    if ($boundMessage -notmatch 'build\.ps1') { throw 'The binding failure message must name the remedy.' }
+    # Make the published Worker stale, the dominant real-world cause: publish\ was
+    # built before a commit, so the rebuilt source binary differs byte-for-byte.
+    [System.IO.File]::WriteAllText(
+        (Join-Path $artifactRoot 'publish/worker/GxMcp.Worker.exe'), 'worker-after-commit',
+        [Text.UTF8Encoding]::new($false))
+    $staleDetail = Get-GxMcpReleaseProcessSmokeBindingDetail -RepositoryRoot $artifactRoot
+    if (-not $staleDetail.byteMismatch) { throw 'A stale publish artifact must be reported as a byte mismatch.' }
+    if ($null -ne (Get-GxMcpReleaseProcessSmokeFingerprint -RepositoryRoot $artifactRoot)) {
+        throw 'A stale publish artifact must keep the fingerprint unbound.'
+    }
+    $staleMessage = Format-GxMcpReleaseProcessSmokeBindingFailure -RepositoryRoot $artifactRoot -Detail $staleDetail
+    foreach ($expected in @('publish\worker\GxMcp.Worker.exe', 'Probable cause', 'build.ps1', 'stale')) {
+        if ($staleMessage -notmatch [regex]::Escape($expected)) {
+            throw "The stale-binding message must name '$expected'. Got: $staleMessage"
+        }
+    }
+    # A missing publish artifact is a different cause and must not be reported as staleness.
+    Remove-Item -LiteralPath (Join-Path $artifactRoot 'publish/worker/GxMcp.Worker.exe') -Force
+    $missingDetail = Get-GxMcpReleaseProcessSmokeBindingDetail -RepositoryRoot $artifactRoot
+    if (-not $missingDetail.missingPublishArtifact) { throw 'A missing publish artifact must be reported as missing.' }
+    $missingMessage = Format-GxMcpReleaseProcessSmokeBindingFailure -RepositoryRoot $artifactRoot -Detail $missingDetail
+    if ($missingMessage -notmatch 'MISSING' -or $missingMessage -notmatch 'build\.ps1') {
+        throw "The missing-artifact message must name the missing path and the remedy. Got: $missingMessage"
+    }
+    if ($missingMessage -match 'stale' -or $missingMessage -match 'stamps the revision') {
+        throw 'A missing artifact must not be explained as a stale build.'
+    }
+    $preflightSourceForBinding = Get-Content -LiteralPath (Join-Path $root 'scripts/release-preflight.ps1') -Raw
+    if ($preflightSourceForBinding -notmatch 'Format-GxMcpReleaseProcessSmokeBindingFailure') {
+        throw 'release-preflight.ps1 must report the enriched binding failure.'
+    }
+
+    Write-Host 'release-contract: canonical fingerprint, full preflight identity, exact workflow matching, dual-shape field probes, credential redaction and process-smoke binding diagnostics passed' -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
 }

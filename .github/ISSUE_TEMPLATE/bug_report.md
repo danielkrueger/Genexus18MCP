@@ -8,9 +8,10 @@ assignees: ""
 
 <!--
 Please DON'T paste source code, object contents, KB paths, or anything private.
-The diagnostics collector below already redacts paths / user / host / KB names —
-run it and paste its output; that's usually enough for us to debug a crash
-without your KB.
+The diagnostics collector below already redacts paths / user / host / KB names
+and credential values (tokens, passwords, api keys, authorization headers,
+connection strings, user ids) — run it and paste its output; that's usually
+enough for us to debug a crash without your KB.
 -->
 
 ## Environment & Versions
@@ -54,7 +55,8 @@ without your KB.
 <!--
 Run this from the installed package folder (or clone) and paste the file's
 contents. It collects versions (Node, OS, GeneXus SDKs found on machine,
-active config, worker ledger, log markers), redacting paths/user/host/KB.
+active config, worker ledger, log markers), redacting paths/user/host/KB and
+credential values.
 
   pwsh -File scripts/collect-diagnostics.ps1
 

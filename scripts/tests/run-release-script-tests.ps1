@@ -10,6 +10,8 @@ $tests = @(
     'test-release-entrypoint.ps1',
     'test-release-issues.ps1',
     'test-release-contract.ps1',
+    'test-release-changelog.ps1',
+    'test-collect-diagnostics.ps1',
     'test-release-orchestration.ps1',
     'test-release-preflight.ps1',
     'test-release-workflow.ps1',

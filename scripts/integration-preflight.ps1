@@ -17,6 +17,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 }
 
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\release-contract.ps1')
 $runRoot = Join-Path $env:TEMP ('gxmcp-integration-preflight-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
 if ([string]::IsNullOrWhiteSpace($SummaryPath)) {
@@ -162,13 +163,14 @@ function Add-SkippedPhase {
     Write-IntegrationSummary
 }
 
+# Issue #326: this site had its own narrower pattern set (no api_key, no
+# authorization, no literal token prefixes) and the same space-terminated value
+# class. It now delegates to the canonical implementation in release-contract.ps1
+# and keeps no local copy.
 function Redact-DiagnosticText {
     param([AllowNull()][string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return '' }
-    return [regex]::Replace(
-        $Text,
-        '(?i)\b(password|pwd|user\s*id|userid|token|secret|connection\s*string)\b\s*[:=]\s*[^\s;,\r\n]+',
-        '$1=<redacted>')
+    return (Protect-GxMcpReleaseText $Text)
 }
 
 function Invoke-BoundedPhase {

@@ -653,7 +653,11 @@ if (-not $DryRun) {
     if ($null -eq $summary.processSmokeBinaryFingerprint) {
         $summary.status = 'failed'
         Write-PreflightSummary
-        Write-Error 'Process smoke binaries could not be bound to the current publish artifacts.'
+        # Issue #329: a bare "could not be bound" left the operator to infer both
+        # the cause and the fix. Name the compared paths, the probable cause, and
+        # the command that repairs it.
+        $bindingDetail = Get-GxMcpReleaseProcessSmokeBindingDetail -RepositoryRoot $root
+        Write-Error (Format-GxMcpReleaseProcessSmokeBindingFailure -RepositoryRoot $root -Detail $bindingDetail)
         exit 1
     }
     if ($summary.processSmokeTestCount -le 0) {
