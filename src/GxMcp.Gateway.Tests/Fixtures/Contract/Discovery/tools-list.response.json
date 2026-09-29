@@ -4475,6 +4475,10 @@
             ],
             "type": "string"
           },
+          "async": {
+            "description": "history_get/history_list/diff/diff_gene…",
+            "type": "boolean"
+          },
           "at": {
             "description": "time_travel: ISO-8601 or commit sha.",
             "type": "string"
@@ -4490,6 +4494,10 @@
           "dryRun": {
             "description": "history_restore/undo: preview without…",
             "type": "boolean"
+          },
+          "estimated_seconds": {
+            "description": "async=true: expected duration used as…",
+            "type": "integer"
           },
           "filePath": {
             "description": "blame: absolute or KB-relative file…",

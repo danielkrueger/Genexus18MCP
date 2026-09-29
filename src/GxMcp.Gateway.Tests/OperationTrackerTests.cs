@@ -167,6 +167,55 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Completed", tracker.BuildOperationStatus(opId)["status"]?.ToString());
         }
 
+        // issue #325: `timedOut` outlives the wait it describes, so a record that terminalized
+        // after the gateway gave up reads as a contradiction (timedOut=true, status=Completed,
+        // a stored payload) unless the three independent signals are spelled out. Without the
+        // explicit statement a caller re-ran the read instead of fetching the stored result.
+        [Fact]
+        public void Timeout_SurvivesIntoTerminalState_AndStatesTheResultIsAvailable()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            string requestId = "late-request";
+            string opId = tracker.StartOperation(requestId, "genexus_versioning", null, "cid");
+
+            tracker.MarkTimeout(opId);
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "VersionSourceRead" }
+            });
+
+            var status = tracker.BuildOperationStatus(opId);
+            Assert.Equal("Completed", status["status"]?.ToString());
+            Assert.True(status["timedOut"]?.ToObject<bool>());
+            Assert.True(status["resultAvailable"]?.ToObject<bool>());
+            Assert.Contains("NOT that the operation failed", status["hint"]?.ToString());
+            Assert.Contains("op:" + opId, status["hint"]?.ToString());
+
+            var result = tracker.BuildOperationResult(opId);
+            Assert.Equal("VersionSourceRead", result["workerPayload"]?["result"]?["status"]?.ToString());
+            Assert.True(result["resultAvailable"]?.ToObject<bool>());
+        }
+
+        [Fact]
+        public void NoTimeout_PublishesNoResultAvailability()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            string requestId = "clean-request";
+            string opId = tracker.StartOperation(requestId, "genexus_read", null, "cid");
+
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "ok" }
+            });
+
+            var status = tracker.BuildOperationStatus(opId);
+            Assert.False(status["timedOut"]?.ToObject<bool>() ?? true);
+            Assert.Null(status["resultAvailable"]);
+            Assert.Null(status["hint"]);
+        }
+
         [Fact]
         public async Task WaitForOperationAsync_WaitsForAProgressChange()
         {

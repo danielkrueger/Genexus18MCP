@@ -385,7 +385,13 @@ namespace GxMcp.Gateway
                 "- `time_travel` — recover object bytes from past git commits (`at: '<sha/ISO>'`).\n" +
                 "- `blame` — git blame annotations for object parts or files.\n" +
                 "- `diff` — compute textual diff between versions or arbitrary text chunks (`mode: textVsText|currentVsText`).\n" +
-                "- `diff_generated` — diff generated code against last build or git HEAD.\n",
+                "- `diff_generated` — diff generated code against last build or git HEAD.\n" +
+                "\n" +
+                "## Long reads (async)\n" +
+                "A version-store read can outlast the client's synchronous window - a single `history_get` has been measured in minutes of SDK time. Add `async: true` to `history_get`, `history_list`, `diff`, `diff_generated` or `blame` and the reply is an accepted envelope `{ status: 'running', operationId, job_id, pollTarget: 'op:<id>', estimated_seconds }` returned BEFORE the read starts. The read keeps running when this turn ends, and its envelope is stored: fetch it with `genexus_lifecycle(action='status'|'result', target='op:<id>')` (`wait_seconds`, or `wait_until_done: true` for one blocking call), or stop it with `action='cancel'`. Use it for any read you expect to be slow; it changes nothing about the answer, only when you get the handle. The mutating actions (`history_save`, `history_restore`, `undo`, `time_travel`) never take this path.\n" +
+                "\n" +
+                "## Reading an operation whose wait expired\n" +
+                "`timedOut`, `status` and result availability are three independent signals, reported separately on purpose. `timedOut: true` says the Gateway stopped waiting - it does NOT say the operation failed. `status` is the worker's own outcome once the record is terminal, and `resultAvailable` states whether a payload is stored to read. A terminal record carrying `timedOut: true` with `resultAvailable: true` holds the worker's real result: read it with `action='result'` instead of re-running the call. While a timed-out record is still `Running`, a write may already have persisted - re-read the target with `genexus_read` before issuing another one.\n",
 
             ["genexus_io"] =
                 "# genexus_io\n\n" +

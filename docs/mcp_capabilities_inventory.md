@@ -132,6 +132,15 @@ Parameter-dependent side effects are classified conservatively in the gateway:
 `view` action refreshes the per-KB navigation cache, and transfer `export` writes
 the requested XPZ file.
 
+Acceptance-path side effects do not change an action's classification. The
+version-store reads `history_get`, `history_list`, `diff`, `diff_generated` and
+`blame` accept an optional `async` flag: it returns an accepted envelope carrying
+`operationId` and `pollTarget` before the read starts and runs it detached, so the
+result is still fetchable through `genexus_lifecycle action=status/result` when the
+caller's window expires. The flag changes when the handle arrives, never what the
+read returns, so the actions stay read-only. It is refused on the KB-mutating
+`genexus_versioning` actions, which keep the mutation path and its recovery fences.
+
 This follow-up preserves the multi-action contract delivered in #131, the placement
 semantics documented in #65, and the homonym-routing behavior tracked in #34.
 

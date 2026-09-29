@@ -1059,6 +1059,45 @@ namespace GxMcp.Gateway
             return IsAsyncMutationTool(toolName);
         }
 
+        /// <summary>
+        /// Issue #325: long version-store reads get the same accept-then-poll contract the
+        /// mutation tools already have. A synchronous read that outlasts the caller's window
+        /// used to leave it with no handle at all: the operationId only exists in the reply
+        /// that never arrived, so the result was unreachable except through gateway telemetry.
+        /// These read-only versioning actions instead return an accepted envelope with the
+        /// identifier BEFORE the SDK call starts, and the result stays readable through
+        /// genexus_lifecycle action=status/result. KB-mutating actions (history_save,
+        /// history_restore, undo, time_travel) are deliberately absent: they keep the
+        /// mutation path, whose recovery fences assume a write may already have persisted.
+        /// </summary>
+        internal static bool IsAsyncLongReadAction(string? toolName, JObject? args)
+        {
+            if (args?["async"]?.ToObject<bool?>() != true) return false;
+            if (!string.Equals(toolName, "genexus_versioning", StringComparison.OrdinalIgnoreCase)) return false;
+            string? action = args["action"]?.ToString()?.Trim().ToLowerInvariant();
+            return string.Equals(action, "history_get", StringComparison.Ordinal)
+                || string.Equals(action, "history_list", StringComparison.Ordinal)
+                || string.Equals(action, "diff", StringComparison.Ordinal)
+                || string.Equals(action, "diff_generated", StringComparison.Ordinal)
+                || string.Equals(action, "blame", StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Accepted envelope for an async read. Same id/polling contract as the mutation path
+        /// (so one documented recovery procedure covers both) plus the accepted action and an
+        /// explicit statement that the result outlives this call.
+        /// </summary>
+        internal static JObject BuildAsyncReadAcceptedPayload(JobEntry job, string action)
+        {
+            if (job == null) throw new ArgumentNullException(nameof(job));
+
+            var payload = BuildAsyncAcceptedPayload(job, "Read accepted;");
+            payload["action"] = action;
+            payload["hint"] = payload["hint"]?.ToString()
+                + " The read keeps running if this call's window expires: the result is stored and stays readable with genexus_lifecycle(action='result', target='op:" + job.Id + "') until the job is swept.";
+            return payload;
+        }
+
         private static JObject BuildAsyncAcceptedPayload(JobEntry job, string acceptedSummary)
         {
             if (job == null) throw new ArgumentNullException(nameof(job));

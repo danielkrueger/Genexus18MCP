@@ -321,11 +321,29 @@ namespace GxMcp.Gateway
         // budget yet persist). `timedOut:true` alone was easy to miss; spell out the ambiguous
         // state and the read-back contract so callers have a definitive next step instead of
         // polling a frozen "Running" record.
+        //
+        // issue #325 — the same flag also survives into the terminal state, and the
+        // combination (terminal + timedOut + a stored payload) is what a caller sees when the
+        // worker answered minutes after the synchronous wait gave up. It reads like a
+        // contradiction unless the three independent signals are named: `timedOut` reports
+        // that the WAIT expired, `status` is the worker's own outcome, and `resultAvailable`
+        // says whether the payload is there to read. Publish all three on every timed-out
+        // record so no caller has to infer the relationship.
         private static void AttachTimedOutHint(JObject payload, OperationRecord record)
         {
-            if (record.TimedOut && string.Equals(record.Status, "Running", StringComparison.OrdinalIgnoreCase))
+            if (!record.TimedOut) return;
+
+            bool running = string.Equals(record.Status, "Running", StringComparison.OrdinalIgnoreCase);
+            payload["resultAvailable"] = record.WorkerPayload != null;
+            if (running)
             {
                 payload["hint"] = "Exceeded the gateway wait budget but the worker may still be finishing — or may already have persisted (common for large Transaction/Structure writes). Re-read the target with genexus_read to confirm whether the change landed. The op terminalizes on its own if the worker's reply still arrives.";
+                return;
+            }
+
+            if (record.WorkerPayload != null)
+            {
+                payload["hint"] = "timedOut reports that the synchronous wait expired, NOT that the operation failed: this record is terminal, status is the worker's own outcome, and the result it returned after the wait is stored. Read it with genexus_lifecycle(action='result', target='op:" + record.OperationId + "').";
             }
         }
 

@@ -469,6 +469,12 @@ namespace GxMcp.Gateway
             JObject? asyncEditResult = TryDispatchAsyncEdit(workerCmd, tName, tArgs, sessionId, request);
             if (asyncEditResult != null) return asyncEditResult;
 
+            // Issue #325: async=true on a long version-store read hands back an operationId
+            // before the SDK call starts, so the result is still retrievable when the
+            // caller's synchronous window expires (null = run synchronously).
+            JObject? asyncReadResult = TryDispatchAsyncRead(workerCmd, tName, tArgs, sessionId, request);
+            if (asyncReadResult != null) return asyncReadResult;
+
             JObject? innerResult = null;
             // MCP keepalive: when the client supplied a progressToken, emit
             // notifications/progress while the worker runs so long synchronous
@@ -1554,6 +1560,81 @@ namespace GxMcp.Gateway
                     asyncEditResponse["hint"]?.ToString() ?? "Operation accepted; poll tasks/get for completion.");
             }
             return BuildToolResultContent(asyncEditResponse, false, tName, tArgs);
+        }
+
+        /// <summary>
+        /// Async read intercept (issue #325). Returns null when the call is not an
+        /// async-eligible version-store read, so the caller falls through to the normal
+        /// synchronous worker dispatch. When it does apply, the operation is registered
+        /// and its identifier returned immediately; the SDK read itself runs detached and
+        /// its envelope is stored on the job for genexus_lifecycle action=result.
+        /// </summary>
+        private static JObject? TryDispatchAsyncRead(
+            JObject workerCmd,
+            string tName,
+            JObject? tArgs,
+            string sessionId,
+            JObject request)
+        {
+            if (!IsAsyncLongReadAction(tName, tArgs)) return null;
+
+            string action = tArgs!["action"]?.ToString()?.Trim().ToLowerInvariant() ?? "read";
+            // A historical read is only worth the async dance when the caller is willing to
+            // poll; the estimate is a cadence hint, so default to the order of magnitude
+            // these reads actually take rather than the mutation default.
+            int estimate = tArgs["estimated_seconds"]?.ToObject<int?>() ?? 60;
+            var readJob = JobRegistry.Start(sessionId, $"versioning/{action}", estimate, GetCurrentOwnership(sessionId));
+            readJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
+            readJob.Target = tArgs["name"]?.ToString();
+            readJob.Part = tArgs["part"]?.ToString() ?? tArgs["partName"]?.ToString();
+            // Bind the job id as the worker's cancel token so genexus_lifecycle action=cancel
+            // can stop a read that is still holding the STA. The worker reads it from the top
+            // level of the command envelope (BuildWorkerRpcRequest nests the whole command
+            // under params; CommandDispatcher registers args.cancelToken for every command).
+            workerCmd["cancelToken"] = readJob.Id;
+            Log($"[AsyncRead] Dispatching job={readJob.Id} action={action} estimated={estimate}s");
+
+            var capturedCmd = workerCmd;
+            var capturedName = tName;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // timeoutMs=0: a slow historical read must not be cut off by the
+                    // Gateway wait budget, because the whole point of this path is that the
+                    // result outlives the caller's window. Reads are non-preemptible on the
+                    // worker's STA exactly like a write, so the recovery handle is cancel,
+                    // not a shorter wait.
+                    var inner = await SendWorkerCommandAsync(
+                        capturedCmd, 0,
+                        $"Timeout waiting for async read: {capturedName}",
+                        r => r,
+                        (_, __) => new JObject { ["status"] = "Running" },
+                        toolName: capturedName,
+                        toolArgs: tArgs,
+                        operationIdentity: readJob.Id).ConfigureAwait(false);
+                    bool ok = IsSuccessfulBackgroundToolCompletion(inner);
+                    JobRegistry.Complete(
+                        readJob.Id,
+                        ok,
+                        (ok ? "Read succeeded: " : "Read failed: ") + action,
+                        inner);
+                }
+                catch (Exception ex)
+                {
+                    JobRegistry.Complete(readJob.Id, false, $"Read exception: {ex.Message}");
+                    Log($"[AsyncRead] Exception in job={readJob.Id}: {ex.Message}");
+                }
+            });
+
+            var asyncReadResponse = BuildAsyncReadAcceptedPayload(readJob, action);
+            if (McpTasksProtocol.SupportsTasks(request))
+            {
+                return McpTasksProtocol.BuildCreateTaskResult(
+                    readJob,
+                    asyncReadResponse["hint"]?.ToString() ?? "Read accepted; poll tasks/get for completion.");
+            }
+            return BuildToolResultContent(asyncReadResponse, false, tName, tArgs);
         }
     }
 }
