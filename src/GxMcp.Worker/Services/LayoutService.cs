@@ -22,6 +22,270 @@ namespace GxMcp.Worker.Services
             _objectService = objectService;
         }
 
+        /// <summary>
+        /// The single ObjectNotFound envelope for the visual-object tools (tree,
+        /// controls, preview, report, mutator scan, catalog). Every one of those
+        /// actions resolves its target the same way, so the recovery contract is
+        /// built once here rather than copy-pasted at each of the call sites.
+        /// </summary>
+        internal static string VisualObjectNotFound(string target)
+        {
+            return Models.McpResponse.Err(
+                code: "ObjectNotFound",
+                message: "Object not found.",
+                hint: "Verify the object name matches an entry in the active Knowledge Base.",
+                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
+                target: target);
+        }
+
+        /// <summary>
+        /// The recovery step every layout diagnostic and mutation failure offers:
+        /// re-read this object's layout tree.
+        ///
+        /// It was written out 36 times across this class - 28 in this file, the rest
+        /// in ReportControls and SourcePersistence - always naming
+        /// <c>genexus_layout</c> with <c>action=get_tree</c> and <c>name=target</c>,
+        /// and differing only in the prose explaining what the caller was checking.
+        ///
+        /// The explanation is per-call-site and stays here; the instruction is not,
+        /// and is the half worth holding to one copy. A step that drifted to
+        /// <c>inspect_surface</c>, or lost its <c>name</c> argument, would send the
+        /// caller to a different action than the 35 other failures do, and the
+        /// divergence would read as a deliberate difference.
+        /// </summary>
+        internal static JObject LayoutGetTreeStep(string target, string why)
+        {
+            return Models.McpResponse.NextStep(
+                "genexus_layout",
+                new JObject { ["action"] = "get_tree", ["name"] = target },
+                why);
+        }
+
+        /// <summary>
+        /// The object and the visual context a read needs, or the error to return.
+        /// </summary>
+        private sealed class VisualReadSetup
+        {
+            /// <summary>Set when the read cannot proceed; return this instead.</summary>
+            public string Error;
+
+            public global::Artech.Architecture.Common.Objects.KBObject Object;
+            public LayoutContextResult Context;
+
+            /// <summary>
+            /// The document root, or null when the part has none. Callers that walk
+            /// the tree must check this themselves - see <see cref="InvalidVisualXml"/>.
+            /// </summary>
+            public global::System.Xml.Linq.XElement Root =>
+                Context == null || Context.Document == null ? null : Context.Document.Root;
+        }
+
+        /// <summary>
+        /// Resolves the target object and its visual context for a read, failing
+        /// closed at each step.
+        ///
+        /// Five readers did this by hand - <c>GetTree</c>, <c>FindControls</c>,
+        /// <c>SetProperty</c>, <c>GetVisualPreview</c> and <c>SetProperties</c> - and
+        /// the chain is ordered, not incidental: no KB, no object, no readable
+        /// surface. A reader that skipped a step would walk a document it never
+        /// confirmed it could parse.
+        ///
+        /// The root-element check is deliberately not folded in here. Only
+        /// <c>GetTree</c> and <c>FindControls</c> walk the tree, and they report the
+        /// missing root through <see cref="InvalidVisualXml"/>; the other three read
+        /// the document as text and have no reason to reject a part with no root.
+        /// </summary>
+        private VisualReadSetup BeginVisualRead(string target)
+        {
+            var obj = _objectService.FindObject(target);
+            if (obj == null)
+                return new VisualReadSetup { Error = VisualObjectNotFound(target) };
+
+            var context = LoadVisualContext(obj, target, VisualSurface.Any);
+            if (context.Error != null)
+                return new VisualReadSetup { Error = context.Error };
+
+            return new VisualReadSetup { Object = obj, Context = context };
+        }
+
+        /// <summary>
+        /// The envelope for a visual part whose XML has no root element.
+        ///
+        /// It was written out three times and had already drifted: the copy in
+        /// <c>LayoutService.VisualContext</c> dropped "or inspecting the part
+        /// directly" from the hint and reworded the recovery step, behind the same
+        /// code. The wording here is the fuller of the two.
+        /// </summary>
+        private static string InvalidVisualXml(string target)
+        {
+            return Models.McpResponse.Err(
+                code: "InvalidVisualXml",
+                message: "Invalid visual XML: root element is missing.",
+                hint: "The object's visual part may be corrupted; try re-opening the KB or inspecting the part directly.",
+                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual parts are available for this object.")),
+                target: target);
+        }
+
+        /// <summary>
+        /// The best-effort repair a print-block mutation attempts after its
+        /// read-back says the SDK committed but the change is not on disk.
+        ///
+        /// Rename and add both did this by hand, identically: re-resolve the
+        /// object, re-read its report surface, re-normalise the source commands
+        /// against that document, and flush if the normalisation changed
+        /// something. It is a repair, not a rollback - the transaction has already
+        /// committed, so this is trying to make the persisted form self-consistent
+        /// before the caller is told the change is missing.
+        ///
+        /// It is shared because the two sites failing differently would be
+        /// indistinguishable from the SDK misbehaving in one specific way, and
+        /// because the next print-block mutation should not have to decide again
+        /// whether to attempt a repair at all. Delete does not call it: proving a
+        /// block is *gone* needs no normalisation, and normalising a document in
+        /// which a block was expected to have disappeared is not a repair of
+        /// anything.
+        ///
+        /// Never throws, and its failures are deliberately not reported: a
+        /// verification failure is the caller's answer already, and a repair that
+        /// cannot complete does not change it.
+        /// </summary>
+        private void TryHealPrintCommandSourceAfterCommit(KBObject obj, string target)
+        {
+            var healObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;
+            var healContext = LoadVisualContext(healObj, target, VisualSurface.Report);
+            if (healContext.Error == null && healContext.Document != null)
+            {
+                if (TryNormalizeReportPrintCommandsInSourceInMemory(healObj, healContext.Document.ToString(), out _))
+                {
+                    TryFlushSourceForLayoutMutation(healObj, out _);
+                }
+            }
+        }
+
+        /// <summary>
+        /// A print block in a freshly-read report document, matched by either name
+        /// the SDK uses for it.
+        ///
+        /// GeneXus exposes a print block's name as either <c>Name</c> or
+        /// <c>ControlName</c> depending on the major, and every read-back in this
+        /// file has to check both. Written out that is a two-clause predicate
+        /// repeated at each site, and a site that checked only one would report a
+        /// completed mutation as unverified - the exact failure the read-back exists
+        /// to catch, caused by the check itself.
+        /// </summary>
+        private static XElement FindPrintBlockByName(XDocument document, string printBlockName)
+        {
+            return document.Descendants("PrintBlock")
+                .FirstOrDefault(pb => string.Equals(Attr(pb, "Name"), printBlockName, StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(Attr(pb, "ControlName"), printBlockName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Whether a print block with this name is present in a report document.
+        /// The negative of <see cref="FindPrintBlockByName"/> over the same
+        /// two-attribute match.
+        /// </summary>
+        private static bool ContainsPrintBlock(XDocument document, string printBlockName)
+        {
+            return FindPrintBlockByName(document, printBlockName) != null;
+        }
+
+        /// <summary>
+        /// The two guards every report mutation (rename/add/delete print block)
+        /// passes through after resolving the target. They are written out
+        /// identically at each call site, and one of them is a curated transient
+        /// code whose <c>retryAfterMs</c> is part of the published contract, so both
+        /// are built once.
+        /// </summary>
+        internal static string ReportPartNotFound(string target)
+        {
+            return Models.McpResponse.Err(
+                code: "ReportPartNotFound",
+                message: "Report part not found.",
+                hint: "This operation requires a Procedure with a report layout part; verify the target is a report-capable Procedure.",
+                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual surfaces are present for this object.")),
+                target: target);
+        }
+
+        internal static string ReportLayoutKbNotOpened(string target, string hint)
+        {
+            return Models.McpResponse.Err(
+                code: "KbNotOpened",
+                message: "KB not opened.",
+                hint: hint,
+                nextSteps: new JArray(KbOpenNextStep.Step("Opens the configured Knowledge Base.")),
+                retryAfterMs: 2000,
+                target: target);
+        }
+
+        /// <summary>
+        /// Everything a print-block mutation needs before it may stage a change:
+        /// the resolved object, the loaded report surface, the open KB, and the
+        /// Procedure source snapshot taken before any edit so a rollback has
+        /// something to restore.
+        ///
+        /// <see cref="Error"/> is non-null when the mutation must not proceed; the
+        /// other members are only meaningful once it is null.
+        /// </summary>
+        private sealed class ReportMutationSetup
+        {
+            public KBObject Object { get; set; }
+            public LayoutContextResult Context { get; set; }
+            // dynamic, matching KbService.GetKB(): the concrete KnowledgeBase type
+            // is SDK-version-specific.
+            public dynamic KnowledgeBase { get; set; }
+            public string SourceSnapshot { get; set; }
+            public string Error { get; set; }
+        }
+
+        /// <summary>
+        /// The prologue every print-block mutation (rename, add, delete) shared:
+        /// resolve the target, load the report surface, require a report part,
+        /// require an open KB, then snapshot the Procedure source.
+        ///
+        /// It was written out three times, and the order is the point. The snapshot
+        /// has to be taken after the KB is confirmed open and before anything is
+        /// written, because it is what the rollback path restores; a copy that
+        /// dropped or reordered a step would still compile and still look right,
+        /// and would fail as a report that could not be put back the way it was.
+        /// </summary>
+        private ReportMutationSetup BeginReportMutation(string target)
+        {
+            var setup = new ReportMutationSetup();
+
+            var obj = _objectService.FindObject(target);
+            if (obj == null)
+            {
+                setup.Error = VisualObjectNotFound(target);
+                return setup;
+            }
+
+            var context = LoadVisualContext(obj, target, VisualSurface.Report);
+            if (context.Error != null)
+            {
+                setup.Error = context.Error;
+                return setup;
+            }
+            if (context.VisualPart == null)
+            {
+                setup.Error = ReportPartNotFound(target);
+                return setup;
+            }
+
+            var kb = _objectService.GetKbService().GetKB();
+            if (kb == null)
+            {
+                setup.Error = ReportLayoutKbNotOpened(target, "Open a Knowledge Base before mutating the report layout.");
+                return setup;
+            }
+
+            setup.Object = obj;
+            setup.Context = context;
+            setup.SourceSnapshot = GetProcedureSourceSnapshot(obj);
+            setup.KnowledgeBase = kb;
+            return setup;
+        }
+
         public string GetTree(string target, string controlFilter = null, int limit = 500)
         {
             try
@@ -29,30 +293,13 @@ namespace GxMcp.Worker.Services
                 if (limit <= 0) limit = 500;
                 if (limit > 2000) limit = 2000;
 
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
-                }
+                var setup = BeginVisualRead(target);
+                if (setup.Error != null) return setup.Error;
+                var obj = setup.Object;
+                var contextResult = setup.Context;
 
-                var contextResult = LoadVisualContext(obj, target, VisualSurface.Any);
-                if (contextResult.Error != null) return contextResult.Error;
-
-                var root = contextResult.Document.Root;
-                if (root == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "InvalidVisualXml",
-                        message: "Invalid visual XML: root element is missing.",
-                        hint: "The object's visual part may be corrupted; try re-opening the KB or inspecting the part directly.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual parts are available for this object.")),
-                        target: target);
-                }
+                var root = setup.Root;
+                if (root == null) return InvalidVisualXml(target);
 
                 var nodes = new JArray();
                 int total = 0;
@@ -100,30 +347,13 @@ namespace GxMcp.Worker.Services
                 if (limit <= 0) limit = 200;
                 if (limit > 2000) limit = 2000;
 
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
-                }
+                var setup = BeginVisualRead(target);
+                if (setup.Error != null) return setup.Error;
+                var obj = setup.Object;
+                var contextResult = setup.Context;
 
-                var contextResult = LoadVisualContext(obj, target, VisualSurface.Any);
-                if (contextResult.Error != null) return contextResult.Error;
-
-                var root = contextResult.Document.Root;
-                if (root == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "InvalidVisualXml",
-                        message: "Invalid visual XML: root element is missing.",
-                        hint: "The object's visual part may be corrupted; try re-opening the KB or inspecting the part directly.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual parts are available for this object.")),
-                        target: target);
-                }
+                var root = setup.Root;
+                if (root == null) return InvalidVisualXml(target);
 
                 string normalizedProperty = string.IsNullOrWhiteSpace(propertyName) ? null : propertyName;
                 string normalizedQuery = string.IsNullOrWhiteSpace(query) ? null : query;
@@ -179,27 +409,22 @@ namespace GxMcp.Worker.Services
                         code: "MissingControlName",
                         message: "Missing control name.",
                         hint: "Provide 'control' with the visual control identifier.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Returns the tree of control names for this object.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Returns the tree of control names for this object.")),
                         target: target);
                 if (string.IsNullOrWhiteSpace(propertyName))
                     return Models.McpResponse.Err(
                         code: "MissingPropertyName",
                         message: "Missing property name.",
                         hint: "Provide 'propertyName' for the visual mutation (e.g. 'Caption', 'Class', 'Visible').",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Shows available controls and their current property values.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Shows available controls and their current property values.")),
                         target: target);
 
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
+                // object + context resolved together by BeginVisualRead
 
-                var contextResult = LoadVisualContext(obj, target, VisualSurface.Any);
-                if (contextResult.Error != null) return contextResult.Error;
+                var setup = BeginVisualRead(target);
+                if (setup.Error != null) return setup.Error;
+                var obj = setup.Object;
+                var contextResult = setup.Context;
 
                 var doc = contextResult.Document;
                 string baselineXml = doc.ToString();
@@ -209,7 +434,7 @@ namespace GxMcp.Worker.Services
                         code: "ControlNotFound",
                         message: "Control not found: '" + controlName + "'.",
                         hint: "Use get_tree to enumerate the control names present in this object's layout.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all controls and their ControlName values.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Lists all controls and their ControlName values.")),
                         target: target);
 
                 if (string.Equals(propertyName, "Caption", StringComparison.OrdinalIgnoreCase)
@@ -278,7 +503,7 @@ namespace GxMcp.Worker.Services
                         code: "LayoutReadBackFailed",
                         message: "Layout read-back failed: control not found after save.",
                         hint: "The SDK may have renamed or dropped the control on save; use get_tree to verify the persisted layout.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the persisted layout to confirm the current control names.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the persisted layout to confirm the current control names.")),
                         target: target);
 
                 string persistedValue;
@@ -345,7 +570,7 @@ namespace GxMcp.Worker.Services
                             code: "LayoutWriteVerificationFailed",
                             message: "Layout write verification failed: persisted value does not match requested value after SDK save and read-back. Original layout was rolled back.",
                             hint: "The SDK may have normalised the value on save; read back the property to check the canonical form.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Reads the current persisted value of the control.")),
+                            nextSteps: new JArray(LayoutGetTreeStep(target, "Reads the current persisted value of the control.")),
                             target: target,
                             extra: new JObject { ["rolledBack"] = true });
                     }
@@ -369,7 +594,7 @@ namespace GxMcp.Worker.Services
                     code: "LayoutSetPropertyException",
                     message: ex.Message,
                     hint: "Check the control name and property value, then retry.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the current layout to confirm the control still exists.")),
+                    nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the current layout to confirm the control still exists.")),
                     target: target);
             }
         }
@@ -378,19 +603,10 @@ namespace GxMcp.Worker.Services
         {
             try
             {
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
-                }
-
-                var contextResult = LoadVisualContext(obj, target, VisualSurface.Any);
-                if (contextResult.Error != null) return contextResult.Error;
+                var setup = BeginVisualRead(target);
+                if (setup.Error != null) return setup.Error;
+                var obj = setup.Object;
+                var contextResult = setup.Context;
 
                 var snapshotService = new VisualSnapshotService();
                 string base64 = snapshotService.GetSnapshotBase64(contextResult.Document.ToString());
@@ -426,17 +642,12 @@ namespace GxMcp.Worker.Services
                         // no-nextStep: caller has no prior context to suggest a follow-up before they supply the argument
                         target: target);
 
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
+                // object + context resolved together by BeginVisualRead
 
-                var contextResult = LoadVisualContext(obj, target, VisualSurface.Any);
-                if (contextResult.Error != null) return contextResult.Error;
+                var setup = BeginVisualRead(target);
+                if (setup.Error != null) return setup.Error;
+                var obj = setup.Object;
+                var contextResult = setup.Context;
 
                 var doc = contextResult.Document;
                 string baselineXml = doc.ToString();
@@ -457,7 +668,7 @@ namespace GxMcp.Worker.Services
                             code: "InvalidChangeEntry",
                             message: "Invalid change entry: each item requires 'control' and 'propertyName'.",
                             hint: "Ensure every object in 'changes' has both a 'control' and a 'propertyName' field.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists control names available for this object.")),
+                            nextSteps: new JArray(LayoutGetTreeStep(target, "Lists control names available for this object.")),
                             target: target);
                     }
 
@@ -468,7 +679,7 @@ namespace GxMcp.Worker.Services
                         code: "ControlNotFound",
                         message: "Control not found: '" + controlName + "'.",
                         hint: "Use get_tree to enumerate the control names present in this object's layout.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all controls and their ControlName values.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Lists all controls and their ControlName values.")),
                         target: target);
                     }
 
@@ -547,7 +758,7 @@ namespace GxMcp.Worker.Services
                             code: "LayoutReadBackFailed",
                             message: "Layout read-back failed: control '" + controlName + "' was not found after save." + (rolledBack ? " Changes were rolled back." : ""),
                             hint: "The SDK may have renamed or dropped the control on save; use get_tree to verify.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the persisted layout to confirm current control names.")),
+                            nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the persisted layout to confirm current control names.")),
                             target: target,
                             extra: new JObject { ["rolledBack"] = rolledBack, ["control"] = controlName, ["property"] = attrName });
                     }
@@ -575,7 +786,7 @@ namespace GxMcp.Worker.Services
                             code: "LayoutWriteVerificationFailed",
                             message: "Layout write verification failed: persisted value for control '" + controlName + "' property '" + attrName + "' does not match requested value." + (rolledBack ? " Changes were rolled back." : ""),
                             hint: "The SDK may have normalised the value on save; read back the property to check the canonical form.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Reads the current persisted value of the control.")),
+                            nextSteps: new JArray(LayoutGetTreeStep(target, "Reads the current persisted value of the control.")),
                             target: target,
                             extra: new JObject { ["rolledBack"] = rolledBack, ["control"] = controlName, ["property"] = attrName, ["expected"] = expected, ["actual"] = actual });
                     }
@@ -597,7 +808,7 @@ namespace GxMcp.Worker.Services
                     code: "LayoutSetPropertiesException",
                     message: ex.Message,
                     hint: "Check the change entries and retry; use get_tree to confirm valid control names.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm control names before retrying.")),
+                    nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm control names before retrying.")),
                     target: target);
             }
         }
@@ -616,42 +827,15 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
-                }
+                var setup = BeginReportMutation(target);
+                if (setup.Error != null) return setup.Error;
 
-                var context = LoadVisualContext(obj, target, VisualSurface.Report);
-                if (context.Error != null) return context.Error;
-                if (context.VisualPart == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ReportPartNotFound",
-                        message: "Report part not found.",
-                        hint: "This operation requires a Procedure with a report layout part; verify the target is a report-capable Procedure.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual surfaces are present for this object.")),
-                        target: target);
-                }
-
-                var kb = _objectService.GetKbService().GetKB();
-                if (kb == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "KbNotOpened",
-                        message: "KB not opened.",
-                        hint: "Open a Knowledge Base before mutating the report layout.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Opens the configured Knowledge Base.")),
-                        retryAfterMs: 2000,
-                        target: target);
-                }
-
-                string sourceSnapshot = GetProcedureSourceSnapshot(obj);
+                // Unpacked under the names the mutation body already used, so the
+                // transaction block below is unchanged by the prologue's extraction.
+                KBObject obj = setup.Object;
+                LayoutContextResult context = setup.Context;
+                dynamic kb = setup.KnowledgeBase;
+                string sourceSnapshot = setup.SourceSnapshot;
 
                 using (var tx = kb.BeginTransaction())
                 {
@@ -664,7 +848,7 @@ namespace GxMcp.Worker.Services
                                 code: "RenamePrintBlockSourceSyncFailed",
                                 message: "Rename print block source sync failed: " + normalizeError,
                                 hint: "The Procedure source could not be updated to match the renamed print block; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current print block names.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current print block names.")),
                                 target: target);
                         }
 
@@ -676,7 +860,7 @@ namespace GxMcp.Worker.Services
                                 code: "RenamePrintBlockFailed",
                                 message: "Rename print block failed: the SDK could not stage the rename operation.",
                                 hint: "Verify that 'currentName' matches an existing print block in the report layout.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all print blocks in the report layout.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Lists all print blocks in the report layout.")),
                                 target: target);
                         }
 
@@ -688,7 +872,7 @@ namespace GxMcp.Worker.Services
                                 code: "RenamePrintBlockSourceSyncFailed",
                                 message: "Rename print block source sync failed: " + sourcePrepareError,
                                 hint: "The Procedure source rename step failed; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print block names.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm current print block names.")),
                                 target: target);
                         }
 
@@ -700,7 +884,7 @@ namespace GxMcp.Worker.Services
                                 code: "RenamePrintBlockFailed",
                                 message: "Rename print block failed: " + partSaveError,
                                 hint: "The visual part save failed after staging; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to check if the rename partially persisted.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to check if the rename partially persisted.")),
                                 target: target);
                         }
 
@@ -715,7 +899,7 @@ namespace GxMcp.Worker.Services
                             code: "RenamePrintBlockFailed",
                             message: "Rename print block failed: " + ex.Message,
                             hint: "An unexpected exception occurred; the transaction was rolled back.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                            nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                             target: target);
                     }
                 }
@@ -725,9 +909,7 @@ namespace GxMcp.Worker.Services
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
                 if (refreshed.Error != null) return refreshed.Error;
 
-                bool exists = refreshed.Document.Descendants("PrintBlock")
-                    .Any(pb => string.Equals(Attr(pb, "Name"), newName, StringComparison.OrdinalIgnoreCase) ||
-                               string.Equals(Attr(pb, "ControlName"), newName, StringComparison.OrdinalIgnoreCase));
+                bool exists = ContainsPrintBlock(refreshed.Document, newName);
                 if (!exists)
                 {
                     for (int attempt = 0; attempt < 20 && !exists; attempt++)
@@ -736,28 +918,18 @@ namespace GxMcp.Worker.Services
                         var retryObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
                         var retry = LoadVisualContext(retryObj, target, VisualSurface.Report);
                         if (retry.Error != null) break;
-                        exists = retry.Document.Descendants("PrintBlock")
-                            .Any(pb => string.Equals(Attr(pb, "Name"), newName, StringComparison.OrdinalIgnoreCase) ||
-                                       string.Equals(Attr(pb, "ControlName"), newName, StringComparison.OrdinalIgnoreCase));
+                        exists = ContainsPrintBlock(retry.Document, newName);
                     }
                 }
                 if (!exists)
                 {
-                    var healObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;
-                    var healContext = LoadVisualContext(healObj, target, VisualSurface.Report);
-                    if (healContext.Error == null && healContext.Document != null)
-                    {
-                        if (TryNormalizeReportPrintCommandsInSourceInMemory(healObj, healContext.Document.ToString(), out _))
-                        {
-                            TryFlushSourceForLayoutMutation(healObj, out _);
-                        }
-                    }
+                    TryHealPrintCommandSourceAfterCommit(obj, target);
 
                     return Models.McpResponse.Err(
                         code: "RenamePrintBlockVerificationFailed",
                         message: "Rename print block verification failed: the renamed print block was not found in the persisted report XML.",
                         hint: "The SDK committed the transaction but the read-back did not surface the new name; open the Procedure in the IDE to inspect.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to see the current print block names.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to see the current print block names.")),
                         target: target);
                 }
 
@@ -775,7 +947,7 @@ namespace GxMcp.Worker.Services
                     code: "RenamePrintBlockException",
                     message: ex.Message,
                     hint: "An unexpected exception occurred; retry or inspect the Procedure in the IDE.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                    nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                     target: target);
             }
         }
@@ -794,42 +966,15 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
-                }
+                var setup = BeginReportMutation(target);
+                if (setup.Error != null) return setup.Error;
 
-                var context = LoadVisualContext(obj, target, VisualSurface.Report);
-                if (context.Error != null) return context.Error;
-                if (context.VisualPart == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ReportPartNotFound",
-                        message: "Report part not found.",
-                        hint: "This operation requires a Procedure with a report layout part; verify the target is a report-capable Procedure.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual surfaces are present for this object.")),
-                        target: target);
-                }
-
-                var kb = _objectService.GetKbService().GetKB();
-                if (kb == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "KbNotOpened",
-                        message: "KB not opened.",
-                        hint: "Open a Knowledge Base before mutating the report layout.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Opens the configured Knowledge Base.")),
-                        retryAfterMs: 2000,
-                        target: target);
-                }
-
-                string sourceSnapshot = GetProcedureSourceSnapshot(obj);
+                // Unpacked under the names the mutation body already used, so the
+                // transaction block below is unchanged by the prologue's extraction.
+                KBObject obj = setup.Object;
+                LayoutContextResult context = setup.Context;
+                dynamic kb = setup.KnowledgeBase;
+                string sourceSnapshot = setup.SourceSnapshot;
 
                 using (var tx = kb.BeginTransaction())
                 {
@@ -842,7 +987,7 @@ namespace GxMcp.Worker.Services
                                 code: "AddPrintBlockSourceSyncFailed",
                                 message: "Add print block source sync failed: " + normalizeError,
                                 hint: "The Procedure source could not be updated; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current print blocks.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current print blocks.")),
                                 target: target);
                         }
 
@@ -854,7 +999,7 @@ namespace GxMcp.Worker.Services
                                 code: "AddPrintBlockFailed",
                                 message: "Add print block failed: the SDK could not stage the new print block.",
                                 hint: "Ensure the Procedure has a report layout part and the printBlockName is unique.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists existing print blocks to check for name conflicts.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Lists existing print blocks to check for name conflicts.")),
                                 target: target);
                         }
 
@@ -866,7 +1011,7 @@ namespace GxMcp.Worker.Services
                                 code: "AddPrintBlockSourceSyncFailed",
                                 message: "Add print block source sync failed: " + sourcePrepareError,
                                 hint: "The Procedure source insertion step failed; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print blocks.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm current print blocks.")),
                                 target: target);
                         }
 
@@ -878,7 +1023,7 @@ namespace GxMcp.Worker.Services
                                 code: "AddPrintBlockFailed",
                                 message: "Add print block failed: " + partSaveError,
                                 hint: "The visual part save failed after staging; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to check if the block partially persisted.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to check if the block partially persisted.")),
                                 target: target);
                         }
 
@@ -893,7 +1038,7 @@ namespace GxMcp.Worker.Services
                             code: "AddPrintBlockFailed",
                             message: "Add print block failed: " + ex.Message,
                             hint: "An unexpected exception occurred; the transaction was rolled back.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                            nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                             target: target);
                     }
                 }
@@ -903,9 +1048,7 @@ namespace GxMcp.Worker.Services
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
                 if (refreshed.Error != null) return refreshed.Error;
 
-                var added = refreshed.Document.Descendants("PrintBlock")
-                    .FirstOrDefault(pb => string.Equals(Attr(pb, "Name"), printBlockName, StringComparison.OrdinalIgnoreCase) ||
-                                          string.Equals(Attr(pb, "ControlName"), printBlockName, StringComparison.OrdinalIgnoreCase));
+                var added = FindPrintBlockByName(refreshed.Document, printBlockName);
                 if (added == null)
                 {
                     for (int attempt = 0; attempt < 20 && added == null; attempt++)
@@ -914,28 +1057,18 @@ namespace GxMcp.Worker.Services
                         var retryObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
                         var retry = LoadVisualContext(retryObj, target, VisualSurface.Report);
                         if (retry.Error != null) break;
-                        added = retry.Document.Descendants("PrintBlock")
-                            .FirstOrDefault(pb => string.Equals(Attr(pb, "Name"), printBlockName, StringComparison.OrdinalIgnoreCase) ||
-                                                  string.Equals(Attr(pb, "ControlName"), printBlockName, StringComparison.OrdinalIgnoreCase));
+                        added = FindPrintBlockByName(retry.Document, printBlockName);
                     }
                 }
                 if (added == null)
                 {
-                    var healObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;
-                    var healContext = LoadVisualContext(healObj, target, VisualSurface.Report);
-                    if (healContext.Error == null && healContext.Document != null)
-                    {
-                        if (TryNormalizeReportPrintCommandsInSourceInMemory(healObj, healContext.Document.ToString(), out _))
-                        {
-                            TryFlushSourceForLayoutMutation(healObj, out _);
-                        }
-                    }
+                    TryHealPrintCommandSourceAfterCommit(obj, target);
 
                     return Models.McpResponse.Err(
                         code: "AddPrintBlockVerificationFailed",
                         message: "Add print block verification failed: the new print block was not found in the persisted report XML.",
                         hint: "The SDK committed the transaction but the read-back did not surface the new block; open the Procedure in the IDE to inspect.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to see current print blocks.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to see current print blocks.")),
                         target: target);
                 }
 
@@ -953,7 +1086,7 @@ namespace GxMcp.Worker.Services
                     code: "AddPrintBlockException",
                     message: ex.Message,
                     hint: "An unexpected exception occurred; retry or inspect the Procedure in the IDE.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                    nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                     target: target);
             }
         }
@@ -968,46 +1101,19 @@ namespace GxMcp.Worker.Services
                         code: "MissingArgument",
                         message: "printBlockName is required.",
                         hint: "Pass the name of the print block to remove, e.g. printBlockName=header.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all print blocks in the report layout.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Lists all print blocks in the report layout.")),
                         target: target);
                 }
 
-                var obj = _objectService.FindObject(target);
-                if (obj == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
-                }
+                var setup = BeginReportMutation(target);
+                if (setup.Error != null) return setup.Error;
 
-                var context = LoadVisualContext(obj, target, VisualSurface.Report);
-                if (context.Error != null) return context.Error;
-                if (context.VisualPart == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ReportPartNotFound",
-                        message: "Report part not found.",
-                        hint: "This operation requires a Procedure with a report layout part; verify the target is a report-capable Procedure.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual surfaces are present for this object.")),
-                        target: target);
-                }
-
-                var kb = _objectService.GetKbService().GetKB();
-                if (kb == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "KbNotOpened",
-                        message: "KB not opened.",
-                        hint: "Open a Knowledge Base before mutating the report layout.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Opens the configured Knowledge Base.")),
-                        retryAfterMs: 2000,
-                        target: target);
-                }
-
-                string sourceSnapshot = GetProcedureSourceSnapshot(obj);
+                // Unpacked under the names the mutation body already used, so the
+                // transaction block below is unchanged by the prologue's extraction.
+                KBObject obj = setup.Object;
+                LayoutContextResult context = setup.Context;
+                dynamic kb = setup.KnowledgeBase;
+                string sourceSnapshot = setup.SourceSnapshot;
 
                 using (var tx = kb.BeginTransaction())
                 {
@@ -1020,7 +1126,7 @@ namespace GxMcp.Worker.Services
                                 code: "DeletePrintBlockFailed",
                                 message: "Delete print block failed: the SDK could not stage the removal of '" + printBlockName + "'.",
                                 hint: "Ensure the print block exists and is not protected (Header/Footer bands may be required by the report).",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists existing print blocks.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Lists existing print blocks.")),
                                 target: target);
                         }
 
@@ -1032,7 +1138,7 @@ namespace GxMcp.Worker.Services
                                 code: "DeletePrintBlockSourceSyncFailed",
                                 message: "Delete print block source sync failed: " + sourceSyncError,
                                 hint: "The Procedure source could not be updated; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print blocks.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm current print blocks.")),
                                 target: target);
                         }
 
@@ -1044,7 +1150,7 @@ namespace GxMcp.Worker.Services
                                 code: "DeletePrintBlockPersistFailed",
                                 message: "Delete print block persistence failed: " + partSaveError,
                                 hint: "The SDK could not save the layout part; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print blocks.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm current print blocks.")),
                                 target: target);
                         }
 
@@ -1062,16 +1168,15 @@ namespace GxMcp.Worker.Services
                 // Cold read-back to prove the block is really gone from disk.
                 var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
-                bool stillThere = refreshed.Error == null && refreshed.Document != null && refreshed.Document.Descendants("PrintBlock")
-                    .Any(pb => string.Equals(Attr(pb, "Name"), printBlockName, StringComparison.OrdinalIgnoreCase) ||
-                               string.Equals(Attr(pb, "ControlName"), printBlockName, StringComparison.OrdinalIgnoreCase));
+                bool stillThere = refreshed.Error == null && refreshed.Document != null
+                    && ContainsPrintBlock(refreshed.Document, printBlockName);
                 if (stillThere)
                 {
                     return Models.McpResponse.Err(
                         code: "DeletePrintBlockVerificationFailed",
                         message: "Delete print block verification failed: '" + printBlockName + "' is still present after commit.",
                         hint: "The transaction committed but the read-back still shows the block; open the Procedure in the IDE to inspect.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to see current print blocks.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to see current print blocks.")),
                         target: target);
                 }
 
@@ -1088,7 +1193,7 @@ namespace GxMcp.Worker.Services
                     code: "DeletePrintBlockException",
                     message: ex.Message,
                     hint: "An unexpected exception occurred; retry or inspect the Procedure in the IDE.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                    nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                     target: target);
             }
         }
@@ -1100,12 +1205,7 @@ namespace GxMcp.Worker.Services
                 var obj = _objectService.FindObject(target);
                 if (obj == null)
                 {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
+                    return VisualObjectNotFound(target);
                 }
 
                 var parts = new[] { "Layout", "PatternVirtual", "WebForm" };
@@ -1398,19 +1498,6 @@ namespace GxMcp.Worker.Services
             return attr != null ? attr.Value : null;
         }
 
-        private static string NormalizeTextPreview(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return null;
-            string compact = value.Trim().Replace("\r", " ").Replace("\n", " ");
-            while (compact.Contains("  "))
-            {
-                compact = compact.Replace("  ", " ");
-            }
-
-            if (compact.Length > 160) compact = compact.Substring(0, 160);
-            return compact;
-        }
-
         private static bool IsTextPropertyName(string propertyName)
         {
             return string.Equals(propertyName, "text", StringComparison.OrdinalIgnoreCase) ||
@@ -1492,11 +1579,6 @@ namespace GxMcp.Worker.Services
 
         private static string ExtractColorLeafToken(string raw)
             => ColorHelper.ExtractColorLeafToken(raw);
-
-        private static bool TryParseColorToken(string raw, out System.Drawing.Color color)
-            => ColorHelper.TryParseColor(raw, out color);
-
-
 
         private sealed class FindCriteria
         {

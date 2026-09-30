@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Text;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Utils;
 using Newtonsoft.Json.Linq;
@@ -28,17 +28,7 @@ namespace GxMcp.Worker.Services
         // (for `name`) Path.Combine on the KB working tree. Enforce a tight
         // allowlist at the entrypoint so traversal / arg-confusion attempts
         // never reach the shell-out or filesystem layers.
-        internal static bool IsSafeObjectName(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name) || name.Length > 200) return false;
-            foreach (var c in name)
-            {
-                if (!(char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '-')) return false;
-            }
-            // Defence in depth — explicit traversal markers are never valid.
-            if (name == "." || name == "..") return false;
-            return true;
-        }
+        internal static bool IsSafeObjectName(string name) => SafePathSegment.IsSafe(name);
 
         internal static bool IsSafeAtValue(string at)
         {
@@ -160,37 +150,42 @@ namespace GxMcp.Worker.Services
 
         private static string Err(string m) => McpResponse.Err(code: "TimeTravelFailed", message: m);
 
+        private const int GitTimeoutMs = 30000;
+
+        /// <summary>
+        /// GIT_TERMINAL_PROMPT stops a credential prompt blocking on the inherited
+        /// stdio pipe; GIT_PAGER stops a configured paginator holding the
+        /// terminal-detect probe open until the timeout.
+        /// </summary>
+        private static readonly Dictionary<string, string> NonInteractiveGitEnv = new Dictionary<string, string>
+        {
+            { "GIT_TERMINAL_PROMPT", "0" },
+            { "GIT_PAGER", "cat" },
+        };
+
         private static int RunGit(string cwd, string[] args, out string stdout, out string stderr)
         {
-            var sb = new StringBuilder("--no-pager -c color.ui=false");
-            foreach (var a in args)
+            var outcome = ProcessLauncher.Run(
+                "git",
+                "--no-pager -c color.ui=false " + Argv.Join(args),
+                cwd,
+                GitTimeoutMs,
+                Encoding.UTF8,
+                NonInteractiveGitEnv);
+
+            if (outcome.StartFailed)
             {
-                sb.Append(' ');
-                sb.Append(GithubService.ArgvQuote(a));
+                stdout = ""; stderr = "Process.Start returned null"; return -1;
             }
-            var psi = new ProcessStartInfo("git", sb.ToString())
+
+            if (outcome.TimedOut)
             {
-                WorkingDirectory = cwd,
-                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                UseShellExecute = false, CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
-            };
-            psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-            psi.EnvironmentVariables["GIT_PAGER"] = "cat";
-            using (var p = Process.Start(psi))
-            {
-                if (p == null) { stdout = ""; stderr = "Process.Start returned null"; return -1; }
-                try { p.StandardInput.Close(); } catch { }
-                var outSb = new StringBuilder();
-                var errSb = new StringBuilder();
-                p.OutputDataReceived += (_, e) => { if (e.Data != null) outSb.AppendLine(e.Data); };
-                p.ErrorDataReceived += (_, e) => { if (e.Data != null) errSb.AppendLine(e.Data); };
-                p.BeginOutputReadLine(); p.BeginErrorReadLine();
-                if (!p.WaitForExit(30000)) { try { p.Kill(); } catch { } stdout = outSb.ToString(); stderr = "git timed out"; return -1; }
-                p.WaitForExit();
-                stdout = outSb.ToString(); stderr = errSb.ToString();
-                return p.ExitCode;
+                stdout = outcome.StdOut; stderr = "git timed out"; return -1;
             }
+
+            stdout = outcome.StdOut;
+            stderr = outcome.StdErr;
+            return outcome.ExitCode;
         }
     }
 }

@@ -288,8 +288,27 @@ namespace GxMcp.Gateway
             catch { /* never break the telemetry update over a background fetch */ }
         }
 
-        private static void UpdateLastKnownIndexDiagnostics(string? kbAlias, int? resumedFrom,
-            bool? checkpointActive, DateTime? checkpointCapturedAtUtc, JObject? cacheValidation)
+        /// <summary>
+        /// Applies a change to the index-state snapshot a KB owns, wherever that
+        /// snapshot lives, and writes it back to the same place.
+        ///
+        /// "Wherever that snapshot lives" is the whole reason this exists. A
+        /// snapshot is held in the per-KB map when its alias is known and in a
+        /// single global field when it is not, and a writer that resolved the
+        /// location differently from a reader would put the same KB's state
+        /// somewhere nothing looks - which surfaces as a KB that never stops
+        /// reporting a stale index, not as an error. So the resolution, the
+        /// load-or-create and the write-back are stated once, and callers only say
+        /// what changed.
+        ///
+        /// Two methods shared this shape verbatim. <see cref="InvalidateIndexStateForKb"/>
+        /// does not use it on purpose: that one is always called with an explicit
+        /// alias, deliberately has no <c>ResolveKbAliasForIndexRefresh</c> fallback,
+        /// and must never fall through to the global snapshot - invalidating the
+        /// global index state because a named KB was asked to reindex would be a
+        /// different, wrong, operation.
+        /// </summary>
+        private static void MutateLastKnownIndexState(string? kbAlias, Action<IndexStateSnapshot> mutate)
         {
             string? alias = NormalizeKbAlias(kbAlias) ?? ResolveKbAliasForIndexRefresh();
             lock (_lastKnownIndexStateLock)
@@ -307,11 +326,7 @@ namespace GxMcp.Gateway
                     snapshot = _lastKnownIndexState;
                 }
 
-                snapshot.ResumedFrom = resumedFrom ?? snapshot.ResumedFrom;
-                snapshot.CheckpointActive = checkpointActive ?? snapshot.CheckpointActive;
-                snapshot.CheckpointCapturedAtUtc = checkpointCapturedAtUtc ?? snapshot.CheckpointCapturedAtUtc;
-                if (cacheValidation != null)
-                    snapshot.CacheValidation = (JObject)cacheValidation.DeepClone();
+                mutate(snapshot);
 
                 if (!string.IsNullOrEmpty(alias))
                     _lastKnownIndexStatesByKb[alias!] = snapshot;
@@ -320,31 +335,40 @@ namespace GxMcp.Gateway
             }
         }
 
+        private static void UpdateLastKnownIndexDiagnostics(string? kbAlias, int? resumedFrom,
+            bool? checkpointActive, DateTime? checkpointCapturedAtUtc, JObject? cacheValidation)
+        {
+            MutateLastKnownIndexState(kbAlias, snapshot =>
+            {
+                snapshot.ResumedFrom = resumedFrom ?? snapshot.ResumedFrom;
+                snapshot.CheckpointActive = checkpointActive ?? snapshot.CheckpointActive;
+                snapshot.CheckpointCapturedAtUtc = checkpointCapturedAtUtc ?? snapshot.CheckpointCapturedAtUtc;
+                if (cacheValidation != null)
+                    snapshot.CacheValidation = (JObject)cacheValidation.DeepClone();
+            });
+        }
+
         private static void UpdateLastKnownSourceStore(string? kbAlias, JObject? sourceStore)
         {
             if (sourceStore == null) return;
-            string? alias = NormalizeKbAlias(kbAlias) ?? ResolveKbAliasForIndexRefresh();
-            lock (_lastKnownIndexStateLock)
-            {
-                IndexStateSnapshot snapshot;
-                if (!string.IsNullOrEmpty(alias))
-                {
-                    if (!_lastKnownIndexStatesByKb.TryGetValue(alias!, out var existing) || existing == null)
-                        snapshot = new IndexStateSnapshot { KbAlias = alias };
-                    else
-                        snapshot = existing;
-                }
-                else
-                {
-                    snapshot = _lastKnownIndexState;
-                }
+            MutateLastKnownIndexState(kbAlias, snapshot =>
+                snapshot.SourceStore = (JObject)sourceStore.DeepClone());
+        }
 
-                snapshot.SourceStore = (JObject)sourceStore.DeepClone();
-                if (!string.IsNullOrEmpty(alias))
-                    _lastKnownIndexStatesByKb[alias!] = snapshot;
-                else
-                    _lastKnownIndexState = snapshot;
-            }
+        // Shims for the two mutators above, following the pattern already used in
+        // this file. They exist so a test can assert *where* a diagnostic update
+        // lands - the per-KB snapshot or the single global one - which is the
+        // invariant MutateLastKnownIndexState was extracted to hold, and which no
+        // source-shape assertion can actually check.
+        internal static void UpdateLastKnownIndexDiagnosticsForTest(string? kbAlias, int? resumedFrom,
+            bool? checkpointActive, JObject? cacheValidation)
+        {
+            UpdateLastKnownIndexDiagnostics(kbAlias, resumedFrom, checkpointActive, checkpointCapturedAtUtc: null, cacheValidation);
+        }
+
+        internal static void UpdateLastKnownSourceStoreForTest(string? kbAlias, JObject? sourceStore)
+        {
+            UpdateLastKnownSourceStore(kbAlias, sourceStore);
         }
 
         private static string? NormalizeKbAlias(string? alias)
@@ -656,6 +680,12 @@ namespace GxMcp.Gateway
         {
             string? alias = NormalizeKbAlias(kbAlias);
             if (string.IsNullOrEmpty(alias)) return;
+            // Deliberately not MutateLastKnownIndexState. That helper falls back to
+            // ResolveKbAliasForIndexRefresh and to the single global snapshot when no
+            // alias resolves; this operation is always about one named KB, and
+            // invalidating the global state because a named KB was asked to reindex
+            // would be a different and wrong operation. It is here rather than
+            // nowhere precisely so the difference is stated.
             lock (_lastKnownIndexStateLock)
             {
                 if (!_lastKnownIndexStatesByKb.TryGetValue(alias!, out var current))

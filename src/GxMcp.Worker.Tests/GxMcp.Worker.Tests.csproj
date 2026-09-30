@@ -26,6 +26,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\\GxMcp.Worker\\GxMcp.Worker.csproj" />
+  <Compile Include="..\TestSupport\RepoSource.cs" Link="TestSupport\RepoSource.cs" />
+    <Compile Include="..\TestSupport\SourceAssert.cs" Link="TestSupport\SourceAssert.cs" />
   </ItemGroup>
 
   <PropertyGroup>

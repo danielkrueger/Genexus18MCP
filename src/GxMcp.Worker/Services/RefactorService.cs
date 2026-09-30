@@ -336,15 +336,7 @@ namespace GxMcp.Worker.Services
             // no-nextStep: missing scalar arguments; no tool call can supply them
 
             var sourceObj = _objectService.FindObject(sourceObjectName);
-            if (sourceObj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Source object not found.",
-                hint: "The source object for extraction is not available in the active Knowledge Base.",
-                nextSteps: new JArray(Models.McpResponse.NextStep(
-                    tool: "genexus_search",
-                    args: new JObject { ["query"] = sourceObjectName },
-                    why: "Search for the object to confirm it exists and find its exact name.")),
-                target: sourceObjectName);
+            if (sourceObj == null) return SourceObjectNotFound(sourceObjectName);
 
             var variablesFound = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var matches = System.Text.RegularExpressions.Regex.Matches(codeToExtract, @"&(\w+)");
@@ -373,15 +365,7 @@ namespace GxMcp.Worker.Services
 
             if (!codeFound)
             {
-                return Models.McpResponse.Err(
-                    code: "CodeBlockNotFound",
-                    message: "Code block not found in source object.",
-                    hint: "The exact code block to extract was not found in the source object; ensure the code matches the source verbatim.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_read",
-                        args: new JObject { ["name"] = sourceObjectName, ["part"] = "Source" },
-                        why: "Read the current source to locate the exact code block before retrying.")),
-                    target: sourceObjectName);
+                return CodeBlockNotFound(sourceObjectName);
             }
 
             if (dryRun)
@@ -484,15 +468,7 @@ namespace GxMcp.Worker.Services
                         result: new JObject { ["procedure"] = newProcName, ["call"] = callCode });
                 }
 
-                return Models.McpResponse.Err(
-                    code: "CodeBlockNotFound",
-                    message: "Code block not found in source object.",
-                    hint: "The exact code block to extract was not found in the source object; ensure the code matches the source verbatim.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_read",
-                        args: new JObject { ["name"] = sourceObjectName, ["part"] = "Source" },
-                        why: "Read the current source to locate the exact code block before retrying.")),
-                    target: sourceObjectName);
+                return CodeBlockNotFound(sourceObjectName);
             } catch (Exception ex) {
                 return Models.McpResponse.Err(
                     code: "ExtractProcedureFailed",
@@ -506,6 +482,58 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// The refusal a refactor returns when the code block it was asked to
+        /// extract is not in the object's source.
+        ///
+        /// Three call sites built this envelope, and the two that had drifted matter
+        /// more than the duplication did. They shared the code, the message, the
+        /// recovery step and the target, and <em>the hint said different things</em>:
+        /// "ensure the code matches the source verbatim" against "ensure whitespace
+        /// and formatting match verbatim", and the subroutine version added "in any
+        /// source part of the target object". A caller reading a refusal to decide
+        /// what to fix gets different advice from the same failure depending on which
+        /// refactor it called, and neither version says which condition was actually
+        /// checked: the caller passes a block and the refactor searches every
+        /// source part, so "any source part" is the accurate statement of both.
+        ///
+        /// The wording kept is the fuller one, and it is now the only one.
+        /// </summary>
+        private static string CodeBlockNotFound(string sourceObjectName)
+        {
+            return Models.McpResponse.Err(
+                code: "CodeBlockNotFound",
+                message: "Code block not found in source object.",
+                hint: "The exact code block to extract was not found in any source part of the target object; ensure whitespace and formatting match verbatim.",
+                nextSteps: new JArray(Models.McpResponse.NextStep(
+                    tool: "genexus_read",
+                    args: new JObject { ["name"] = sourceObjectName, ["part"] = "Source" },
+                    why: "Read the current source to locate the exact code block before retrying.")),
+                target: sourceObjectName);
+        }
+
+        /// <summary>
+        /// The "source object is not available" refusal both extractions share, plus
+        /// the third refactor that resolves a source object the same way.
+        ///
+        /// All three resolve the object, and all three refused identically - the
+        /// same code, message, hint and search step - written out each time. The
+        /// difference between them is only which of them is looking, so the search
+        /// step cannot say more than "search for the object".
+        /// </summary>
+        private static string SourceObjectNotFound(string sourceObjectName)
+        {
+            return Models.McpResponse.Err(
+                code: "ObjectNotFound",
+                message: "Source object not found.",
+                hint: "The source object for extraction is not available in the active Knowledge Base.",
+                nextSteps: new JArray(Models.McpResponse.NextStep(
+                    tool: "genexus_search",
+                    args: new JObject { ["query"] = sourceObjectName },
+                    why: "Search for the object to confirm it exists and find its exact name.")),
+                target: sourceObjectName);
+        }
+
         private string ExtractSubroutine(string sourceObjectName, string codeToExtract, string subroutineName, bool dryRun = false)
         {
             if (string.IsNullOrEmpty(codeToExtract) || string.IsNullOrEmpty(subroutineName))
@@ -516,15 +544,7 @@ namespace GxMcp.Worker.Services
                     target: sourceObjectName);
 
             var sourceObj = _objectService.FindObject(sourceObjectName);
-            if (sourceObj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Source object not found.",
-                hint: "The source object for extraction is not available in the active Knowledge Base.",
-                nextSteps: new JArray(Models.McpResponse.NextStep(
-                    tool: "genexus_search",
-                    args: new JObject { ["query"] = sourceObjectName },
-                    why: "Search for the object to confirm it exists and find its exact name.")),
-                target: sourceObjectName);
+            if (sourceObj == null) return SourceObjectNotFound(sourceObjectName);
 
             string cleanSubName = subroutineName.Trim('\'', '\"', ' ');
             string callCode = $"Do '{cleanSubName}'";
@@ -562,15 +582,7 @@ namespace GxMcp.Worker.Services
 
             if (!updated)
             {
-                return Models.McpResponse.Err(
-                    code: "CodeBlockNotFound",
-                    message: "Code block not found in source object.",
-                    hint: "The exact code block to extract was not found in any source part of the target object; ensure whitespace and formatting match verbatim.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_read",
-                        args: new JObject { ["name"] = sourceObjectName, ["part"] = "Source" },
-                        why: "Read the current source to locate the exact code block before retrying.")),
-                    target: sourceObjectName);
+                return CodeBlockNotFound(sourceObjectName);
             }
 
             if (!dryRun)
@@ -591,7 +603,18 @@ namespace GxMcp.Worker.Services
                 });
         }
 
-        private string RenameAttribute(string oldName, string newName)
+        /// <summary>
+        /// The guards a whole-object rename shares before it touches anything: both
+        /// names present, and a KB open. Returns the error envelope to return, or
+        /// null when the caller may proceed.
+        ///
+        /// <c>RenameAttribute</c> and <c>RenameObject</c> differ in what they
+        /// resolve afterwards - an Attribute versus a filtered object - but the
+        /// order and wording of these two guards were identical, and the KB check
+        /// is the one that must not drift: a rename that reaches the SDK without
+        /// an open KB fails somewhere far less legible.
+        /// </summary>
+        private string RenamePreamble(string oldName, string newName)
         {
             if (string.IsNullOrEmpty(oldName) || string.IsNullOrEmpty(newName))
                 return Models.McpResponse.Err(
@@ -601,8 +624,7 @@ namespace GxMcp.Worker.Services
                     target: oldName);
             // no-nextStep: missing scalar arguments; no tool call can supply them
 
-            var kb = _kbService.GetKB();
-            if (kb == null) return Models.McpResponse.Err(
+            if (_kbService.GetKB() == null) return Models.McpResponse.Err(
                 code: "KbNotOpen",
                 message: "KB not open.",
                 hint: "Open a Knowledge Base before running refactor operations.",
@@ -611,6 +633,14 @@ namespace GxMcp.Worker.Services
                     args: new JObject { ["action"] = "open" },
                     why: "Opens the configured Knowledge Base so refactor operations can proceed.")),
                 target: oldName);
+
+            return null;
+        }
+
+        private string RenameAttribute(string oldName, string newName)
+        {
+            string preamble = RenamePreamble(oldName, newName);
+            if (preamble != null) return preamble;
 
             var attrObj = _objectService.FindObject(oldName);
             if (attrObj == null || !attrObj.TypeDescriptor.Name.Equals("Attribute", StringComparison.OrdinalIgnoreCase))
@@ -714,24 +744,8 @@ namespace GxMcp.Worker.Services
 
         private string RenameObject(string oldName, string newName, string typeFilter)
         {
-            if (string.IsNullOrEmpty(oldName) || string.IsNullOrEmpty(newName))
-                return Models.McpResponse.Err(
-                    code: "RenameArgsMissing",
-                    message: "Old and new names are required.",
-                    hint: "Provide both the current name and the replacement name.",
-                    target: oldName);
-            // no-nextStep: missing scalar arguments; no tool call can supply them
-
-            var kb = _kbService.GetKB();
-            if (kb == null) return Models.McpResponse.Err(
-                code: "KbNotOpen",
-                message: "KB not open.",
-                hint: "Open a Knowledge Base before running refactor operations.",
-                nextSteps: new JArray(Models.McpResponse.NextStep(
-                    tool: "genexus_kb",
-                    args: new JObject { ["action"] = "open" },
-                    why: "Opens the configured Knowledge Base so refactor operations can proceed.")),
-                target: oldName);
+            string preamble = RenamePreamble(oldName, newName);
+            if (preamble != null) return preamble;
 
             var obj = _objectService.FindObject(oldName, typeFilter);
             if (obj == null)

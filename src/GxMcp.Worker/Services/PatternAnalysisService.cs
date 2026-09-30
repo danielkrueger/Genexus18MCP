@@ -135,6 +135,80 @@ namespace GxMcp.Worker.Services
             catch { return null; }
         }
 
+        /// <summary>
+        /// The advisory raised when a visual part is hand-edited on an object that a
+        /// WorkWithPlus PatternInstance covers: the next pattern apply overwrites the
+        /// edit. Returns null when there is nothing to warn about.
+        ///
+        /// It existed twice, as a private <c>BuildPatternShadowWarningsIfAny</c> on
+        /// <c>PatchService</c> and on <c>WriteService.WriteVisualPart</c>, and the
+        /// two had already drifted - both emitted the same
+        /// <c>EditingWebFormUnderPattern</c> code with a different sentence for the
+        /// same advice, so one path told the agent to edit part=PatternInstance on
+        /// the object and the other named the <c>genexus_edit</c> call that does it.
+        /// A client cannot tell those two apart, because the code is the same.
+        ///
+        /// The callers keep their own object resolution, which genuinely differs:
+        /// <c>PatchService</c> starts from a target plus a type filter and
+        /// <c>WriteService</c> from the object it has already resolved.
+        /// </summary>
+        internal JArray BuildPatternShadowWarning(
+            global::Artech.Architecture.Common.Objects.KBObject obj,
+            string partName)
+        {
+            try
+            {
+                if (obj == null) return null;
+                if (!global::GxMcp.Worker.Helpers.WebFormXmlHelper.IsVisualPart(partName)) return null;
+
+                var resolved = ResolveWWPInstance(obj);
+
+                // Fallback for generated WW family (WW<Trn>, View<Trn>, etc.) whose host
+                // is `WorkWithPlus<TrnBaseName>` rather than `WorkWithPlus<obj.Name>`.
+                if (resolved == null && !string.IsNullOrEmpty(obj.Name))
+                {
+                    string[] candidatePrefixes = { "WW", "View", "ViewWW", "Prompt" };
+                    foreach (var pre in candidatePrefixes)
+                    {
+                        if (!obj.Name.StartsWith(pre, StringComparison.Ordinal)) continue;
+                        string baseName = obj.Name.Substring(pre.Length);
+                        if (string.IsNullOrEmpty(baseName)) continue;
+                        var host = _objectService.FindObject("WorkWithPlus" + baseName);
+                        if (host != null && string.Equals(host.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
+                        {
+                            resolved = host;
+                            break;
+                        }
+                    }
+                }
+                if (resolved == null) return null;
+
+                var part = FindPatternPart(resolved, "PatternInstance");
+                if (part == null) return null;
+
+                return new JArray
+                {
+                    new JObject
+                    {
+                        ["code"] = "EditingWebFormUnderPattern",
+                        ["severity"] = "warning",
+                        ["message"] =
+                            "This object is covered by a WorkWithPlus PatternInstance ('" + resolved.Name +
+                            "'). Hand edits to " + partName + " can be overwritten on the next pattern apply/save. " +
+                            "Consider editing part=PatternInstance instead (genexus_edit name=" + resolved.Name +
+                            " part=PatternInstance ...). Toggle SDPlus_Editor_Apply_On_Save=False on " + resolved.Name +
+                            " if you must keep a hard override on the visual part.",
+                        ["patternInstance"] = resolved.Name
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PatternAnalysisService] PatternShadow warning probe skipped: " + ex.Message);
+                return null;
+            }
+        }
+
         public string GetWWPStructure(string target, string guid = null, string entityKey = null, string typeFilter = null, string path = null)
         {
             try

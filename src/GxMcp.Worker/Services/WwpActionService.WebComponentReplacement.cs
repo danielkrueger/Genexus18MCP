@@ -129,8 +129,7 @@ namespace GxMcp.Worker.Services
                 _patterns.BuildPatternPartEnvelope(lockedTarget, "PatternInstance", currentXml, PatternRegistry.WorkWithPlusPatternId,
                     out _, out KBObjectPart currentPart);
                 if (currentInstance == null || currentPart == null || string.IsNullOrWhiteSpace(currentXml))
-                    return McpResponse.Err(code: "WWPInstanceNotFound",
-                        message: "The WorkWithPlus PatternInstance could not be re-resolved before save.", target: target);
+                    return BuildWwpInstanceNotResolvable(target);
 
                 string expectedVersion = args?["baseVersion"]?.ToString()
                     ?? args?["expectedVersion"]?.ToString()
@@ -138,13 +137,8 @@ namespace GxMcp.Worker.Services
                 string currentVersion = WriteService.ComputeContentVersionToken(currentInstance, currentXml);
                 if (!string.IsNullOrWhiteSpace(expectedVersion)
                     && !string.Equals(expectedVersion, currentVersion, StringComparison.Ordinal))
-                    return McpResponse.Err(code: "StaleObject",
-                        message: "The PatternInstance changed after the caller's read/dry-run; no replacement was applied.",
-                        target: target, extra: new JObject
-                        {
-                            ["expectedVersion"] = expectedVersion,
-                            ["currentVersion"] = currentVersion
-                        });
+                    return BuildWwpStaleObject(target, expectedVersion, currentVersion,
+                        "The PatternInstance changed after the caller's read/dry-run; no replacement was applied.");
 
                 XDocument lockedBefore = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
                 XDocument lockedPreviewDocument = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
@@ -159,8 +153,7 @@ namespace GxMcp.Worker.Services
                 byte[] nativeBytes = ReadPartBytes(currentPart);
                 SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
                 string applyOnSaveBefore = ReadObjectProperty(currentInstance, "SDPlus_Editor_Apply_On_Save");
-                if (nativeBytes == null || parent == null || parentWebFormBefore == null
-                    || snapshots.Pattern == null || snapshots.WebForm == null)
+                if (WwpSnapshotsIncomplete(nativeBytes, parent, parentWebFormBefore, snapshots))
                 {
                     Logger.Warn("[WWP-REPLACE] snapshot gate target=" + target
                         + " part=" + (currentPart?.GetType().FullName ?? "null")

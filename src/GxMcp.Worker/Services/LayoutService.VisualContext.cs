@@ -532,12 +532,11 @@ namespace GxMcp.Worker.Services
                 var doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
                 if (doc.Root == null)
                 {
-                    return ParseResult.FromError(Models.McpResponse.Err(
-                        code: "InvalidVisualXml",
-                        message: "Invalid visual XML: root element is missing.",
-                        hint: "The object's visual part may be corrupted; try re-opening the KB.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses available visual surfaces for this object.")),
-                        target: target));
+                    // The envelope moved to LayoutService.InvalidVisualXml, shared with GetTree and
+                    // FindControls. This copy had drifted: it dropped "or inspecting
+                    // the part directly" from the hint and reworded the recovery step
+                    // behind the same code.
+                    return ParseResult.FromError(InvalidVisualXml(target));
                 }
 
                 return ParseResult.FromDocument(doc);

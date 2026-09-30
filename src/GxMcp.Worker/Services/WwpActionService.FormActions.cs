@@ -58,13 +58,12 @@ namespace GxMcp.Worker.Services
                 KBObject lockedTarget = _objects.FindObject(target) ?? requestedObject;
                 string currentXml = _patterns.ReadPatternPartXml(lockedTarget, "PatternInstance", PatternRegistry.WorkWithPlusPatternId,
                     out KBObject currentInstance, out _);
-                KBObject resolvedCurrentObject;
-                KBObjectPart currentPart;
+                // The resolved object is discarded here, as in the other four partials -
+                // this one was capturing it into a named local it never read.
                 _patterns.BuildPatternPartEnvelope(lockedTarget, "PatternInstance", currentXml, PatternRegistry.WorkWithPlusPatternId,
-                    out resolvedCurrentObject, out currentPart);
+                    out _, out KBObjectPart currentPart);
                 if (currentInstance == null || currentPart == null || string.IsNullOrWhiteSpace(currentXml))
-                    return McpResponse.Err(code: "WWPInstanceNotFound",
-                        message: "The WorkWithPlus PatternInstance could not be re-resolved before save.", target: target);
+                    return BuildWwpInstanceNotResolvable(target);
 
                 string expectedVersion = args?["baseVersion"]?.ToString()
                     ?? args?["expectedVersion"]?.ToString()
@@ -72,13 +71,8 @@ namespace GxMcp.Worker.Services
                 string currentVersion = WriteService.ComputeContentVersionToken(currentInstance, currentXml);
                 if (!string.IsNullOrWhiteSpace(expectedVersion)
                     && !string.Equals(expectedVersion, currentVersion, StringComparison.Ordinal))
-                    return McpResponse.Err(code: "StaleObject",
-                        message: "The WorkWithPlus PatternInstance changed after the caller's read/dry-run; no form action was changed.",
-                        target: target, extra: new JObject
-                        {
-                            ["expectedVersion"] = expectedVersion,
-                            ["currentVersion"] = currentVersion
-                        });
+                    return BuildWwpStaleObject(target, expectedVersion, currentVersion,
+                        "The WorkWithPlus PatternInstance changed after the caller's read/dry-run; no form action was changed.");
 
                 XDocument lockedBefore = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
                 XDocument lockedAfter = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
@@ -100,8 +94,7 @@ namespace GxMcp.Worker.Services
                 byte[] nativeBytes = ReadPartBytes(currentPart);
                 SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
                 string applyOnSaveBefore = ReadObjectProperty(currentInstance, "SDPlus_Editor_Apply_On_Save");
-                if (nativeBytes == null || parent == null || parentWebFormBefore == null
-                    || snapshots.Pattern == null || snapshots.WebForm == null)
+                if (WwpSnapshotsIncomplete(nativeBytes, parent, parentWebFormBefore, snapshots))
                     return McpResponse.Err(code: "WwpSnapshotRequired",
                         message: "Exact PatternInstance and parent WebForm snapshots were not available; no form action was added.",
                         target: target, extra: new JObject

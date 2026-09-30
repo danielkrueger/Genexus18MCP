@@ -12,6 +12,91 @@ namespace GxMcp.Worker.Services
     // Pure move, no logic changes — see plans/007-decompose-writeservice.md.
     public partial class WriteService
     {
+        // Diagnostics attached to the VariableDimensionsNotPersisted envelope. The
+        // twelve failure branches of VerifyVariableDimensionsPersisted report the
+        // same expected-projection facts, so the shapes are built here once; only
+        // the message/hint — and, for a mismatch, the observed projection — vary.
+        // The requested-projection builder covers the branches that have no
+        // normalized projection yet: the requested sizes could not be parsed, or
+        // the saved object was unreadable.
+        private static JObject VariableProjectionExtra(
+            string varName, int expectedDimensions, IList<int> expectedSizes)
+        {
+            return new JObject
+            {
+                ["variable"] = varName,
+                ["expectedDimensions"] = expectedDimensions,
+                ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
+                ["saved"] = false
+            };
+        }
+
+        private static JObject VariableProjectionMismatchExtra(
+            string varName, int expectedDimensions, IList<int> expectedSizes,
+            JToken actualDimensions, JToken actualSizes)
+        {
+            return new JObject
+            {
+                ["variable"] = varName,
+                ["expectedDimensions"] = expectedDimensions,
+                ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
+                ["actualDimensions"] = actualDimensions,
+                ["actualDimensionSizes"] = actualSizes,
+                ["saved"] = false
+            };
+        }
+
+        private static JObject VariableRequestedProjectionExtra(
+            string varName, int dimensions, JArray dimensionSizes)
+        {
+            return new JObject
+            {
+                ["variable"] = varName,
+                ["dimensions"] = dimensions,
+                ["dimensionSizes"] = dimensionSizes?.DeepClone(),
+                ["saved"] = false
+            };
+        }
+
+        // The VariableTypeNotPersisted envelope for the post-save reference read-backs
+        // (Domain, Attribute, SDT/Business Component). All three resolve the same way -
+        // re-read the Variables part and report the names that lost their native
+        // reference - so the code and the read-back next step are built once here;
+        // only the message and hint name the specific reference kind that was lost.
+        // The dimension validation is the first thing every add/modify entry point
+        // does, and the four out-parameters plus the forward into McpResponse.Err
+        // were written out verbatim at each one. Returns null when the requested
+        // projection is valid, so a caller reads as a single guard.
+        internal static string DimensionValidationFailure(
+            int? dimensions, JArray dimensionSizes, bool? collection, string target)
+        {
+            if (VariableDimensionSupport.TryValidate(dimensions, dimensionSizes, collection,
+                out string code, out string message, out string hint, out JObject extra))
+                return null;
+
+            return McpResponse.Err(
+                code: code,
+                message: message,
+                hint: hint,
+                target: target,
+                extra: extra);
+        }
+
+        internal static string VariableTypeNotPersisted(
+            string target, JArray invalid, string message, string hint)
+        {
+            return McpResponse.Err(
+                code: "VariableTypeNotPersisted",
+                message: message,
+                hint: hint,
+                nextSteps: new JArray(McpResponse.NextStep(
+                    tool: "genexus_read",
+                    args: new JObject { ["name"] = target, ["part"] = "Variables" },
+                    why: "Shows the object state after the failed persistence check.")),
+                target: target,
+                extra: new JObject { ["variables"] = invalid });
+        }
+
         private string ResolveVariableTarget(string target, ref string varName,
             out global::Artech.Architecture.Common.Objects.KBObject obj,
             out global::Artech.Genexus.Common.Parts.VariablesPart varPart,
@@ -1055,18 +1140,8 @@ namespace GxMcp.Worker.Services
             int? length = null, int? decimals = null, bool? collection = null, string basedOn = null, string basedOnAttribute = null,
             int? dimensions = null, JArray dimensionSizes = null)
         {
-            string dimensionCode, dimensionMessage, dimensionHint;
-            JObject dimensionExtra;
-            if (!VariableDimensionSupport.TryValidate(dimensions, dimensionSizes, collection,
-                out dimensionCode, out dimensionMessage, out dimensionHint, out dimensionExtra))
-            {
-                return McpResponse.Err(
-                    code: dimensionCode,
-                    message: dimensionMessage,
-                    hint: dimensionHint,
-                    target: target,
-                    extra: dimensionExtra);
-            }
+            string dimensionValidationError = DimensionValidationFailure(dimensions, dimensionSizes, collection, target);
+            if (dimensionValidationError != null) return dimensionValidationError;
 
             if (dryRun)
             {
@@ -1454,13 +1529,7 @@ namespace GxMcp.Worker.Services
                     message: "The requested dimension sizes are not valid for verification: " + sizeError,
                     hint: "Use positive integer dimensionSizes matching dimensions=1 or dimensions=2.",
                     target: target,
-                    extra: new JObject
-                    {
-                        ["variable"] = varName,
-                        ["dimensions"] = dimensions.GetValueOrDefault(),
-                        ["dimensionSizes"] = dimensionSizes?.DeepClone(),
-                        ["saved"] = false
-                    });
+                    extra: VariableRequestedProjectionExtra(varName, dimensions.GetValueOrDefault(), dimensionSizes));
             }
             int expectedDimensions = dimensions.GetValueOrDefault();
 
@@ -1479,13 +1548,7 @@ namespace GxMcp.Worker.Services
                         message: "The variable dimensions could not be independently verified because the fresh Variables read was empty.",
                         hint: "Re-read the Variables part and verify the array metadata before retrying.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["expectedDimensions"] = expectedDimensions,
-                            ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                            ["saved"] = false
-                        });
+                        extra: VariableProjectionExtra(varName, expectedDimensions, expectedSizes));
                 }
 
                 JObject freshRead;
@@ -1497,13 +1560,7 @@ namespace GxMcp.Worker.Services
                         message: "The fresh Variables read could not be parsed for dimension verification: " + parseException.Message,
                         hint: "Inspect the saved Variables part and the Worker log before retrying.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["expectedDimensions"] = expectedDimensions,
-                            ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                            ["saved"] = false
-                        });
+                        extra: VariableProjectionExtra(varName, expectedDimensions, expectedSizes));
                 }
                 if (freshRead["error"] != null)
                 {
@@ -1516,13 +1573,7 @@ namespace GxMcp.Worker.Services
                         message: "The variable dimensions could not be independently verified: " + readError,
                         hint: "Re-read the Variables part and verify the array metadata before retrying.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["expectedDimensions"] = expectedDimensions,
-                            ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                            ["saved"] = false
-                        });
+                        extra: VariableProjectionExtra(varName, expectedDimensions, expectedSizes));
                 }
                 if (freshRead["variables"] is JArray freshRows)
                 {
@@ -1536,13 +1587,7 @@ namespace GxMcp.Worker.Services
                             message: "The SDK did not retain the variable after save; dimension metadata cannot be confirmed.",
                             hint: "Re-read Variables and retry the add or modify operation.",
                             target: target,
-                            extra: new JObject
-                            {
-                                ["variable"] = varName,
-                                ["expectedDimensions"] = expectedDimensions,
-                                ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                                ["saved"] = false
-                            });
+                            extra: VariableProjectionExtra(varName, expectedDimensions, expectedSizes));
                     }
                     if (freshRow["dimensionsMalformed"]?.ToObject<bool>() == true)
                     {
@@ -1552,13 +1597,7 @@ namespace GxMcp.Worker.Services
                                 ?? "The SDK returned malformed variable dimension metadata after save.",
                             hint: "Repair the array metadata in GeneXus before retrying.",
                             target: target,
-                            extra: new JObject
-                            {
-                                ["variable"] = varName,
-                                ["expectedDimensions"] = expectedDimensions,
-                                ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                                ["saved"] = false
-                            });
+                            extra: VariableProjectionExtra(varName, expectedDimensions, expectedSizes));
                     }
                     int actualDimensions;
                     List<int> actualSizes = new List<int>();
@@ -1585,15 +1624,8 @@ namespace GxMcp.Worker.Services
                         message: "The SDK accepted the variable write but did not retain the requested fixed-size dimensions.",
                         hint: "The variable was not reported as persisted. Re-read Variables and retry only after checking the GeneXus SDK compatibility.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["expectedDimensions"] = expectedDimensions,
-                            ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                            ["actualDimensions"] = freshRow["dimensions"],
-                            ["actualDimensionSizes"] = freshRow["dimensionSizes"]?.DeepClone(),
-                            ["saved"] = false
-                        });
+                        extra: VariableProjectionMismatchExtra(varName, expectedDimensions, expectedSizes,
+                            freshRow["dimensions"], freshRow["dimensionSizes"]?.DeepClone()));
                 }
 
                 var freshObject = _objectService.FindObjectFresh(target);
@@ -1604,13 +1636,7 @@ namespace GxMcp.Worker.Services
                         message: "The variable dimensions could not be independently verified because the saved object was not readable.",
                         hint: "Re-read the Variables part and verify the array metadata before retrying.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["dimensions"] = dimensions.GetValueOrDefault(),
-                            ["dimensionSizes"] = dimensionSizes?.DeepClone(),
-                            ["saved"] = false
-                        });
+                        extra: VariableRequestedProjectionExtra(varName, dimensions.GetValueOrDefault(), dimensionSizes));
                 }
 
                 var freshVariable = GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(freshObject)
@@ -1624,13 +1650,7 @@ namespace GxMcp.Worker.Services
                         message: "The SDK did not retain the variable after save; dimension metadata cannot be confirmed.",
                         hint: "Re-read Variables and retry the add or modify operation.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["dimensions"] = dimensions.GetValueOrDefault(),
-                            ["dimensionSizes"] = dimensionSizes?.DeepClone(),
-                            ["saved"] = false
-                        });
+                        extra: VariableRequestedProjectionExtra(varName, dimensions.GetValueOrDefault(), dimensionSizes));
                 }
 
                 VariableDimensionInfo actual;
@@ -1641,13 +1661,7 @@ namespace GxMcp.Worker.Services
                         message: actual.Error ?? "The SDK returned malformed variable dimension metadata after save.",
                         hint: "Repair the array metadata in GeneXus before retrying; the writer will not report an unverified dimension as persisted.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["expectedDimensions"] = expectedDimensions,
-                            ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                            ["saved"] = false
-                        });
+                        extra: VariableProjectionExtra(varName, expectedDimensions, expectedSizes));
                 }
 
                 bool same = actual.Dimensions == expectedDimensions
@@ -1671,15 +1685,8 @@ namespace GxMcp.Worker.Services
                         message: "The SDK accepted the variable write but did not retain the requested fixed-size dimensions.",
                         hint: "The variable was not reported as persisted. Re-read Variables and retry only after checking the GeneXus SDK compatibility.",
                         target: target,
-                        extra: new JObject
-                        {
-                            ["variable"] = varName,
-                            ["expectedDimensions"] = expectedDimensions,
-                            ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                            ["actualDimensions"] = actual.Dimensions,
-                            ["actualDimensionSizes"] = actual.SizesToJson(),
-                            ["saved"] = false
-                        });
+                        extra: VariableProjectionMismatchExtra(varName, expectedDimensions, expectedSizes,
+                            actual.Dimensions, actual.SizesToJson()));
                 }
             }
             catch (Exception ex)
@@ -1689,13 +1696,7 @@ namespace GxMcp.Worker.Services
                     message: "Independent variable-dimension verification failed: " + ex.Message,
                     hint: "Do not retry blindly; inspect the saved Variables part and the Worker log.",
                     target: target,
-                    extra: new JObject
-                    {
-                        ["variable"] = varName,
-                        ["expectedDimensions"] = expectedDimensions,
-                        ["expectedDimensionSizes"] = new JArray(expectedSizes.Cast<object>().ToArray()),
-                        ["saved"] = false
-                    });
+                    extra: VariableProjectionExtra(varName, expectedDimensions, expectedSizes));
             }
 
             return null;
@@ -1819,16 +1820,9 @@ namespace GxMcp.Worker.Services
             }
             if (invalid.Count == 0) return null;
 
-            return McpResponse.Err(
-                code: "VariableTypeNotPersisted",
-                message: "The SDK did not persist the requested Domain as a native entity reference.",
-                hint: "The operation cannot be completed safely on this GeneXus build. The writer rejects display-only dom:<name> metadata instead of reporting a false success.",
-                nextSteps: new JArray(McpResponse.NextStep(
-                    tool: "genexus_read",
-                    args: new JObject { ["name"] = target, ["part"] = "Variables" },
-                    why: "Shows the object state after the failed persistence check.")),
-                target: target,
-                extra: new JObject { ["variables"] = invalid });
+            return VariableTypeNotPersisted(target, invalid,
+                "The SDK did not persist the requested Domain as a native entity reference.",
+                "The operation cannot be completed safely on this GeneXus build. The writer rejects display-only dom:<name> metadata instead of reporting a false success.");
         }
 
         // issue #281 — post-save read-back for Attribute-based variable types.
@@ -1872,16 +1866,9 @@ namespace GxMcp.Worker.Services
             }
             if (invalid.Count == 0) return null;
 
-            return McpResponse.Err(
-                code: "VariableTypeNotPersisted",
-                message: "The SDK did not persist the requested Attribute as a native entity reference.",
-                hint: "The operation cannot be completed safely on this GeneXus build. Verify the Attribute belongs to the active KB.",
-                nextSteps: new JArray(McpResponse.NextStep(
-                    tool: "genexus_read",
-                    args: new JObject { ["name"] = target, ["part"] = "Variables" },
-                    why: "Shows the object state after the failed persistence check.")),
-                target: target,
-                extra: new JObject { ["variables"] = invalid });
+            return VariableTypeNotPersisted(target, invalid,
+                "The SDK did not persist the requested Attribute as a native entity reference.",
+                "The operation cannot be completed safely on this GeneXus build. Verify the Attribute belongs to the active KB.");
         }
 
         // Post-save read-back for SDT / Business Component variable types. The SDK
@@ -1946,16 +1933,9 @@ namespace GxMcp.Worker.Services
             }
             if (invalid.Count == 0) return null;
 
-            return McpResponse.Err(
-                code: "VariableTypeNotPersisted",
-                message: "The SDK did not persist the requested SDT/Business Component as a native object reference.",
-                hint: "The operation cannot be completed safely on this GeneXus build. Verify the object belongs to the active KB and retry.",
-                nextSteps: new JArray(McpResponse.NextStep(
-                    tool: "genexus_read",
-                    args: new JObject { ["name"] = target, ["part"] = "Variables" },
-                    why: "Shows the object state after the failed persistence check.")),
-                target: target,
-                extra: new JObject { ["variables"] = invalid });
+            return VariableTypeNotPersisted(target, invalid,
+                "The SDK did not persist the requested SDT/Business Component as a native object reference.",
+                "The operation cannot be completed safely on this GeneXus build. Verify the object belongs to the active KB and retry.");
         }
 
         // Reconstruct a removed variable instead of reusing the detached SDK instance. This is
@@ -2087,18 +2067,8 @@ namespace GxMcp.Worker.Services
             int? length = null, int? decimals = null, bool? collection = null, string basedOnAttribute = null,
             int? dimensions = null, JArray dimensionSizes = null)
         {
-            string dimensionCode, dimensionMessage, dimensionHint;
-            JObject dimensionExtra;
-            if (!VariableDimensionSupport.TryValidate(dimensions, dimensionSizes, collection,
-                out dimensionCode, out dimensionMessage, out dimensionHint, out dimensionExtra))
-            {
-                return McpResponse.Err(
-                    code: dimensionCode,
-                    message: dimensionMessage,
-                    hint: dimensionHint,
-                    target: target,
-                    extra: dimensionExtra);
-            }
+            string dimensionValidationError = DimensionValidationFailure(dimensions, dimensionSizes, collection, target);
+            if (dimensionValidationError != null) return dimensionValidationError;
 
             if (dryRun)
             {
@@ -2737,18 +2707,8 @@ namespace GxMcp.Worker.Services
             bool rollbackOnFailure = true, bool? collection = null,
             int? dimensions = null, JArray dimensionSizes = null)
         {
-            string dimensionCode, dimensionMessage, dimensionHint;
-            JObject dimensionExtra;
-            if (!VariableDimensionSupport.TryValidate(dimensions, dimensionSizes, collection,
-                out dimensionCode, out dimensionMessage, out dimensionHint, out dimensionExtra))
-            {
-                return McpResponse.Err(
-                    code: dimensionCode,
-                    message: dimensionMessage,
-                    hint: dimensionHint,
-                    target: target,
-                    extra: dimensionExtra);
-            }
+            string dimensionValidationError = DimensionValidationFailure(dimensions, dimensionSizes, collection, target);
+            if (dimensionValidationError != null) return dimensionValidationError;
 
             action = (action ?? "add").Trim().ToLowerInvariant();
             if (action != "add" && action != "modify")

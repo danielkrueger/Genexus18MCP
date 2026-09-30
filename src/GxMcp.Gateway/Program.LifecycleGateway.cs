@@ -279,6 +279,51 @@ namespace GxMcp.Gateway
             return (JObject)payload.DeepClone();
         }
 
+        /// <summary>
+        /// Brings a lifecycle job's stored result up to date before the Gateway
+        /// reports on it. Issue #27 item 1.
+        ///
+        /// Two actions did this by hand - <c>result</c> and <c>status</c> - with the
+        /// same eighteen lines each, and the condition is the whole point of the
+        /// method rather than incidental detail:
+        ///
+        ///   * the background poller may have wedged, so the job is reconciled
+        ///     against the worker before anything is reported;
+        ///   * but the stored result is only re-read when it already carries
+        ///     <c>newWarnings</c>, which is what marks it as a warning-bearing
+        ///     snapshot that can be stale rather than a still-forming one;
+        ///   * and only once the job is neither <c>running</c> nor <c>queued</c>,
+        ///     because a live job has nothing final to refresh from.
+        ///
+        /// A drift between the two copies would mean one action reports a stale
+        /// result while the other refreshes, which is the exact failure the issue
+        /// describes and one no single-action test would notice.
+        ///
+        /// The write goes through <c>SyncRoot</c> because the background poller
+        /// writes the same field.
+        /// </summary>
+        private static async Task RefreshLifecycleResultFromWorkerAsync(
+            JobEntry job,
+            JObject? args,
+            CancellationToken transportCancellation)
+        {
+            await ReconcileJobWithWorkerAsync(job, "genexus_lifecycle", args);
+            if (job.Kind?.StartsWith("lifecycle/", StringComparison.OrdinalIgnoreCase) == true
+                && !string.IsNullOrWhiteSpace(job.WorkerTaskId)
+                && job.Result is JObject storedStatus
+                && storedStatus["newWarnings"] != null
+                && !string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, "queued", StringComparison.OrdinalIgnoreCase))
+            {
+                JObject? fullResult = await ReadWorkerLifecycleResultAsync(
+                    job.WorkerTaskId, args, transportCancellation);
+                if (fullResult != null)
+                {
+                    lock (job.SyncRoot) job.Result = fullResult;
+                }
+            }
+        }
+
         private static async Task<JObject?> ReadWorkerLifecycleResultAsync(
             string? taskId,
             JObject? args,
@@ -755,24 +800,7 @@ namespace GxMcp.Gateway
                         string resultJobId = resultAlias.Job.Id;
                         var probe = resultAlias.Job;
                         {
-                            // Issue #27 item 1: if the job is still "running", actively
-                            // reconcile against the worker before reporting Pending — the
-                            // background poller may have wedged.
-                            await ReconcileJobWithWorkerAsync(probe, "genexus_lifecycle", args);
-                            if (probe.Kind?.StartsWith("lifecycle/", StringComparison.OrdinalIgnoreCase) == true
-                                && !string.IsNullOrWhiteSpace(probe.WorkerTaskId)
-                                && probe.Result is JObject storedStatus
-                                && storedStatus["newWarnings"] != null
-                                && !string.Equals(probe.Status, "running", StringComparison.OrdinalIgnoreCase)
-                                && !string.Equals(probe.Status, "queued", StringComparison.OrdinalIgnoreCase))
-                             {
-                                 JObject? fullResult = await ReadWorkerLifecycleResultAsync(
-                                     probe.WorkerTaskId, args, transportCancellation);
-                                 if (fullResult != null)
-                                 {
-                                     lock (probe.SyncRoot) probe.Result = fullResult;
-                                 }
-                             }
+                            await RefreshLifecycleResultFromWorkerAsync(probe, args, transportCancellation);
                             // Envelope shape extracted into McpRouter.BuildJobResultEnvelope
                             // for unit-test coverage and parity with status long-poll.
                             var (resultPayload, isErr) = McpRouter.BuildJobResultEnvelope(probe);
@@ -796,24 +824,7 @@ namespace GxMcp.Gateway
                         string jobId = statusAlias.Job.Id;
                         var probe = statusAlias.Job;
                         {
-                            // Issue #27 item 1: reconcile a still-running job against the
-                            // worker's real build-task state before long-polling, so a wedged
-                            // background poller can't keep a finished build stuck at "running".
-                            await ReconcileJobWithWorkerAsync(probe, "genexus_lifecycle", args);
-                            if (probe.Kind?.StartsWith("lifecycle/", StringComparison.OrdinalIgnoreCase) == true
-                                && !string.IsNullOrWhiteSpace(probe.WorkerTaskId)
-                                && probe.Result is JObject storedStatus
-                                && storedStatus["newWarnings"] != null
-                                && !string.Equals(probe.Status, "running", StringComparison.OrdinalIgnoreCase)
-                                && !string.Equals(probe.Status, "queued", StringComparison.OrdinalIgnoreCase))
-                             {
-                                 JObject? fullResult = await ReadWorkerLifecycleResultAsync(
-                                     probe.WorkerTaskId, args, transportCancellation);
-                                 if (fullResult != null)
-                                 {
-                                     lock (probe.SyncRoot) probe.Result = fullResult;
-                                 }
-                             }
+                            await RefreshLifecycleResultFromWorkerAsync(probe, args, transportCancellation);
                             bool waitUntilDone = args?["wait_until_done"]?.ToObject<bool?>() == true;
                             int? requestedWait = args?["wait"]?.ToObject<int?>()
                                 ?? args?["wait_seconds"]?.ToObject<int?>();

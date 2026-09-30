@@ -34,6 +34,25 @@ namespace GxMcp.Gateway
         public const string ModernProtocolVersion = "2026-07-28";
         public const string SupportedProtocolVersion = "2025-11-25";
 
+        /// <summary>
+        /// Cache lifetime for a static document or discovery listing: an hour,
+        /// publicly cacheable. Everything the Gateway serves that is a function of
+        /// the installed software rather than of live state uses this - tools/list,
+        /// prompts/list, resources/list, resources/templates/list, server discover
+        /// and the doc resources. It was written as the bare literal <c>3600000</c>
+        /// in eight places, and a client reads it, so it is a wire-visible
+        /// contract; one constant keeps that from becoming eight independent
+        /// decisions.
+        /// </summary>
+        private const int PublicResourceTtlMs = 3600000;
+
+        /// <summary>
+        /// Cache lifetime for a resource that reflects live state, and private so a
+        /// client cannot serve it from a shared cache. Health is the only one:
+        /// caching it for an hour would report a stale Gateway.
+        /// </summary>
+        private const int LiveResourceTtlMs = 1000;
+
         private static string ResolveServerVersion()
         {
             // Prefer the InformationalVersion (set in the csproj via <InformationalVersion>),
@@ -76,7 +95,7 @@ namespace GxMcp.Gateway
         {
             resultType = "complete",
             prompts = BuildPromptCatalog(),
-            ttlMs = 3600000,
+            ttlMs = PublicResourceTtlMs,
             cacheScope = "public"
         };
         // PERFORMANCE (G-B3): hot-reload tool_definitions.json without restarting the gateway.
@@ -202,7 +221,21 @@ namespace GxMcp.Gateway
             }
         }
 
-        private static void LoadToolDefinitions()
+        // NOTE: this is the THIRD way the Gateway looks for tool_definitions.json.
+            // GatewayArgsValidator and ToolIdentity both go through
+            // ToolDefinitionsLocator.Locate(), which checks beside the assembly and
+            // then walks up eight parent directories for the dev/test layouts.
+            // This one checks beside the executing assembly ONLY, with no walk-up.
+            //
+            // Left as it is deliberately. Pointing it at the shared locator would
+            // change where it finds the file in any layout where the JSON is not
+            // next to the binary - it would start loading schemas there instead of
+            // logging "not found" - which is a behaviour change, not a
+            // consolidation. Worth deciding deliberately: as it stands, a dev or
+            // test run with the JSON only under the project loads no tool
+            // definitions at all here while argument validation and tool identity
+            // both still work, so the Gateway can serve tools it will not validate.
+            private static void LoadToolDefinitions()
         {
             try
             {
@@ -227,7 +260,7 @@ namespace GxMcp.Gateway
                     {
                         ["resultType"] = "complete",
                         ["tools"] = ToolProfileFilter.GetOrCreateFiltered(_toolDefinitions, "all"),
-                        ["ttlMs"] = 3600000,
+                        ["ttlMs"] = PublicResourceTtlMs,
                         ["cacheScope"] = "public"
                     };
                     _cachedProfileResponses.Clear();
@@ -408,7 +441,7 @@ namespace GxMcp.Gateway
                 },
                 ["instructions"] = "Use genexus_whoami first, then discover and operate on the active GeneXus Knowledge Base with the narrowest read or write tool that fits.",
                 ["profiles"] = new JArray("exploration", "safe-edit", "ui", "build", "versioning", "deploy"),
-                ["ttlMs"] = 3600000,
+                ["ttlMs"] = PublicResourceTtlMs,
                 ["cacheScope"] = "public"
             };
         }
@@ -440,7 +473,7 @@ namespace GxMcp.Gateway
                             {
                                 ["resultType"] = "complete",
                                 ["tools"] = ToolProfileFilter.GetOrCreateFiltered(_toolDefinitions, "all"),
-                                ["ttlMs"] = 3600000,
+                                ["ttlMs"] = PublicResourceTtlMs,
                                 ["cacheScope"] = "public"
                             };
                         }
@@ -449,7 +482,7 @@ namespace GxMcp.Gateway
                             ["resultType"] = "complete",
                             ["tools"] = ToolProfileFilter.GetOrCreateFiltered(_toolDefinitions, p),
                             ["profile"] = p,
-                            ["ttlMs"] = 3600000,
+                            ["ttlMs"] = PublicResourceTtlMs,
                             ["cacheScope"] = "public"
                         });
                     }
@@ -647,7 +680,7 @@ namespace GxMcp.Gateway
             {
                 resultType = "complete",
                 resources = baseResources,
-                ttlMs = 3600000,
+                ttlMs = PublicResourceTtlMs,
                 cacheScope = "public"
             };
         }
@@ -744,7 +777,7 @@ namespace GxMcp.Gateway
                         description = "Read one official Nexa Markdown reference for GeneXus object modeling, properties, commands, or workflows."
                     }
                 },
-                ttlMs = 3600000,
+                ttlMs = PublicResourceTtlMs,
                 cacheScope = "public"
             };
         }
@@ -1027,6 +1060,41 @@ namespace GxMcp.Gateway
             return true;
         }
 
+        /// <summary>
+        /// The MCP <c>resources/read</c> completion envelope for one Markdown
+        /// document, with the public lifetime.
+        ///
+        /// It was written out in full seven times, differing only in the document
+        /// and the lifetime. <c>ttlMs</c>, <c>cacheScope</c> and <c>mimeType</c> are
+        /// the contract a client reads, so seven copies are seven chances for one
+        /// resource to disagree with another about how long it may be cached.
+        ///
+        /// Note the <c>uri</c> argument, not the request: <c>UnscopeResourceUri</c>
+        /// preserves the caller's casing, and three of the seven call sites pass a
+        /// canonical lowercase literal while the other four pass the request. That
+        /// inconsistency predates this helper and is left exactly as it was -
+        /// normalising it would change what four resources echo back.
+        /// </summary>
+        private static object ResourceCompletion(string uri, string text) =>
+            ResourceCompletion(uri, text, PublicResourceTtlMs, "public");
+
+        private static object ResourceCompletion(string uri, string text, int ttlMs, string cacheScope) =>
+            new
+            {
+                resultType = "complete",
+                ttlMs,
+                cacheScope,
+                contents = new[]
+                {
+                    new
+                    {
+                        uri,
+                        mimeType = "text/markdown",
+                        text
+                    }
+                }
+            };
+
         private static object? BuildStaticResourceResponse(JObject request)
         {
             string requestedUri = request["params"]?["uri"]?.ToString() ?? string.Empty;
@@ -1034,59 +1102,17 @@ namespace GxMcp.Gateway
 
             if (string.Equals(uri, "genexus://kb/health", StringComparison.OrdinalIgnoreCase))
             {
-                return new
-                {
-                    resultType = "complete",
-                    ttlMs = 1000,
-                    cacheScope = "private",
-                    contents = new[]
-                    {
-                        new
-                        {
-                            uri = "genexus://kb/health",
-                            mimeType = "text/markdown",
-                            text = BuildHealthReport()
-                        }
-                    }
-                };
+                return ResourceCompletion("genexus://kb/health", BuildHealthReport(), LiveResourceTtlMs, "private");
             }
 
             if (string.Equals(uri, "genexus://kb/agent-playbook", StringComparison.OrdinalIgnoreCase))
             {
-                return new
-                {
-                    resultType = "complete",
-                    ttlMs = 3600000,
-                    cacheScope = "public",
-                    contents = new[]
-                    {
-                        new
-                        {
-                            uri = "genexus://kb/agent-playbook",
-                            mimeType = "text/markdown",
-                            text = BuildAgentPlaybook()
-                        }
-                    }
-                };
+                return ResourceCompletion("genexus://kb/agent-playbook", BuildAgentPlaybook());
             }
 
             if (string.Equals(uri, "genexus://kb/llm-playbook", StringComparison.OrdinalIgnoreCase))
             {
-                return new
-                {
-                    resultType = "complete",
-                    ttlMs = 3600000,
-                    cacheScope = "public",
-                    contents = new[]
-                    {
-                        new
-                        {
-                            uri = "genexus://kb/llm-playbook",
-                            mimeType = "text/markdown",
-                            text = BuildLlmCliMcpPlaybook()
-                        }
-                    }
-                };
+                return ResourceCompletion("genexus://kb/llm-playbook", BuildLlmCliMcpPlaybook());
             }
 
             // Curated and official GeneXus development skills. The Nexa entry
@@ -1098,21 +1124,7 @@ namespace GxMcp.Gateway
                 var skill = SkillCatalog.FindByKey(skillKey);
                 if (skill != null)
                 {
-                    return new
-                    {
-                        resultType = "complete",
-                        ttlMs = 3600000,
-                        cacheScope = "public",
-                        contents = new[]
-                        {
-                            new
-                            {
-                                uri,
-                                mimeType = "text/markdown",
-                                text = skill.Body
-                            }
-                        }
-                    };
+                    return ResourceCompletion(uri, skill.Body);
                 }
 
                 const string nexaPrefix = "nexa/";
@@ -1122,21 +1134,7 @@ namespace GxMcp.Gateway
                     return null;
                 }
 
-                return new
-                {
-                    resultType = "complete",
-                    ttlMs = 3600000,
-                    cacheScope = "public",
-                    contents = new[]
-                    {
-                        new
-                        {
-                            uri,
-                            mimeType = "text/markdown",
-                            text = nexaBody
-                        }
-                    }
-                };
+                return ResourceCompletion(uri, nexaBody);
             }
 
             // Friction 2026-05-22 #62: gotcha doc resource. Codes emitted on
@@ -1147,22 +1145,7 @@ namespace GxMcp.Gateway
             if (uri.StartsWith(gotchaPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 string code = uri.Substring(gotchaPrefix.Length);
-                string text = ToolHelpCatalog.GetGotchaHelp(code);
-                return new
-                {
-                    resultType = "complete",
-                    ttlMs = 3600000,
-                    cacheScope = "public",
-                    contents = new[]
-                    {
-                        new
-                        {
-                            uri,
-                            mimeType = "text/markdown",
-                            text
-                        }
-                    }
-                };
+                return ResourceCompletion(uri, ToolHelpCatalog.GetGotchaHelp(code));
             }
 
             const string toolHelpPrefix = "genexus://kb/tool-help/";
@@ -1172,21 +1155,7 @@ namespace GxMcp.Gateway
                 string? text = ToolHelpCatalog.Get(toolName);
                 if (text == null) return null;
 
-                return new
-                {
-                    resultType = "complete",
-                    ttlMs = 3600000,
-                    cacheScope = "public",
-                    contents = new[]
-                    {
-                        new
-                        {
-                            uri,
-                            mimeType = "text/markdown",
-                            text
-                        }
-                    }
-                };
+                return ResourceCompletion(uri, text);
             }
 
             return null;

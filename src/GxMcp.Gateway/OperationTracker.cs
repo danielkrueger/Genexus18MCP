@@ -156,11 +156,9 @@ namespace GxMcp.Gateway
 
             lock (record.SyncRoot)
             {
-                if (string.Equals(record.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(record.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(record.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                if (IsTerminalRecordState(record.Status))
                 {
-                    return true; // already terminal — idempotent
+                    return true; // already terminal - idempotent
                 }
 
                 record.Status = "Cancelled";
@@ -188,9 +186,7 @@ namespace GxMcp.Gateway
 
             lock (record.SyncRoot)
             {
-                if (string.Equals(record.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(record.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(record.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                if (IsTerminalRecordState(record.Status))
                     return true;
 
                 record.Status = "CancellationRequested";
@@ -284,36 +280,60 @@ namespace GxMcp.Gateway
         public JObject BuildOperationStatus(string operationId)
         {
             if (!_operations.TryGetValue(operationId, out var record))
-            {
-                return new JObject
-                {
-                    ["status"] = "NotFound",
-                    ["operationId"] = operationId,
-                    ["message"] = "Operation not found or expired."
-                };
-            }
+                return BuildNotFound(operationId);
 
             lock (record.SyncRoot)
             {
-                var status = new JObject
-                {
-                    ["status"] = record.Status,
-                    ["operationId"] = record.OperationId,
-                    ["phase"] = record.Phase,
-                    ["progressMessage"] = record.LastProgressMessage,
-                    ["toolName"] = record.ToolName,
-                    ["correlationId"] = record.CorrelationId,
-                    ["timedOut"] = record.TimedOut,
-                    ["timeoutCount"] = record.TimeoutCount,
-                    ["startedAtUtc"] = record.StartedAtUtc,
-                    ["updatedAtUtc"] = record.UpdatedAtUtc,
-                    ["completedAtUtc"] = record.CompletedAtUtc
-                };
-                if (!string.IsNullOrWhiteSpace(record.LastError))
-                    status["error"] = record.LastError;
+                var status = BuildBasePayload(record);
                 AttachTimedOutHint(status, record);
                 return status;
             }
+        }
+
+        /// <summary>
+        /// The envelope for an operation id this tracker does not know. Shared by
+        /// the status and result responses so a caller polling either one gets
+        /// the same "unknown or expired" answer.
+        /// </summary>
+        private static JObject BuildNotFound(string operationId)
+        {
+            return new JObject
+            {
+                ["status"] = "NotFound",
+                ["operationId"] = operationId,
+                ["message"] = "Operation not found or expired."
+            };
+        }
+
+        /// <summary>
+        /// The identity and lifecycle fields every operation response carries,
+        /// plus the error when the record has one.
+        ///
+        /// This projects a record rather than locking it, and is deliberately
+        /// called from inside each caller's <c>lock (record.SyncRoot)</c>: an
+        /// <see cref="OperationRecord"/> is mutable and is written by the polling
+        /// and completion paths, so every field read here has to happen under that
+        /// lock. It is a projection, not an accessor.
+        /// </summary>
+        private static JObject BuildBasePayload(OperationRecord record)
+        {
+            var payload = new JObject
+            {
+                ["status"] = record.Status,
+                ["operationId"] = record.OperationId,
+                ["phase"] = record.Phase,
+                ["progressMessage"] = record.LastProgressMessage,
+                ["toolName"] = record.ToolName,
+                ["correlationId"] = record.CorrelationId,
+                ["timedOut"] = record.TimedOut,
+                ["timeoutCount"] = record.TimeoutCount,
+                ["startedAtUtc"] = record.StartedAtUtc,
+                ["updatedAtUtc"] = record.UpdatedAtUtc,
+                ["completedAtUtc"] = record.CompletedAtUtc
+            };
+            if (!string.IsNullOrWhiteSpace(record.LastError))
+                payload["error"] = record.LastError;
+            return payload;
         }
 
         // issue #36.5 — a gateway wall-clock timeout leaves the op Status="Running" while the
@@ -350,36 +370,11 @@ namespace GxMcp.Gateway
         public JObject BuildOperationResult(string operationId)
         {
             if (!_operations.TryGetValue(operationId, out var record))
-            {
-                return new JObject
-                {
-                    ["status"] = "NotFound",
-                    ["operationId"] = operationId,
-                    ["message"] = "Operation not found or expired."
-                };
-            }
+                return BuildNotFound(operationId);
 
             lock (record.SyncRoot)
             {
-                var payload = new JObject
-                {
-                    ["status"] = record.Status,
-                    ["operationId"] = record.OperationId,
-                    ["phase"] = record.Phase,
-                    ["progressMessage"] = record.LastProgressMessage,
-                    ["toolName"] = record.ToolName,
-                    ["correlationId"] = record.CorrelationId,
-                    ["timedOut"] = record.TimedOut,
-                    ["timeoutCount"] = record.TimeoutCount,
-                    ["startedAtUtc"] = record.StartedAtUtc,
-                    ["updatedAtUtc"] = record.UpdatedAtUtc,
-                    ["completedAtUtc"] = record.CompletedAtUtc
-                };
-
-                if (!string.IsNullOrWhiteSpace(record.LastError))
-                {
-                    payload["error"] = record.LastError;
-                }
+                var payload = BuildBasePayload(record);
 
                 if (record.WorkerPayload != null)
                 {
@@ -471,6 +466,40 @@ namespace GxMcp.Gateway
             return current;
         }
 
+        /// <summary>
+        /// Whether a polled status is one a caller can stop waiting on.
+        /// </summary>
+        /// <remarks>
+        /// The five values split into two groups, and the split is why they are
+        /// listed rather than derived.
+        ///
+        /// <c>Completed</c>, <c>Failed</c> and <c>Cancelled</c> are terminal
+        /// <em>record</em> states: this tracker sets them in CompleteFromWorker,
+        /// MarkCancelled and the two failure paths, and nothing sets them back.
+        /// <c>NotFound</c> is the envelope BuildNotFound returns for an id this
+        /// tracker does not know - not a state a record ever holds.
+        ///
+        /// <c>Stalled</c> is the odd one out, and it is defensive rather than
+        /// descriptive. The only "stalled" producer in the Gateway is
+        /// Program.WorkerLifecycle, and it writes that into a <em>worker</em>
+        /// payload; the background-job registry has its own lowercase "stalled"
+        /// job status, read by McpRouter and LifecycleResponseShaper, not here.
+        /// No path in this class puts "Stalled" on a record, so the clause cannot
+        /// fire from anything this tracker produces.
+        ///
+        /// It is kept because the cost of a wrong answer is asymmetric: a status
+        /// that should have ended a wait but did not means an agent polls until its
+        /// deadline, while a status that ends a wait early reports a still-running
+        /// operation as finished. The first wastes a caller's time and the second
+        /// can be acted on. Which way is correct is a question about the SDK's
+        /// payload rather than about this tracker, so the term stays and the reason
+        /// it is unreachable is written down rather than left to be re-derived.
+        ///
+        /// The two cancellation paths both use this, and they must agree:
+        /// MarkCancelled and MarkCancellationRequested check the same three
+        /// terminal record states before acting, so a cancel request arriving after
+        /// an operation finished is idempotent on both paths.
+        /// </remarks>
         private static bool IsTerminalOperationStatus(string status)
         {
             return string.Equals(status, "Completed", StringComparison.OrdinalIgnoreCase)
@@ -478,6 +507,20 @@ namespace GxMcp.Gateway
                 || string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(status, "Stalled", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(status, "NotFound", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Whether a record has already reached a terminal state. Distinct from
+        /// <see cref="IsTerminalOperationStatus"/>, which also recognises the
+        /// not-found envelope and the defensive stalled clause: this one answers
+        /// only for states a record can actually hold, which is what the two
+        /// cancellation paths need to decide whether they may still act.
+        /// </summary>
+        private static bool IsTerminalRecordState(string status)
+        {
+            return string.Equals(status, "Completed", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "Failed", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void AnnotateWaitResult(

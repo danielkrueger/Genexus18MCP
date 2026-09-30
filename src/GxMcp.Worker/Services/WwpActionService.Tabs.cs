@@ -70,8 +70,7 @@ namespace GxMcp.Worker.Services
                 _patterns.BuildPatternPartEnvelope(lockedTarget, "PatternInstance", currentXml, PatternRegistry.WorkWithPlusPatternId,
                     out _, out KBObjectPart currentPart);
                 if (currentInstance == null || currentPart == null || string.IsNullOrWhiteSpace(currentXml))
-                    return McpResponse.Err(code: "WWPInstanceNotFound",
-                        message: "The WorkWithPlus PatternInstance could not be re-resolved before save.", target: target);
+                    return BuildWwpInstanceNotResolvable(target);
 
                 string expectedVersion = args?["baseVersion"]?.ToString()
                     ?? args?["expectedVersion"]?.ToString()
@@ -79,13 +78,8 @@ namespace GxMcp.Worker.Services
                 string currentVersion = WriteService.ComputeContentVersionToken(currentInstance, currentXml);
                 if (!string.IsNullOrWhiteSpace(expectedVersion)
                     && !string.Equals(expectedVersion, currentVersion, StringComparison.Ordinal))
-                    return McpResponse.Err(code: "StaleObject",
-                        message: "The PatternInstance changed after the caller's read/dry-run; no tab mutation was applied.",
-                        target: target, extra: new JObject
-                        {
-                            ["expectedVersion"] = expectedVersion,
-                            ["currentVersion"] = currentVersion
-                        });
+                    return BuildWwpStaleObject(target, expectedVersion, currentVersion,
+                        "The PatternInstance changed after the caller's read/dry-run; no tab mutation was applied.");
 
                 // Recompute the requested state under the per-object lock. This prevents a
                 // dry-run diff from being applied to a newer in-memory PatternInstance.
@@ -102,8 +96,7 @@ namespace GxMcp.Worker.Services
                 SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
                 string applyOnSaveBefore = ReadObjectProperty(currentInstance, "SDPlus_Editor_Apply_On_Save");
 
-                if (nativeBytes == null || parent == null || parentWebFormBefore == null
-                    || snapshots.Pattern == null || snapshots.WebForm == null)
+                if (WwpSnapshotsIncomplete(nativeBytes, parent, parentWebFormBefore, snapshots))
                     return McpResponse.Err(code: "WwpSnapshotRequired",
                         message: "The exact PatternInstance/WebForm snapshots could not be captured; no mutation was applied.",
                         target: target, extra: new JObject { ["snapshot"] = snapshots.ToJson(), ["persisted"] = false });
@@ -824,7 +817,17 @@ namespace GxMcp.Worker.Services
             return SdkReflection.Sha256Hex(value);
         }
 
-        private sealed class SnapshotBundle
+        /// <summary>
+        /// The before-state a WWP mutation needs in order to prove what it changed.
+        /// </summary>
+        /// <remarks>
+        /// <c>internal</c> rather than <c>private</c> so
+        /// <see cref="WwpSnapshotsIncomplete"/> can take it: the rule that decides
+        /// whether a mutation may proceed is five terms long, and it is only worth
+        /// stating once if something can check that none of the five was dropped. Its
+        /// fields were already <c>internal</c>.
+        /// </remarks>
+        internal sealed class SnapshotBundle
         {
             internal EditSnapshotStore.SnapshotInfo Pattern;
             internal string PatternSha256;

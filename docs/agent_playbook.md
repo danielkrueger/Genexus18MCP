@@ -195,6 +195,13 @@ isolation before being treated as regressions:
 
 - `EdgeCaseRegressionTests.Dispatcher_PatchApply_ValidateOnly_MapsToDryRun_ViaConvention`
 - `PatternApplyServiceTests.*`
+- `SourceSearchPrimaryPartTests.OldDiskSourceIsDiscardedThenEventsPromotionSurvivesReload` —
+  it writes and re-reads real index snapshots under `Path.GetTempPath()`, so it is
+  the suite's most filesystem-timing-sensitive test. Seen failing once inside a full
+  parallel solution run and not reproduced by three subsequent full Worker runs or by
+  running the class in isolation; the cause was not determined. Treat a single
+  occurrence as unresolved rather than as either a regression or a known flake, and
+  get the assertion message before deciding.
 
 ### A test failure that contradicts your change
 

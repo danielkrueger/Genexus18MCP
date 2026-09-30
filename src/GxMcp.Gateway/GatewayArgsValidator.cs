@@ -406,7 +406,7 @@ namespace GxMcp.Gateway
             lock (_loadLock)
             {
                 if (_toolDefs != null) return;
-                string? path = LocateToolDefinitions();
+                string? path = ToolDefinitionsLocator.Locate();
                 if (path == null) return;
                 try
                 {
@@ -420,28 +420,7 @@ namespace GxMcp.Gateway
             }
         }
 
-        private static string? LocateToolDefinitions()
-        {
-            // 1. Beside the assembly (deployed layout)
-            string beside = Path.Combine(AppContext.BaseDirectory, "tool_definitions.json");
-            if (File.Exists(beside)) return beside;
-
-            // 2. Walk up from base dir (IDE test / dev layout)
-            string dir = AppContext.BaseDirectory;
-            for (int i = 0; i < 8; i++)
-            {
-                string c1 = Path.Combine(dir, "GxMcp.Gateway", "tool_definitions.json");
-                if (File.Exists(c1)) return c1;
-                string c2 = Path.Combine(dir, "src", "GxMcp.Gateway", "tool_definitions.json");
-                if (File.Exists(c2)) return c2;
-                var parent = Directory.GetParent(dir);
-                if (parent == null) break;
-                dir = parent.FullName;
-            }
-            return null;
-        }
-
-        /// <summary>
+                /// <summary>
         /// Test-only: prime the cache with a given schema so tests don't need a file on disk.
         /// </summary>
         internal static void PrimeCache(string toolName, JObject? schema)

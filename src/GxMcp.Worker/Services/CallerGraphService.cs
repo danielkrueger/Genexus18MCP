@@ -239,56 +239,37 @@ namespace GxMcp.Worker.Services
             => GetCallersTransitive(root, maxNodes, System.Threading.CancellationToken.None);
 
         public TransitiveResult GetCallersTransitive(string root, int maxNodes, System.Threading.CancellationToken ct)
-        {
-            var result = new TransitiveResult();
-            if (string.IsNullOrEmpty(root) || maxNodes <= 0) return result;
-
-            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var queue = new Queue<(string Name, int Depth)>();
-            queue.Enqueue((root, 0));
-            visited.Add(root);
-
-            int maxDepth = 0;
-
-            while (queue.Count > 0)
-            {
-                if (ct.IsCancellationRequested) { result.Truncated = true; result.Depth = maxDepth; return result; }
-                var (name, d) = queue.Dequeue();
-                maxDepth = Math.Max(maxDepth, d);
-
-                foreach (var caller in GetCallers(name))
-                {
-                    if (string.IsNullOrEmpty(caller)) continue;
-                    if (!visited.Add(caller)) continue;
-
-                    result.Nodes.Add(caller);
-                    if (result.Nodes.Count >= maxNodes)
-                    {
-                        result.Truncated = true;
-                        result.Depth = Math.Max(maxDepth, d + 1);
-                        return result;
-                    }
-                    queue.Enqueue((caller, d + 1));
-                }
-
-                if (visited.Count > 0 && visited.Count % 25 == 0)
-                {
-                    GxMcp.Worker.Helpers.ProgressEmitter.Emit(
-                        progress: System.Math.Min(95, visited.Count),
-                        total: System.Math.Max(100, visited.Count + queue.Count),
-                        message: "Impact analysis: " + visited.Count + " visited, " + queue.Count + " pending");
-                }
-            }
-
-            result.Depth = maxDepth;
-            return result;
-        }
+            => WalkTransitive(root, maxNodes, ct, GetCallers);
 
         // BFS over callees, capped at maxNodes (exclusive of the root). Cycle-safe.
         public TransitiveResult GetCalleesTransitive(string root, int maxNodes = 200)
             => GetCalleesTransitive(root, maxNodes, System.Threading.CancellationToken.None);
 
         public TransitiveResult GetCalleesTransitive(string root, int maxNodes, System.Threading.CancellationToken ct)
+            => WalkTransitive(root, maxNodes, ct, GetCallees);
+
+        /// <summary>
+        /// The BFS both transitive walks share. <c>GetCallersTransitive</c> expands
+        /// CalledBy edges and <c>GetCalleesTransitive</c> expands Called edges;
+        /// apart from which neighbour set they expand, the traversal, the cycle
+        /// guard, the node cap, the cancellation handling and the progress emission
+        /// were the same thirty-odd lines twice over.
+        ///
+        /// One copy also means one place for the cap and the visited set to agree.
+        /// If the two walks drifted - different cap semantics, or one that counted
+        /// nodes the other did not - an impact analysis and a dependency listing
+        /// would disagree about the same object, and both feed the decision of what
+        /// to recompile.
+        /// </summary>
+        /// <param name="neighbours">
+        /// The next hop from a node: callers for the reverse walk, callees for the
+        /// forward one.
+        /// </param>
+        private TransitiveResult WalkTransitive(
+            string root,
+            int maxNodes,
+            System.Threading.CancellationToken ct,
+            Func<string, IEnumerable<string>> neighbours)
         {
             var result = new TransitiveResult();
             if (string.IsNullOrEmpty(root) || maxNodes <= 0) return result;
@@ -306,19 +287,19 @@ namespace GxMcp.Worker.Services
                 var (name, d) = queue.Dequeue();
                 maxDepth = Math.Max(maxDepth, d);
 
-                foreach (var callee in GetCallees(name))
+                foreach (var neighbour in neighbours(name))
                 {
-                    if (string.IsNullOrEmpty(callee)) continue;
-                    if (!visited.Add(callee)) continue;
+                    if (string.IsNullOrEmpty(neighbour)) continue;
+                    if (!visited.Add(neighbour)) continue;
 
-                    result.Nodes.Add(callee);
+                    result.Nodes.Add(neighbour);
                     if (result.Nodes.Count >= maxNodes)
                     {
                         result.Truncated = true;
                         result.Depth = Math.Max(maxDepth, d + 1);
                         return result;
                     }
-                    queue.Enqueue((callee, d + 1));
+                    queue.Enqueue((neighbour, d + 1));
                 }
 
                 if (visited.Count > 0 && visited.Count % 25 == 0)

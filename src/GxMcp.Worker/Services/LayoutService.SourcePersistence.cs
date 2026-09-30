@@ -42,13 +42,7 @@ namespace GxMcp.Worker.Services
             var kb = _objectService.GetKbService().GetKB();
             if (kb == null)
             {
-                return Models.McpResponse.Err(
-                    code: "KbNotOpened",
-                    message: "KB not opened.",
-                    hint: "Open a Knowledge Base before writing visual metadata.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Opens the configured Knowledge Base.")),
-                    retryAfterMs: 2000,
-                    target: target);
+                return ReportLayoutKbNotOpened(target, "Open a Knowledge Base before writing visual metadata.");
             }
 
             // Snapshot pre-save EntityVersionId so the composition repair can identify rows
@@ -77,7 +71,7 @@ namespace GxMcp.Worker.Services
                                 code: "LayoutMutationFailed",
                                 message: "Layout mutation failed: " + normalizeError,
                                 hint: "The source normalisation step failed; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                                 target: target);
                         }
 
@@ -88,7 +82,7 @@ namespace GxMcp.Worker.Services
                                 code: "LayoutMutationFailed",
                                 message: "Layout mutation failed: " + flushSourceError,
                                 hint: "The source flush step failed; the transaction was rolled back.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                                 target: target);
                         }
 
@@ -100,7 +94,7 @@ namespace GxMcp.Worker.Services
                                 code: "LayoutMutationFailed",
                                 message: "Layout mutation failed: ReportLayoutHelper failed to write XML to the ReportPart.",
                                 hint: "The SDK could not accept the updated XML; ensure the XML structure matches the expected report layout format.",
-                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                                nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                                 target: target);
                         }
                     }
@@ -225,57 +219,10 @@ namespace GxMcp.Worker.Services
                         code: "LayoutMutationFailed",
                         message: "Layout mutation failed: " + ex.Message,
                         hint: "An unexpected exception occurred; the transaction was rolled back.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                        nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                         target: target);
                 }
             }
-        }
-
-        private bool TryRenamePrintCommandInSource(KBObject obj, string currentName, string newName, out string error)
-        {
-            error = null;
-            if (obj == null)
-            {
-                error = "Object was not available for source synchronization.";
-                return false;
-            }
-
-            string sourceJson = _objectService.ReadObjectSource(obj.Name, "Source", null, null, "mcp", false, obj.TypeDescriptor?.Name);
-            JObject sourcePayload;
-            try
-            {
-                sourcePayload = JObject.Parse(sourceJson);
-            }
-            catch
-            {
-                error = "Could not parse Source payload while renaming print block.";
-                return false;
-            }
-
-            string source = sourcePayload["source"]?.ToString() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(source))
-            {
-                error = "Procedure Source is empty; unable to rename print command.";
-                return false;
-            }
-
-            string pattern = @"(?im)(^|\s)print\s+" + Regex.Escape(currentName) + @"(\s|$)";
-            int replacements = 0;
-            string updated = Regex.Replace(source, pattern, m =>
-            {
-                replacements++;
-                string prefix = m.Groups[1].Value;
-                string suffix = m.Groups[2].Value;
-                return prefix + "print " + newName + suffix;
-            });
-
-            if (replacements == 0)
-            {
-                error = "No matching print command was found in Source for '" + currentName + "'.";
-                return false;
-            }
-
-            return TryPersistSourceText(obj, updated, out error);
         }
 
         private bool TryRenamePrintCommandInSourceInMemory(KBObject obj, string currentName, string newName, out string error)
@@ -327,70 +274,6 @@ namespace GxMcp.Worker.Services
 
             sourcePart.Source = updated;
             return true;
-        }
-
-        private bool TryInsertPrintCommandInSource(KBObject obj, string printBlockName, out string error)
-        {
-            error = null;
-            if (obj == null)
-            {
-                error = "Object was not available for source synchronization.";
-                return false;
-            }
-
-            string sourceJson = _objectService.ReadObjectSource(obj.Name, "Source", null, null, "mcp", false, obj.TypeDescriptor?.Name);
-            JObject sourcePayload;
-            try
-            {
-                sourcePayload = JObject.Parse(sourceJson);
-            }
-            catch
-            {
-                error = "Could not parse Source payload while inserting print command.";
-                return false;
-            }
-
-            string source = sourcePayload["source"]?.ToString() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(source))
-            {
-                error = "Procedure Source is empty; unable to insert print command.";
-                return false;
-            }
-
-            if (Regex.IsMatch(source, @"(?im)(^|\s)print\s+" + Regex.Escape(printBlockName) + @"(\s|$)"))
-            {
-                // Source already synchronized.
-                return true;
-            }
-
-            string lineEnding = source.Contains("\r\n") ? "\r\n" : "\n";
-            string insertion = "print " + printBlockName;
-            string updated;
-
-            var anchor = Regex.Match(source, @"(?im)^[ \t]*print[ \t]+printblock2[ \t]*$");
-            if (anchor.Success)
-            {
-                updated = source.Insert(anchor.Index, insertion + lineEnding);
-            }
-            else
-            {
-                var footerAnchor = Regex.Match(source, @"(?im)^[ \t]*Footer[ \t]*$");
-                if (footerAnchor.Success)
-                {
-                    updated = source.Insert(footerAnchor.Index, insertion + lineEnding);
-                }
-                else
-                {
-                    if (!source.EndsWith(lineEnding, StringComparison.Ordinal))
-                    {
-                        source += lineEnding;
-                    }
-
-                    updated = source + insertion + lineEnding;
-                }
-            }
-
-            return TryPersistSourceText(obj, updated, out error);
         }
 
         private bool TryInsertPrintCommandInSourceInMemory(KBObject obj, string printBlockName, out string error)
@@ -676,57 +559,6 @@ namespace GxMcp.Worker.Services
             }
 
             return true;
-        }
-
-        private bool TryPersistSourceText(KBObject obj, string sourceText, out string error)
-        {
-            error = null;
-            string tempPath = null;
-            try
-            {
-                tempPath = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(),
-                    "gxmcp-layout-source-" + Guid.NewGuid().ToString("N") + ".txt");
-                System.IO.File.WriteAllText(tempPath, sourceText ?? string.Empty);
-
-                string importResult = _objectService.ImportObjectFromText(
-                    obj.Name,
-                    tempPath,
-                    "Source",
-                    obj.TypeDescriptor?.Name);
-
-                JObject parsed;
-                try
-                {
-                    parsed = JObject.Parse(importResult);
-                }
-                catch
-                {
-                    error = "Source import returned an invalid payload.";
-                    return false;
-                }
-
-                string status = parsed["status"]?.ToString();
-                if (!string.Equals(status, "Success", StringComparison.OrdinalIgnoreCase))
-                {
-                    error = parsed["error"]?.ToString() ?? parsed["details"]?.ToString() ?? "Source import failed.";
-                    return false;
-                }
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                error = ex.Message;
-                return false;
-            }
-            finally
-            {
-                if (!string.IsNullOrWhiteSpace(tempPath))
-                {
-                    try { System.IO.File.Delete(tempPath); } catch { }
-                }
-            }
         }
     }
 }

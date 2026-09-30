@@ -59,6 +59,50 @@ namespace GxMcp.Worker.Models
             return resp.ToString();
         }
 
+        /// <summary>
+        /// A refusal envelope.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Two of the parameters add caller-supplied fields to the envelope, and they
+        /// put them in <em>different places</em>. This is worth stating at the signature
+        /// because nothing about the call site tells you which one you are using, and
+        /// reading the wrong place for a field yields <c>null</c> with no explanation:
+        /// </para>
+        /// <list type="bullet">
+        /// <item><description>
+        /// <c>error</c> always carries <c>code</c>, <c>message</c>, <c>hint</c> and
+        /// <c>nextSteps</c>.
+        /// </description></item>
+        /// <item><description>
+        /// <paramref name="extra"/> lands at the <strong>envelope's top level</strong>,
+        /// beside <c>status</c> and <c>target</c> - not inside <c>error</c>. So the
+        /// retry contract of a stale-object refusal is read as
+        /// <c>response["expectedVersion"]</c>, not
+        /// <c>response["error"]["expectedVersion"]</c>.
+        /// </description></item>
+        /// <item><description>
+        /// <c>errorExtra</c> lands <strong>inside <c>error</c></strong>, beside the
+        /// code and message.
+        /// </description></item>
+        /// </list>
+        ///
+        /// <para>
+        /// Passing both is legitimate and done deliberately: a refusal that reports
+        /// diagnostics about the failure (<c>errorExtra</c>) and the operational state
+        /// it left behind (<c>extra</c>) needs both places, and
+        /// <c>genexus_module</c>'s install failure is the precedent.
+        /// </para>
+        ///
+        /// <para>
+        /// The split is a wart, not a design. It means two operations refusing the same
+        /// way can emit different JSON shapes for the same error code, which a client
+        /// cannot read uniformly - currently true of <c>WwpSnapshotRequired</c>, where
+        /// one site uses each parameter for the same fields. Unifying them changes what
+        /// published clients already read, so it is a contract decision rather than a
+        /// refactor, and until it is taken the asymmetry is pinned by tests instead.
+        /// </para>
+        /// </remarks>
         public static string Err(
             string code,
             string message,

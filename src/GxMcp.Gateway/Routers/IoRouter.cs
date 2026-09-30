@@ -138,25 +138,5 @@ namespace GxMcp.Gateway.Routers
             }
         }
 
-        // Versioning umbrella dispatcher. Replaces _history/_undo/_time_travel/_blame/_diff/_diff_generated.
-
-        private object? ConvertAssetToolCall(JObject? args)
-        {
-            string? action = args?["action"]?.ToString();
-            if (string.IsNullOrWhiteSpace(action)) return null;
-
-            return new
-            {
-                module = "Asset",
-                action = char.ToUpperInvariant(action[0]) + action.Substring(1).ToLowerInvariant(),
-                target = args?["path"]?.ToString(),
-                pattern = args?["pattern"]?.ToString(),
-                relativeRoot = args?["relativeRoot"]?.ToString(),
-                limit = args?["limit"]?.ToObject<int?>(),
-                includeContent = args?["includeContent"]?.ToObject<bool?>(),
-                maxBytes = args?["maxBytes"]?.ToObject<int?>(),
-                contentBase64 = args?["contentBase64"]?.ToString()
-            };
-        }
     }
 }

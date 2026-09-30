@@ -146,7 +146,7 @@ namespace GxMcp.Worker.Services
                 : FindReportControls(requestedBlock, controlName);
             if (matchingControls.Count == 0)
                 return Models.McpResponse.Err(code: "ReportControlNotFound", message: "Report control not found: " + controlName + ".", target: target,
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists report controls and their geometry.")));
+                    nextSteps: new JArray(LayoutGetTreeStep(target, "Lists report controls and their geometry.")));
             if (matchingControls.Count != 1)
                 return Models.McpResponse.Err(code: "AmbiguousReportControl", message: "Report control name is not unique; provide printBlockName.", target: target);
             XElement control = matchingControls[0];

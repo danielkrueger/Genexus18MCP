@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Utils;
 using Newtonsoft.Json.Linq;
 
@@ -52,7 +53,7 @@ namespace GxMcp.Worker.Services
                 // re-interpreted as a flag, and refuse paths that escape the
                 // working tree.
                 string norm = (repoRelativePath ?? string.Empty).Replace("\\", "/");
-                string quoted = GithubService.ArgvQuote("HEAD:" + norm);
+                string quoted = Argv.Quote("HEAD:" + norm);
                 var psi = new ProcessStartInfo("git", "show " + quoted)
                 {
                     WorkingDirectory = workingDir,
@@ -110,7 +111,7 @@ namespace GxMcp.Worker.Services
             try { kbPath = _kbService?.GetKbPath(); } catch { }
             if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath))
             {
-                return Models.McpResponse.Err(code: "KbPathUnknown", message: "No KB is currently open or KB path does not exist.", hint: "Open a KB first via genexus_kb action=open.", nextSteps: new Newtonsoft.Json.Linq.JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Open a KB before calling diff.")), target: target);
+                return Models.McpResponse.Err(code: "KbPathUnknown", message: "No KB is currently open or KB path does not exist.", hint: "Open a KB first via genexus_kb action=open.", nextSteps: new Newtonsoft.Json.Linq.JArray(KbOpenNextStep.Step("Open a KB before calling diff.")), target: target);
             }
 
             // Locate current generated files for the object.

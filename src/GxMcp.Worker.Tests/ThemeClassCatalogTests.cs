@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
+using GxMcp.TestSupport;
 using Xunit;
 
 namespace GxMcp.Worker.Tests
@@ -187,21 +188,10 @@ namespace GxMcp.Worker.Tests
 
         private static Newtonsoft.Json.Linq.JObject ReadToolDefinition(string tool)
         {
-            string root = FindRepoFile("src", "GxMcp.Gateway", "tool_definitions.json");
+            string root = RepoSource.PathOf("src", "GxMcp.Gateway", "tool_definitions.json");
             var all = Newtonsoft.Json.Linq.JArray.Parse(System.IO.File.ReadAllText(root));
             return (Newtonsoft.Json.Linq.JObject)all.First(t => (string)t["name"]! == tool);
         }
 
-        private static string FindRepoFile(params string[] segments)
-        {
-            var dir = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
-            while (dir != null)
-            {
-                string candidate = System.IO.Path.Combine(new[] { dir.FullName }.Concat(segments).ToArray());
-                if (System.IO.File.Exists(candidate)) return candidate;
-                dir = dir.Parent;
-            }
-            throw new System.IO.FileNotFoundException("tool_definitions.json not found above " + AppContext.BaseDirectory);
-        }
     }
 }

@@ -52,6 +52,26 @@ namespace GxMcp.Worker.Compatibility
             | BindingFlags.FlattenHierarchy;
 
         /// <summary>
+        /// Non-public <em>instance</em> members, including inherited ones.
+        ///
+        /// Distinct from <see cref="StaticOrInstanceAnyVisibility"/> in that
+        /// <see cref="BindingFlags.Static"/> is excluded. A probe that wants a
+        /// member invoked on a part instance must not be able to bind a same-named
+        /// <em>static</em> overload instead: <c>GetMethods</c> returns both and the
+        /// first match wins, so including static members lets an unrelated
+        /// static overload answer for the instance one and the probe then reports
+        /// success for a call that did not do what the caller meant.
+        ///
+        /// This is the flag set the WebForm save diagnostics used to spell out at
+        /// six call sites. It belonged here for the reason the rest of the class
+        /// exists: a probe that omits <see cref="BindingFlags.FlattenHierarchy"/>
+        /// silently reports a capability as unavailable, and six copies of the
+        /// expression is six chances to do that.
+        /// </summary>
+        internal const BindingFlags InstanceAnyVisibility =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
+        /// <summary>
         /// Resolves a single SDK member, returning null when it is absent. Centralized
         /// so a probe cannot accidentally drop the hierarchy flag.
         /// </summary>

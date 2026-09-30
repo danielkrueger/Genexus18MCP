@@ -210,6 +210,12 @@ namespace GxMcp.Worker.Helpers
             return name.Length == 0 ? null : name;
         }
 
+        /// <summary>
+        /// Blanks out comments while preserving every offset: a comment character
+        /// becomes a space, a newline stays a newline. Callers index the returned
+        /// string with the positions they used on the input, so the length and the
+        /// line structure have to survive.
+        /// </summary>
         private static string StripComments(string source)
         {
             if (string.IsNullOrEmpty(source)) return string.Empty;
@@ -297,13 +303,58 @@ namespace GxMcp.Worker.Helpers
         {
             if (diagnostics == null || string.IsNullOrWhiteSpace(source)) return;
             int depth = 0;
+            ScanCode(source, 0, source.Length, (c, i) =>
+            {
+                if (c == '{') depth++;
+                else if (c == '}')
+                {
+                    depth--;
+                    if (depth < 0)
+                    {
+                        AddDiagnostic(diagnostics, partName + " contains a closing brace without an opening brace.", partName + ":unbalanced");
+                        return false; // stop: already unbalanced
+                    }
+                }
+                return true;
+            });
+
+            if (depth != 0)
+                AddDiagnostic(diagnostics, partName + " contains an unclosed brace block.", partName + ":unbalanced");
+        }
+
+        /// <summary>
+        /// Walks <paramref name="source"/> and invokes
+        /// <paramref name="onCodeChar"/> for every character that is real code —
+        /// outside line comments, block comments, and single/double-quoted
+        /// strings — with string escapes handled. Returning false stops the scan.
+        ///
+        /// This lexer existed twice more in this file, in
+        /// <c>ValidateBalance</c> and <c>FindMatchingBrace</c>, both of which only
+        /// needed to know which braces were structural. <c>StripComments</c> keeps
+        /// its own walk because it must re-emit comment characters as blanks to
+        /// preserve offsets rather than skip them.
+        ///
+        /// Two copies of a lexer is two chances for the string rules to disagree,
+        /// and the failure is silent rather than loud: a brace inside a comment or
+        /// a quoted selector changes the reported nesting depth, which shows up as
+        /// a spurious "unbalanced" diagnostic or, worse, a block boundary found in
+        /// the wrong place so one rule body is parsed as two.
+        /// </summary>
+        /// <param name="start">Index to begin at.</param>
+        /// <param name="end">Index to stop before (exclusive).</param>
+        private static void ScanCode(
+            string source,
+            int start,
+            int end,
+            Func<char, int, bool> onCodeChar)
+        {
             bool inSingle = false;
             bool inDouble = false;
             bool escaped = false;
             bool inLineComment = false;
             bool inBlockComment = false;
 
-            for (int i = 0; i < source.Length; i++)
+            for (int i = start; i < end; i++)
             {
                 char c = source[i];
                 char next = i + 1 < source.Length ? source[i + 1] : '\0';
@@ -332,65 +383,22 @@ namespace GxMcp.Worker.Helpers
                 }
                 if (c == '\'') { inSingle = true; continue; }
                 if (c == '"') { inDouble = true; continue; }
-                if (c == '{') depth++;
-                if (c == '}')
-                {
-                    depth--;
-                    if (depth < 0)
-                    {
-                        AddDiagnostic(diagnostics, partName + " contains a closing brace without an opening brace.", partName + ":unbalanced");
-                        return;
-                    }
-                }
+                if (!onCodeChar(c, i)) return;
             }
-
-            if (depth != 0)
-                AddDiagnostic(diagnostics, partName + " contains an unclosed brace block.", partName + ":unbalanced");
         }
 
         private static int FindMatchingBrace(string source, int openBrace)
         {
             if (openBrace < 0 || openBrace >= source.Length || source[openBrace] != '{') return -1;
             int depth = 0;
-            bool inSingle = false;
-            bool inDouble = false;
-            bool escaped = false;
-            bool inLineComment = false;
-            bool inBlockComment = false;
-
-            for (int i = openBrace; i < source.Length; i++)
+            int match = -1;
+            ScanCode(source, openBrace, source.Length, (c, i) =>
             {
-                char c = source[i];
-                char next = i + 1 < source.Length ? source[i + 1] : '\0';
-                if (inLineComment)
-                {
-                    if (c == '\n') inLineComment = false;
-                    continue;
-                }
-                if (inBlockComment)
-                {
-                    if (c == '*' && next == '/') { inBlockComment = false; i++; }
-                    continue;
-                }
-                if (!inSingle && !inDouble && c == '/' && next == '/') { inLineComment = true; i++; continue; }
-                if (!inSingle && !inDouble && c == '/' && next == '*') { inBlockComment = true; i++; continue; }
-                if (inSingle || inDouble)
-                {
-                    if (escaped) { escaped = false; continue; }
-                    if (c == '\\') { escaped = true; continue; }
-                    if ((inSingle && c == '\'') || (inDouble && c == '"'))
-                    {
-                        inSingle = false;
-                        inDouble = false;
-                    }
-                    continue;
-                }
-                if (c == '\'') { inSingle = true; continue; }
-                if (c == '"') { inDouble = true; continue; }
                 if (c == '{') depth++;
-                else if (c == '}' && --depth == 0) return i;
-            }
-            return -1;
+                else if (c == '}' && --depth == 0) { match = i; return false; }
+                return true;
+            });
+            return match;
         }
 
         private static void AddDiagnostic(

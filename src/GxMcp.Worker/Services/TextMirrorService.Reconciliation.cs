@@ -97,9 +97,9 @@ namespace GxMcp.Worker.Services
         private static bool DeleteMirroredFileIfPresent(string root, string relative, ref int removedFiles)
         {
             if (string.IsNullOrWhiteSpace(relative)) return true;
-            if (!TryGetRootFile(root, relative, out string full)) return false;
+            if (!MirrorRootFile.TryResolve(root, relative, out string full)) return false;
             if (!File.Exists(full)) return true;
-            if (!DeleteFile(full)) return false;
+            if (!MirrorRootFile.TryDelete(full)) return false;
             removedFiles++;
             return true;
         }
@@ -143,11 +143,11 @@ namespace GxMcp.Worker.Services
                     string name = item["name"]?.ToString();
                     string type = item["type"]?.ToString();
                     if (string.IsNullOrWhiteSpace(name) || index.FindByName(name).Any(entry => string.Equals(entry.Type, type, StringComparison.OrdinalIgnoreCase))) continue;
-                    if (TryGetRootFile(root, item["file"]?.ToString(), out string file) && DeleteFile(file)) removed++;
+                    if (MirrorRootFile.TryResolve(root, item["file"]?.ToString(), out string file) && MirrorRootFile.TryDelete(file)) removed++;
                     if (item["companions"] is JArray companions)
                     {
                         foreach (JObject companion in companions.OfType<JObject>())
-                            if (TryGetRootFile(root, companion["file"]?.ToString(), out string companionFile) && DeleteFile(companionFile)) removed++;
+                            if (MirrorRootFile.TryResolve(root, companion["file"]?.ToString(), out string companionFile) && MirrorRootFile.TryDelete(companionFile)) removed++;
                     }
                 }
             }
@@ -155,31 +155,5 @@ namespace GxMcp.Worker.Services
             return removed;
         }
 
-        private static bool DeleteFile(string path)
-        {
-            try
-            {
-                if (!File.Exists(path)) return false;
-                File.Delete(path);
-                return true;
-            }
-            catch { return false; }
         }
-
-        private static bool TryGetRootFile(string root, string relative, out string full)
-        {
-            full = null;
-            if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative)) return false;
-            try
-            {
-                string basePath = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                string candidate = Path.GetFullPath(Path.Combine(basePath, relative));
-                if (!candidate.StartsWith(basePath, StringComparison.OrdinalIgnoreCase)) return false;
-                full = candidate;
-                return true;
-            }
-            catch { return false; }
-        }
-
-    }
 }

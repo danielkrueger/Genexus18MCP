@@ -168,13 +168,7 @@ namespace GxMcp.Worker.Services
 
         private static int Run(string exe, string[] args, out string stdout, out string stderr)
         {
-            var sb = new StringBuilder();
-            foreach (var a in args)
-            {
-                if (sb.Length > 0) sb.Append(' ');
-                sb.Append(GithubService.ArgvQuote(a));
-            }
-            var psi = new ProcessStartInfo(exe, sb.ToString())
+            var psi = new ProcessStartInfo(exe, Argv.Join(args))
             {
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
                 UseShellExecute = false, CreateNoWindow = true

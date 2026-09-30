@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
@@ -19,19 +18,10 @@ namespace GxMcp.Gateway
         // SECURITY: `name` and `type` are LLM-controlled and flow into
         // Path.Combine + Directory.Delete/CreateDirectory/CopyTo. Without an
         // allowlist, "..\\..\\x" escapes the Objects/ tree and can delete then
-        // overwrite an arbitrary directory. Mirror TimeTravelService.IsSafeObjectName
-        // (the same class the 2026-05-24 shell-out audit added for the Worker side;
-        // it was never ported to these Gateway-side helpers).
-        internal static bool IsSafeSegment(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value) || value.Length > 200) return false;
-            foreach (var c in value)
-            {
-                if (!(char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '-')) return false;
-            }
-            if (value == "." || value == "..") return false;
-            return true;
-        }
+        // overwrite an arbitrary directory. The allowlist itself is shared - see
+        // SafePathSegment, which also serves the Worker-side time-travel and
+        // baseline paths that previously had their own copies.
+        internal static bool IsSafeSegment(string value) => SafePathSegment.IsSafe(value);
 
         // Defence in depth: even after the allowlist, confirm the resolved path is
         // still rooted under <targetKbPath>/Objects/ before any delete/copy.
@@ -126,10 +116,9 @@ namespace GxMcp.Gateway
 
         internal static string LogValue(string value)
         {
-            string redacted = Regex.Replace(
-                value ?? string.Empty,
-                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
-                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            // Shared with MacroSuggestionService, Program.Http and the Worker's
+            // PreviewService/SharedWorkerHost: one redaction rule, not five.
+            string redacted = LogRedaction.Redact(value);
             return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
     }

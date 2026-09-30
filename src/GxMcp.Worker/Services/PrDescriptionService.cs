@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -188,59 +187,44 @@ namespace GxMcp.Worker.Services
         /// Mirrors the BlameService.RunGit pattern: spawn `git` with redirected
         /// streams, no shell, capture stdout/stderr and exit code.
         /// </summary>
+        private const int GitTimeoutMs = 30000;
+
+        /// <summary>
+        /// Blocks the credential and GPG prompts that would otherwise wedge the
+        /// worker, and the paginator that would hold the terminal-detect probe open.
+        /// </summary>
+        private static readonly Dictionary<string, string> NonInteractiveGitEnv = new Dictionary<string, string>
+        {
+            { "GIT_TERMINAL_PROMPT", "0" },
+            { "GIT_PAGER", "cat" },
+        };
+
         private static string RunGit(string cwd, string args, out int exitCode, out string stderr)
         {
-            // Pass `--no-pager` so a configured paginator can't block on a terminal-detect probe,
-            // and `-c color.ui=false` to keep the output ASCII-clean for downstream parsers.
-            // Drain stdout + stderr in parallel via async event handlers — sequential ReadToEnd
-            // dead-locks when the OS pipe buffer fills before the other stream is drained.
-            string fullArgs = "--no-pager -c color.ui=false " + args;
-            var psi = new ProcessStartInfo("git", fullArgs)
-            {
-                WorkingDirectory = cwd,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-            // Block credential / GPG prompts that would otherwise wedge the worker.
-            psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-            psi.EnvironmentVariables["GIT_PAGER"] = "cat";
+            // `--no-pager` so a configured paginator can't block on a terminal-detect
+            // probe, and `-c color.ui=false` to keep the output ASCII-clean for the
+            // parsers below.
+            //
+            // 30 s cap - `git log` on a large repo with many commits + GIT_PAGER=cat
+            // can take double-digit seconds on first invocation while git refreshes
+            // its packed-refs cache. 15 s was tripping legitimate runs.
+            var outcome = ProcessLauncher.Run(
+                "git",
+                "--no-pager -c color.ui=false " + args,
+                cwd,
+                GitTimeoutMs,
+                Encoding.UTF8,
+                NonInteractiveGitEnv);
 
-            using (var p = Process.Start(psi))
-            {
-                if (p == null) throw new InvalidOperationException("Process.Start returned null for git");
+            if (outcome.StartFailed)
+                throw new InvalidOperationException("Process.Start returned null for git");
 
-                // Explicitly close stdin so git can't block reading from an inherited
-                // parent stdin (the gateway's MCP stdio pipe). Without this, when git's
-                // PAGER detection or any other interactive prompt resolution probes
-                // stdin, it can hang the entire 30s timeout.
-                try { p.StandardInput.Close(); } catch { }
+            if (outcome.TimedOut)
+                throw new TimeoutException("git " + args + " exceeded 30s in " + cwd);
 
-                var outSb = new StringBuilder();
-                var errSb = new StringBuilder();
-                p.OutputDataReceived += (s, e) => { if (e.Data != null) outSb.AppendLine(e.Data); };
-                p.ErrorDataReceived += (s, e) => { if (e.Data != null) errSb.AppendLine(e.Data); };
-                p.BeginOutputReadLine();
-                p.BeginErrorReadLine();
-
-                // 30 s cap — `git log` on a large repo with many commits + GIT_PAGER=cat
-                // env override can take double-digit seconds on first invocation while
-                // git refreshes its packed-refs cache. 15 s was tripping legitimate runs.
-                if (!p.WaitForExit(30000))
-                {
-                    try { p.Kill(); } catch { }
-                    throw new TimeoutException("git " + args + " exceeded 30s in " + cwd);
-                }
-                // Ensure async reads flush before returning.
-                p.WaitForExit();
-                exitCode = p.ExitCode;
-                stderr = errSb.ToString();
-                return outSb.ToString();
-            }
+            exitCode = outcome.ExitCode;
+            stderr = outcome.StdErr;
+            return outcome.StdOut;
         }
     }
 }

@@ -10,13 +10,18 @@ namespace GxMcp.Benchmarks
     // the worker uses) for candidate-set sizes 64..4096, so the crossover point —
     // where PLINQ stops being overhead and starts winning — is visible per row.
     //
-    // The per-item work mirrors the real pipeline faithfully: CalculateSemanticScore
+    // The per-item work was written to mirror the real pipeline: CalculateSemanticScore
     // (name/description/keyword/tag/table scoring over the terms) + the unsafe
     // unrolled 128-dim CosineSimilarity from VectorService + the noise-type
     // short-circuit + the Score > 0 filter + ToList. The Worker project targets
     // net48 (GeneXus SDK) and can't be referenced from this net10.0 project, so the
-    // two scoring functions are ported here verbatim (see GxMcp.Worker
+    // two scoring functions are ported here (see GxMcp.Worker
     // Services/SearchService.cs and Services/VectorService.cs).
+    //
+    // CosineSimilarity is still an exact port and a test holds it to production.
+    // SemanticScore has drifted - see the note on it below - so a number from this
+    // benchmark is the shape it was calibrated against, not current production
+    // cost.
     //
     // Run: dotnet run -c Release --project src/GxMcp.Benchmarks -- --job short --filter '*SearchRankParallelismBenchmark*'
     // Interpret: whichever row has Plinq_Dop4 faster than Sequential (Baseline=1.00)
@@ -111,6 +116,27 @@ namespace GxMcp.Benchmarks
         }
 
         // Port of SearchService.CalculateSemanticScore (terms = HashSet, ordinal-ignore-case).
+        //
+        // DRIFTED FROM PRODUCTION - read this before trusting a number out of this
+        // benchmark. The Worker is net48/GeneXus-SDK and cannot be referenced from
+        // this net10.0 project, so this function is a hand-port rather than a call,
+        // and production has moved on since it was written. Missing here:
+        //
+        //   - the length guards production added - `if (nameLen >= termLen)` around
+        //     the name comparisons and `if (descLen >= termLen && ...)` around the
+        //     description one - which skip string work when the term cannot match;
+        //   - production's ContainsIgnoreCase(list, term) helper, inlined here as
+        //     List.Contains(term, StringComparer.OrdinalIgnoreCase);
+        //   - the Table branch: production scores a term matching an attribute
+        //     member 5000 instead of 400 when the type filter is Table and
+        //     LooksLikeAttributeName(term) agrees.
+        //
+        // So the per-item cost measured here is not the production per-item cost,
+        // and the ParallelScanThreshold this calibrates was tuned against this
+        // shape. CosineSimilarity below is byte-for-byte the production kernel and
+        // is held to it by SearchRankPortParityTests; this function is not, because
+        // a port that is deliberately adapted cannot be pinned by an equality test.
+        // Re-port it before re-tuning the threshold.
         private static int SemanticScore(IndexEntry entry, HashSet<string> terms)
         {
             int score = 0;

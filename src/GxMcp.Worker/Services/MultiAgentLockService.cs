@@ -4,6 +4,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 
@@ -28,13 +29,13 @@ namespace GxMcp.Worker.Services
 
         public string Dispatch(string action, string target, string part, string ownerId, int ttlSec, string kbPathOverride = null, bool dryRun = false)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
                 return McpResponse.Err(
                     code: "NoKbOpen",
                     message: "No KB is currently open.",
                     hint: "Open a KB first via genexus_kb action=open.",
-                    nextSteps: new JArray { McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Open a KB.") });
+                    nextSteps: new JArray { KbOpenNextStep.Step("Open a KB.") });
             if (dryRun)
             {
                 string locksDir = System.IO.Path.Combine(kbPath, ".gx", "locks");
@@ -332,22 +333,7 @@ namespace GxMcp.Worker.Services
 
         private static string Sanitize(string target, string part)
         {
-            string combined = (target ?? "_") + "__" + (part ?? "_");
-            var sb = new System.Text.StringBuilder(combined.Length);
-            foreach (char c in combined)
-            {
-                if (char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.')
-                    sb.Append(c);
-                else
-                    sb.Append('_');
-            }
-            return sb.ToString();
-        }
-
-        private string ResolveKbPath(string kbPathOverride)
-        {
-            if (!string.IsNullOrEmpty(kbPathOverride)) return kbPathOverride;
-            try { return _kbService?.GetKbPath(); } catch { return null; }
+            return LockFileKey.Sanitize(target, part);
         }
     }
 }

@@ -26,9 +26,13 @@ namespace GxMcp.Worker.Services
             public KBObject Object { get; set; }
         }
 
+        // The source cache is currently written and invalidated but never read: the
+        // reader that consumed it was removed with the rest of the unused members.
+        // It is kept because the invalidation entry points (InvalidateAllSourceCaches
+        // and the per-key removals) are part of the service's published contract, but
+        // nothing serves a hit from it today.
         private static readonly ConcurrentDictionary<string, SourceCacheEntry> _sourceCache =
             new ConcurrentDictionary<string, SourceCacheEntry>(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan SourceCacheTtl = TimeSpan.FromSeconds(20);
 
         private readonly ObjectService _objectService;
         private readonly WriteService _writeService;
@@ -77,68 +81,16 @@ namespace GxMcp.Worker.Services
         //       by checking GetParent() up to 3 levels, looking for a WWP-typed ancestor.
         private JArray BuildPatternShadowWarningsIfAny(string target, string partName, string typeFilter)
         {
-            try
-            {
-                if (_patternAnalysisService == null || _objectService == null) return null;
-                if (!GxMcp.Worker.Helpers.WebFormXmlHelper.IsVisualPart(partName)) return null;
+            if (_patternAnalysisService == null || _objectService == null) return null;
 
-                var obj = _objectService.FindObject(target, typeFilter);
-                if (obj == null) return null;
+            var obj = _objectService.FindObject(target, typeFilter);
+            if (obj == null) return null;
 
-                var resolved = _patternAnalysisService.ResolveWWPInstance(obj);
-
-                // Fallback for generated WW family (WW<Trn>, View<Trn>, etc.): WWP host
-                // for `WWX` is named `WorkWithPlusX`. We try a few common prefixes; the
-                // ResolveWWPInstance also walks Children, so a hit here closes the gap
-                // for the generated WebPanel case that motivated F6.
-                if (resolved == null && !string.IsNullOrEmpty(obj.Name))
-                {
-                    string[] candidatePrefixes = { "WW", "View", "ViewWW", "Prompt" };
-                    foreach (var pre in candidatePrefixes)
-                    {
-                        if (!obj.Name.StartsWith(pre, StringComparison.Ordinal)) continue;
-                        string baseName = obj.Name.Substring(pre.Length);
-                        if (string.IsNullOrEmpty(baseName)) continue;
-                        var hostName = "WorkWithPlus" + baseName;
-                        try
-                        {
-                            var host = _objectService.FindObject(hostName);
-                            if (host != null && string.Equals(host.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
-                            {
-                                resolved = host;
-                                break;
-                            }
-                        }
-                        catch { /* lookup best-effort */ }
-                    }
-                }
-
-                if (resolved == null) return null;
-
-                var part = _patternAnalysisService.FindPatternPart(resolved, "PatternInstance");
-                if (part == null) return null;
-
-                return new JArray
-                {
-                    new JObject
-                    {
-                        ["code"] = "EditingWebFormUnderPattern",
-                        ["severity"] = "warning",
-                        ["message"] =
-                            "This object is covered by a WorkWithPlus PatternInstance ('" + resolved.Name +
-                            "'). Hand edits to " + partName + " can be overwritten on the next pattern apply/save. " +
-                            "Consider editing part=PatternInstance on '" + resolved.Name + "' instead. " +
-                            "Toggle SDPlus_Editor_Apply_On_Save=False on " + resolved.Name +
-                            " if you must keep a hard override on the visual part.",
-                        ["patternInstance"] = resolved.Name
-                    }
-                };
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug("[PatchService] PatternShadow warning probe skipped: " + ex.Message);
-                return null;
-            }
+            // The probe itself moved to PatternAnalysisService.BuildPatternShadowWarning,
+            // shared with WriteService.WriteVisualPart. This path used to phrase the
+            // same advice differently - "edit part=PatternInstance on 'X'" without
+            // naming the tool call - behind an identical warning code.
+            return _patternAnalysisService.BuildPatternShadowWarning(obj, partName);
         }
 
         private static string AttachWarningsToJson(string json, JArray warnings)
@@ -1783,19 +1735,6 @@ namespace GxMcp.Worker.Services
             string normalizedPart = string.IsNullOrWhiteSpace(partName) ? "Source" : partName.Trim();
             string normalizedType = typeFilter?.Trim() ?? string.Empty;
             return normalizedType + "|" + normalizedTarget + "|" + normalizedPart;
-        }
-
-        private static string TryGetCachedSource(string cacheKey)
-        {
-            if (string.IsNullOrWhiteSpace(cacheKey)) return null;
-            if (!_sourceCache.TryGetValue(cacheKey, out var entry) || entry == null) return null;
-            if (DateTime.UtcNow - entry.UpdatedUtc > SourceCacheTtl)
-            {
-                _sourceCache.TryRemove(cacheKey, out _);
-                return null;
-            }
-
-            return entry.Source;
         }
 
         private static void UpdateCachedSource(string cacheKey, string source, string versionToken = null)

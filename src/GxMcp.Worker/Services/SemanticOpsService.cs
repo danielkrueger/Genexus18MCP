@@ -29,16 +29,48 @@ namespace GxMcp.Worker.Services
         public OpsApplyOutcome ApplyWithResults(string xml, string objectKind, IList<SemanticOp> ops, string validate)
         {
             var doc = XDocument.Parse(xml);
-            var results = new List<OpResult>(ops.Count);
             string mode = NormalizeMode(validate);
-            bool aborted = false;
+            var results = ApplyOps(ops, mode, op => Dispatch(doc, objectKind, op), out bool aborted);
+
+            return new OpsApplyOutcome
+            {
+                Xml = doc.ToString(SaveOptions.DisableFormatting),
+                Results = results,
+                Aborted = aborted,
+                Mode = mode
+            };
+        }
+
+        /// <summary>
+        /// Runs the op list, recording one <see cref="OpResult"/> per op and
+        /// deciding when a failure stops the batch.
+        ///
+        /// Both entry points — the XML form and the Transaction structure DSL form
+        /// — ran this loop verbatim, differing only in the delegate they dispatched
+        /// through. That loop is where the public contract lives: a
+        /// <see cref="UsageException"/> is a caller error and keeps its own code,
+        /// anything else is <c>internal_error</c>, a failed op is recorded rather
+        /// than thrown, and in <c>strict</c> mode the first failure aborts the rest.
+        ///
+        /// Duplicated, those four rules were eight places a client could read a
+        /// different result ordering, a different abort boundary, or a different
+        /// error code depending on which surface it called.
+        /// </summary>
+        private static List<OpResult> ApplyOps(
+            IList<SemanticOp> ops,
+            string mode,
+            Action<SemanticOp> dispatch,
+            out bool aborted)
+        {
+            var results = new List<OpResult>(ops.Count);
+            aborted = false;
 
             for (int i = 0; i < ops.Count; i++)
             {
                 var op = ops[i];
                 try
                 {
-                    Dispatch(doc, objectKind, op);
+                    dispatch(op);
                     results.Add(new OpResult { Index = i, Op = op.Op, Ok = true });
                 }
                 catch (UsageException ux)
@@ -53,13 +85,7 @@ namespace GxMcp.Worker.Services
                 }
             }
 
-            return new OpsApplyOutcome
-            {
-                Xml = doc.ToString(SaveOptions.DisableFormatting),
-                Results = results,
-                Aborted = aborted,
-                Mode = mode
-            };
+            return results;
         }
 
         internal static string NormalizeMode(string validate)
@@ -154,30 +180,9 @@ namespace GxMcp.Worker.Services
         public OpsApplyOutcome ApplyTransactionStructureDsl(string dsl, IList<SemanticOp> ops, string validate)
         {
             string mode = NormalizeMode(validate);
-            var results = new List<OpResult>(ops.Count);
-            bool aborted = false;
             var lines = (dsl ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n")
                 .Split('\n').ToList();
-
-            for (int i = 0; i < ops.Count; i++)
-            {
-                var op = ops[i];
-                try
-                {
-                    ApplyDslOp(lines, op);
-                    results.Add(new OpResult { Index = i, Op = op.Op, Ok = true });
-                }
-                catch (UsageException ux)
-                {
-                    results.Add(new OpResult { Index = i, Op = op.Op, Ok = false, Reason = ux.Message, Code = ux.Code });
-                    if (mode == "strict") { aborted = true; break; }
-                }
-                catch (Exception ex)
-                {
-                    results.Add(new OpResult { Index = i, Op = op.Op, Ok = false, Reason = ex.Message, Code = "internal_error" });
-                    if (mode == "strict") { aborted = true; break; }
-                }
-            }
+            var results = ApplyOps(ops, mode, op => ApplyDslOp(lines, op), out bool aborted);
 
             return new OpsApplyOutcome
             {

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Utils;
 using Newtonsoft.Json.Linq;
 
@@ -27,11 +28,7 @@ namespace GxMcp.Worker.Services
                 return Error("MissingPath", "sourcePath is required.");
             }
 
-            string kbPath = kbPathOverride;
-            if (string.IsNullOrEmpty(kbPath))
-            {
-                try { kbPath = _kbService?.GetKbPath(); } catch { }
-            }
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open; pass kbPathOverride or open a KB first.");

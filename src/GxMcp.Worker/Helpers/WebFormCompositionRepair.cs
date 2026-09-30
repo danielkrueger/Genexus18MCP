@@ -5,7 +5,6 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
-using System.Xml;
 using Artech.Architecture.Common.Objects;
 
 namespace GxMcp.Worker.Helpers
@@ -151,30 +150,7 @@ namespace GxMcp.Worker.Helpers
 
         private static string BuildConnectionString(string kbPath)
         {
-            try
-            {
-                string connFile = Path.Combine(kbPath, "knowledgebase.connection");
-                if (!File.Exists(connFile)) return null;
-
-                var doc = new XmlDocument();
-                doc.Load(connFile);
-
-                string server = doc.SelectSingleNode("/ConnectionInformation/ServerInstance")?.InnerText;
-                string db = doc.SelectSingleNode("/ConnectionInformation/DBName")?.InnerText;
-                string integrated = doc.SelectSingleNode("/ConnectionInformation/IntegratedSecurity")?.InnerText;
-
-                if (string.IsNullOrEmpty(server) || string.IsNullOrEmpty(db)) return null;
-
-                bool useSspi = string.Equals(integrated, "True", StringComparison.OrdinalIgnoreCase);
-                return useSspi
-                    ? $"Server={server};Database={db};Integrated Security=SSPI;TrustServerCertificate=true;Connection Timeout=5"
-                    : $"Server={server};Database={db};TrustServerCertificate=true;Connection Timeout=5";
-            }
-            catch (Exception ex)
-            {
-                Logger.Info("[CompositionRepair] failed to parse knowledgebase.connection: " + ex.Message);
-                return null;
-            }
+            return KbConnectionString.Build(kbPath, "CompositionRepair");
         }
 
         private static bool TryResolveIds(KBObject obj, out int parentTypeId, out int parentEntityId, out int partEntityId)

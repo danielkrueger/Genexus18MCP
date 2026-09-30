@@ -1305,6 +1305,33 @@ namespace GxMcp.Worker.Services
             MarkDirtyForKey(removedKey);
         }
 
+        /// <summary>
+        /// An object's folder path, for the index.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// NOTE: <c>ListService.ResolveHierarchy</c> walks the same <c>Parent</c> chain,
+        /// line for line, under the same name. The two are deliberately not shared, and
+        /// this comment exists so nobody merges them on the strength of the similarity.
+        /// </para>
+        /// <para>
+        /// The walk is the same: skip anything that is not a Module or a Folder, stop at
+        /// the DesignModel, refuse to loop on a parent whose Guid matches the object's,
+        /// and record the first container's name as the parent. It is written
+        /// differently for no reason - this copy hoists the container test into a local
+        /// and skips ahead, the other falls through - and neither shape is better.
+        /// </para>
+        /// <para>
+        /// What follows the walk is where they part, and it is the whole reason. This one
+        /// feeds <c>_hierarchyCache</c>, which is the index's own identity for an object,
+        /// so when the chain yields nothing it promotes the module into the path to keep
+        /// identity stable across a cache rebuild. <c>ListService</c> feeds
+        /// <c>item["parentPath"]</c>, which reports where the object actually is;
+        /// promoting a module there would state a location that is not the object's. A
+        /// shared helper would have to pick one of those, and either choice makes one
+        /// consumer wrong.
+        /// </para>
+        /// </remarks>
         private (string ParentName, string ParentPath, string Path, string ModuleName) ResolveHierarchy(global::Artech.Architecture.Common.Objects.KBObject obj)
         {
             // PERFORMANCE (W-M5): fast-path for objects whose hierarchy has already been resolved.
@@ -2522,15 +2549,6 @@ namespace GxMcp.Worker.Services
             finally {
                 _savingInProgress = false;
                 _lastFlushTime = DateTime.Now;
-            }
-        }
-
-        private string GetJsonHash(string json)
-        {
-            using (var md5 = System.Security.Cryptography.MD5.Create())
-            {
-                var bytes = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(json));
-                return BitConverter.ToString(bytes).Replace("-", "");
             }
         }
 

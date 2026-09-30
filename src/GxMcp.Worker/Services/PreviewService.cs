@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
@@ -186,22 +185,7 @@ namespace GxMcp.Worker.Services
                             string prefix = null;
                             try
                             {
-                                var psi = new ProcessStartInfo("cmd.exe", "/c npm prefix -g")
-                                {
-                                    RedirectStandardOutput = true,
-                                    RedirectStandardError = true,
-                                    UseShellExecute = false,
-                                    CreateNoWindow = true
-                                };
-                                using (var p = Process.Start(psi))
-                                {
-                                    string so = p.StandardOutput.ReadToEnd();
-                                    p.WaitForExit(5000);
-                                    if (p.ExitCode == 0)
-                                    {
-                                        prefix = so.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l))?.Trim();
-                                    }
-                                }
+                                prefix = ConsoleProbe.FirstOutputLine("npm prefix -g", 5000);
                             }
                             catch { }
 
@@ -224,23 +208,7 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    var psi = new ProcessStartInfo("cmd.exe", "/c where " + command)
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    using (var p = Process.Start(psi))
-                    {
-                        string so = p.StandardOutput.ReadToEnd();
-                        p.WaitForExit(5000);
-                        if (p.ExitCode == 0)
-                        {
-                            var line = so.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
-                            return line?.Trim();
-                        }
-                    }
+                    return ConsoleProbe.Which(command);
                 }
                 catch { }
                 return null;
@@ -1144,10 +1112,10 @@ namespace GxMcp.Worker.Services
 
         internal static string LogValue(string value)
         {
-            string redacted = Regex.Replace(
-                value ?? string.Empty,
-                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
-                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            // Shared with SharedWorkerHost here and with KbImportHelper,
+            // MacroSuggestionService and Program.Http in the Gateway: one
+            // redaction rule, not five.
+            string redacted = LogRedaction.Redact(value);
             return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
 

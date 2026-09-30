@@ -22,58 +22,15 @@ namespace GxMcp.Worker.Services
             global::Artech.Architecture.Common.Objects.KBObject obj,
             string partName)
         {
-            try
-            {
-                if (obj == null) return null;
-                if (!WebFormXmlHelper.IsVisualPart(partName)) return null;
-
-                var resolved = _patternAnalysisService.ResolveWWPInstance(obj);
-                // Fallback for generated WW family (WW<Trn>, View<Trn>, etc.) whose host
-                // is `WorkWithPlus<TrnBaseName>` rather than `WorkWithPlus<obj.Name>`.
-                if (resolved == null && !string.IsNullOrEmpty(obj.Name))
-                {
-                    string[] candidatePrefixes = { "WW", "View", "ViewWW", "Prompt" };
-                    foreach (var pre in candidatePrefixes)
-                    {
-                        if (!obj.Name.StartsWith(pre, StringComparison.Ordinal)) continue;
-                        string baseName = obj.Name.Substring(pre.Length);
-                        if (string.IsNullOrEmpty(baseName)) continue;
-                        var host = _objectService.FindObject("WorkWithPlus" + baseName);
-                        if (host != null && string.Equals(host.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
-                        {
-                            resolved = host;
-                            break;
-                        }
-                    }
-                }
-                if (resolved == null) return null;
-
-                var part = _patternAnalysisService.FindPatternPart(resolved, "PatternInstance");
-                if (part == null) return null;
-
-                return new JArray
-                {
-                    new JObject
-                    {
-                        ["code"] = "EditingWebFormUnderPattern",
-                        ["severity"] = "warning",
-                        ["message"] =
-                            "This object is covered by a WorkWithPlus PatternInstance ('" + resolved.Name +
-                            "'). Hand edits to " + partName + " can be overwritten on the next pattern apply/save. " +
-                            "Consider editing part=PatternInstance instead (genexus_edit name=" + resolved.Name +
-                            " part=PatternInstance ...). Toggle SDPlus_Editor_Apply_On_Save=False on " + resolved.Name +
-                            " if you must keep a hard override on the visual part.",
-                        ["patternInstance"] = resolved.Name
-                    }
-                };
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug("[WriteVisualPart] PatternShadow warning probe skipped: " + ex.Message);
-                return null;
-            }
+            // The probe itself moved to PatternAnalysisService.BuildPatternShadowWarning,
+            // shared with PatchService: the two copies had drifted into giving
+            // different advice for the same EditingWebFormUnderPattern code.
+            return _patternAnalysisService.BuildPatternShadowWarning(obj, partName);
         }
 
+        // The probe itself moved to PatternAnalysisService.BuildPatternShadowWarning,
+        // shared with PatchService: the two copies had drifted into giving different
+        // advice for the same EditingWebFormUnderPattern code.
         private static void AttachWarnings(JObject payload, JArray warnings)
         {
             if (payload == null || warnings == null || warnings.Count == 0) return;

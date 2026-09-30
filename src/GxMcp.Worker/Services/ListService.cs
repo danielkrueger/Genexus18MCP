@@ -896,16 +896,6 @@ namespace GxMcp.Worker.Services
             return svc.BuildPagedResponseInternal(items, total, offset, pageSize);
         }
 
-        private static JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose = false, DateTime lastUpdate = default(DateTime), DateTime createdAt = default(DateTime), string lastModifiedBy = null)
-        {
-            // PERFORMANCE (perf-review): resolve the legacy-profile flag once per page
-            // instead of once per item — BuildItemInternal runs for every row of every
-            // list_objects response, and each Environment.GetEnvironmentVariable call
-            // plus string compare per row was pure waste (200 rows = 200 env lookups).
-            bool legacyMode = IsLegacyPerfProfile();
-            return BuildItemInternal(name, type, description, parent, module, path, parentPath, parentFolderPath, verbose, lastUpdate, createdAt, lastModifiedBy, legacyMode);
-        }
-
         internal static bool IsLegacyPerfProfile()
         {
             string perfProfile = Environment.GetEnvironmentVariable("MCP_PERF_PROFILE");
@@ -913,6 +903,16 @@ namespace GxMcp.Worker.Services
                    string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>
+        /// Builds one row of a <c>list_objects</c> page.
+        ///
+        /// PERFORMANCE (perf-review): callers must pass <paramref name="isLegacyMode"/>
+        /// resolved once per page, not once per item. This runs for every row of every
+        /// list_objects response, and an <see cref="Environment.GetEnvironmentVariable"/>
+        /// call plus a string compare per row was pure waste (200 rows = 200 env lookups).
+        /// A thin wrapper that did the lookup per call existed and was removed once every
+        /// call site hoisted it; see the two <c>IsLegacyPerfProfile()</c> call sites above.
+        /// </summary>
         private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy, bool isLegacyMode = false,
             string guid = null, string entityKey = null, string entityTypeGuid = null, int? entityId = null)
         {
@@ -974,6 +974,24 @@ namespace GxMcp.Worker.Services
             return item;
         }
 
+        /// <summary>
+        /// An object's folder path, as reported to the caller.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// NOTE: <c>IndexCacheService.ResolveHierarchy</c> walks the same <c>Parent</c>
+        /// chain, line for line, under the same name. The two are deliberately not
+        /// shared, and this comment exists so nobody merges them on the strength of the
+        /// similarity.
+        /// </para>
+        /// <para>
+        /// The walk agrees. It does not agree on what happens when the walk finds
+        /// nothing: the index resolves that case by promoting the module into its own
+        /// identity path, which is right for a cache that has to stay deterministic
+        /// across a rebuild. This one must not, because the result is reported as
+        /// <c>item["parentPath"]</c> and a module is not where the object lives.
+        /// </para>
+        /// </remarks>
         private HierarchyInfo ResolveHierarchy(dynamic obj)
         {
             string parentName = string.Empty;

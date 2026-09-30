@@ -320,40 +320,14 @@ namespace GxMcp.Worker.Services
             foreach (JObject item in previous.Values)
             {
                 if (planKeys.Contains(ManifestKey(item["type"]?.ToString(), item["name"]?.ToString()))) continue;
-                if (TryGetRootFile(root, item["file"]?.ToString(), out string file) && DeleteFile(file)) removed++;
+                if (MirrorRootFile.TryResolve(root, item["file"]?.ToString(), out string file) && MirrorRootFile.TryDelete(file)) removed++;
                 if (item["companions"] is JArray companions)
                 {
                     foreach (JObject companion in companions.OfType<JObject>())
-                        if (TryGetRootFile(root, companion["file"]?.ToString(), out string companionFile) && DeleteFile(companionFile)) removed++;
+                        if (MirrorRootFile.TryResolve(root, companion["file"]?.ToString(), out string companionFile) && MirrorRootFile.TryDelete(companionFile)) removed++;
                 }
             }
             return removed;
-        }
-
-        private static bool DeleteFile(string path)
-        {
-            try
-            {
-                if (!File.Exists(path)) return false;
-                File.Delete(path);
-                return true;
-            }
-            catch { return false; }
-        }
-
-        private static bool TryGetRootFile(string root, string relative, out string full)
-        {
-            full = null;
-            if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative)) return false;
-            try
-            {
-                string basePath = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                string candidate = Path.GetFullPath(Path.Combine(basePath, relative));
-                if (!candidate.StartsWith(basePath, StringComparison.OrdinalIgnoreCase)) return false;
-                full = candidate;
-                return true;
-            }
-            catch { return false; }
         }
 
         private static string NormalizePath(string value)

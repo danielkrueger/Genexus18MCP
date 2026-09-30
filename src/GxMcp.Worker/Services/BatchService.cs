@@ -23,6 +23,31 @@ namespace GxMcp.Worker.Services
             _objectService = objectService;
         }
 
+        /// <summary>
+        /// The completion envelope for a batch edit, shared by the three places one
+        /// is produced: an empty change list, the transactional path, and the
+        /// per-change path.
+        ///
+        /// The count, the per-change results and the elapsed time are the same three
+        /// fields every time, so a client reading one of them learns the shape from
+        /// any of them. Written out three times they could drift, and the empty-list
+        /// case already reports a literal <c>0</c> for the duration where the other
+        /// two read the stopwatch - the kind of difference that looks deliberate and
+        /// is not, because no stopwatch has run at that point.
+        /// </summary>
+        private static string BatchEditCompleted(string target, int count, JArray results, System.Diagnostics.Stopwatch sw)
+        {
+            return McpResponse.Ok(
+                target: target,
+                code: "BatchEditCompleted",
+                result: new JObject
+                {
+                    ["count"] = count,
+                    ["results"] = results,
+                    ["duration"] = sw.ElapsedMilliseconds
+                });
+        }
+
         public string BatchEdit(string target, JArray changes)
         {
             try
@@ -32,7 +57,7 @@ namespace GxMcp.Worker.Services
                 var results = new JArray();
 
                 if (changes == null || changes.Count == 0)
-                    return McpResponse.Ok(target: target, code: "BatchEditCompleted", result: new JObject { ["count"] = 0, ["results"] = results, ["duration"] = 0 });
+                    return BatchEditCompleted(target, 0, results, sw);
 
                 bool allDirect = true;
                 foreach (var c in changes)
@@ -97,15 +122,7 @@ namespace GxMcp.Worker.Services
                                 if (!ok) { try { trans.Rollback(); } catch { } }
                             }
                         }
-                        return McpResponse.Ok(
-                            target: target,
-                            code: "BatchEditCompleted",
-                            result: new JObject
-                            {
-                                ["count"] = count,
-                                ["results"] = results,
-                                ["duration"] = sw.ElapsedMilliseconds
-                            });
+                        return BatchEditCompleted(target, count, results, sw);
                     }
                 }
 
@@ -138,15 +155,7 @@ namespace GxMcp.Worker.Services
                     count++;
                 }
 
-                return McpResponse.Ok(
-                    target: target,
-                    code: "BatchEditCompleted",
-                    result: new JObject
-                    {
-                        ["count"] = count,
-                        ["results"] = results,
-                        ["duration"] = sw.ElapsedMilliseconds
-                    });
+                return BatchEditCompleted(target, count, results, sw);
             }
             catch (Exception ex)
             {
@@ -284,40 +293,74 @@ namespace GxMcp.Worker.Services
             }
         }
         /// <summary>
+        /// Clamps a requested page and page size into the range this API accepts.
+        /// Compatible with net48 (no Math.Clamp).
+        /// </summary>
+        private static void ClampPage(ref int page, ref int pageSize)
+        {
+            page = Math.Max(page, 1);
+            pageSize = Math.Min(Math.Max(pageSize, 1), 200);
+        }
+
+        /// <summary>
+        /// Slices one page out of a list and reports the window, without naming a
+        /// collection.
+        ///
+        /// The result and warning payloads are the same envelope around a different
+        /// collection - one keyed <c>items</c>, one keyed <c>warnings</c> - and each
+        /// was computing the window itself: the same clamps, the same
+        /// <c>skip</c>/<c>hasMore</c> arithmetic and the same bounds-checked loop.
+        /// That arithmetic decides which page a client sees and whether
+        /// <c>has_more</c> tells it to ask again, so two copies is two chances for
+        /// the two payloads to disagree about the page they are showing.
+        ///
+        /// The caller supplies the already-clamped values, because clamping changes
+        /// them and the clamped page and page size are both reported back inside the
+        /// envelope - so reading them from the result is not an option.
+        /// </summary>
+        private static JArray PageOf(IList<string> source, int page, int pageSize, out int total, out bool hasMore)
+        {
+            total = source == null ? 0 : source.Count;
+            int skip = (page - 1) * pageSize;
+            hasMore = skip + pageSize < total;
+
+            var sliced = new JArray();
+            if (source == null) return sliced;
+
+            int end = Math.Min(skip + pageSize, total);
+            for (int i = skip; i < end; i++)
+                sliced.Add(source[i]);
+
+            return sliced;
+        }
+
+        /// <summary>
+        /// The <c>_meta.pagination</c> block both paginated payloads carry.
+        /// </summary>
+        private static JObject PaginationMeta(int total, int page, int pageSize, bool hasMore)
+        {
+            return new JObject
+            {
+                ["total"] = total,
+                ["page"] = page,
+                ["page_size"] = pageSize,
+                ["has_more"] = hasMore
+            };
+        }
+
+        /// <summary>
         /// Builds a paginated payload for lifecycle result items (errors list).
         /// Compatible with net48 (no Math.Clamp).
         /// </summary>
         public static JObject BuildResultPayload(IList<string> items, int page, int pageSize)
         {
-            // Clamp inputs
-            page = Math.Max(page, 1);
-            pageSize = Math.Min(Math.Max(pageSize, 1), 200);
-
-            int total = items == null ? 0 : items.Count;
-            int skip = (page - 1) * pageSize;
-            bool hasMore = skip + pageSize < total;
-
-            var sliced = new JArray();
-            if (items != null)
-            {
-                int end = Math.Min(skip + pageSize, total);
-                for (int i = skip; i < end; i++)
-                    sliced.Add(items[i]);
-            }
+            ClampPage(ref page, ref pageSize);
+            var sliced = PageOf(items, page, pageSize, out int total, out bool hasMore);
 
             return new JObject
             {
                 ["items"] = sliced,
-                ["_meta"] = new JObject
-                {
-                    ["pagination"] = new JObject
-                    {
-                        ["total"] = total,
-                        ["page"] = page,
-                        ["page_size"] = pageSize,
-                        ["has_more"] = hasMore
-                    }
-                }
+                ["_meta"] = new JObject { ["pagination"] = PaginationMeta(total, page, pageSize, hasMore) }
             };
         }
 
@@ -327,35 +370,13 @@ namespace GxMcp.Worker.Services
         /// </summary>
         public static JObject BuildStatusPayload(IList<string> warnings, int page, int pageSize)
         {
-            // Clamp inputs
-            page = Math.Max(page, 1);
-            pageSize = Math.Min(Math.Max(pageSize, 1), 200);
-
-            int total = warnings == null ? 0 : warnings.Count;
-            int skip = (page - 1) * pageSize;
-            bool hasMore = skip + pageSize < total;
-
-            var sliced = new JArray();
-            if (warnings != null)
-            {
-                int end = Math.Min(skip + pageSize, total);
-                for (int i = skip; i < end; i++)
-                    sliced.Add(warnings[i]);
-            }
+            ClampPage(ref page, ref pageSize);
+            var sliced = PageOf(warnings, page, pageSize, out int total, out bool hasMore);
 
             return new JObject
             {
                 ["warnings"] = sliced,
-                ["_meta"] = new JObject
-                {
-                    ["pagination"] = new JObject
-                    {
-                        ["total"] = total,
-                        ["page"] = page,
-                        ["page_size"] = pageSize,
-                        ["has_more"] = hasMore
-                    }
-                }
+                ["_meta"] = new JObject { ["pagination"] = PaginationMeta(total, page, pageSize, hasMore) }
             };
         }
 

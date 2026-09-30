@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using GxMcp.Worker.Helpers;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -176,8 +177,8 @@ namespace GxMcp.Worker.Services
                     if (m.IsSpecialName) continue;
                     string scope = m.IsStatic ? "static " : "";
                     string sig = scope + m.Name + "(" +
-                        string.Join(",", m.GetParameters().Select(p => SafeTypeName(p.ParameterType) + " " + p.Name)) +
-                        ") -> " + SafeTypeName(m.ReturnType);
+                        string.Join(",", m.GetParameters().Select(p => SafeTypeName.Describe(p.ParameterType) + " " + p.Name)) +
+                        ") -> " + SafeTypeName.Describe(m.ReturnType);
                     methods.Add(sig);
                 }
             }
@@ -189,7 +190,7 @@ namespace GxMcp.Worker.Services
             {
                 foreach (var p in t.GetProperties(AllPublic))
                 {
-                    props.Add(p.Name + ":" + SafeTypeName(p.PropertyType) + (p.CanWrite ? " {get;set;}" : " {get;}"));
+                    props.Add(p.Name + ":" + SafeTypeName.Describe(p.PropertyType) + (p.CanWrite ? " {get;set;}" : " {get;}"));
                 }
             }
             catch { }
@@ -202,7 +203,7 @@ namespace GxMcp.Worker.Services
                 {
                     string scope = c.IsPublic ? "public" : (c.IsAssembly ? "internal" : "private");
                     ctors.Add(scope + " ctor(" +
-                        string.Join(",", c.GetParameters().Select(p => SafeTypeName(p.ParameterType) + " " + p.Name)) +
+                        string.Join(",", c.GetParameters().Select(p => SafeTypeName.Describe(p.ParameterType) + " " + p.Name)) +
                         ")");
                 }
             }
@@ -214,7 +215,7 @@ namespace GxMcp.Worker.Services
             {
                 foreach (var f in t.GetFields(AllPublic))
                 {
-                    fields.Add((f.IsStatic ? "static " : "") + f.Name + ":" + SafeTypeName(f.FieldType));
+                    fields.Add((f.IsStatic ? "static " : "") + f.Name + ":" + SafeTypeName.Describe(f.FieldType));
                 }
             }
             catch { }
@@ -223,21 +224,7 @@ namespace GxMcp.Worker.Services
             return entry;
         }
 
-        private static string SafeTypeName(Type t)
-        {
-            if (t == null) return "?";
-            try
-            {
-                if (t.IsGenericType)
-                {
-                    var def = t.GetGenericTypeDefinition().Name;
-                    var args = string.Join(",", t.GetGenericArguments().Select(SafeTypeName));
-                    return def + "<" + args + ">";
-                }
-                return t.Name;
-            }
-            catch { return "?"; }
-        }
+        // (SafeTypeName moved to Helpers/SafeTypeName.cs, shared with SdkProbeService)
 
         private static string SafeLocation(Assembly asm)
         {

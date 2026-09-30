@@ -42,14 +42,8 @@ namespace GxMcp.Worker.Parsers
                             }
                         } catch { }
 
-                        var lineElements = new List<string>();
-                        lineElements.Add(string.Format("{0}{1} : {2}", attr.Name, keyMarker, typeStr));
-                        if (!string.IsNullOrEmpty(desc) && !desc.Equals(attr.Name, StringComparison.OrdinalIgnoreCase)) lineElements.Add(string.Format("\"{0}\"", desc));
-                        if (!string.IsNullOrEmpty(formula)) lineElements.Add(string.Format("[Formula: {0}]", formula));
-                        if (isNullable) lineElements.Add("[Nullable]");
-
-                        string extraInfo = lineElements.Count > 1 ? " // " + string.Join(", ", lineElements.Skip(1)) : "";
-                        sb.AppendLine(string.Format("{0}{1}", lineElements[0], extraInfo));
+                        var declaration = Helpers.AttributeDeclaration.Render(attr.Name, keyMarker, typeStr, desc, formula, isNullable);
+                        sb.AppendLine(string.Format("{0}{1}", declaration.Head, declaration.Comment));
                     }
                 } catch (Exception ex) {
                     sb.AppendLine("// Error serializing table: " + ex.Message);
@@ -176,43 +170,7 @@ namespace GxMcp.Worker.Parsers
 
         private static void ApplyTypeFromDsl(dynamic tblAttrOrAttribute, string typeStr, KBModel model)
         {
-            if (tblAttrOrAttribute == null || string.IsNullOrWhiteSpace(typeStr)) return;
-            var spec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(typeStr);
-            if (!spec.Recognized) return;
-
-            // Resolve to the underlying global Attribute. For TableAttribute the property is .Attribute;
-            // for a raw Artech.Genexus.Common.Objects.Attribute it is itself.
-            object globalAttr = tblAttrOrAttribute;
-            try
-            {
-                var attrProp = tblAttrOrAttribute.GetType().GetProperty("Attribute");
-                if (attrProp != null)
-                {
-                    var maybeAttr = attrProp.GetValue(tblAttrOrAttribute, null);
-                    if (maybeAttr != null) globalAttr = maybeAttr;
-                }
-            }
-            catch { }
-
-            if (spec.CanonicalType == "DomainReference" && !string.IsNullOrEmpty(spec.DomainName))
-            {
-                try
-                {
-                    Artech.Genexus.Common.Objects.Domain domain = null;
-                    foreach (var obj in model.Objects.GetByName(null, null, spec.DomainName))
-                    {
-                        if (obj is Artech.Genexus.Common.Objects.Domain d) { domain = d; break; }
-                    }
-                    if (domain != null)
-                    {
-                        GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyDomain(globalAttr, domain);
-                    }
-                }
-                catch { }
-                return;
-            }
-
-            GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyPrimitive(globalAttr, spec.CanonicalType, spec.Length, spec.Decimals);
+            GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyFromDslType(tblAttrOrAttribute, typeStr, model);
         }
     }
 }

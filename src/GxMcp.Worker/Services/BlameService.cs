@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -253,56 +252,41 @@ namespace GxMcp.Worker.Services
             // can't wedge the worker (mirrors PrDescriptionService.RunGit).
             var prefixed = new System.Collections.Generic.List<string> { "--no-pager", "-c", "color.ui=false" };
             prefixed.AddRange(args);
-            var psi = new ProcessStartInfo("git")
-            {
-                WorkingDirectory = workingDir,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-            psi.EnvironmentVariables["GIT_PAGER"] = "cat";
 
-            // net48: build a single Arguments string with CommandLineToArgv-
-            // compatible quoting (see GithubService.ArgvQuote — handles trailing
+            // net48 has no ArgumentList, so the arguments are joined into one
+            // CommandLineToArgv-compatible string. Argv.Quote handles trailing
             // backslashes correctly so a malicious filename ending in '\' can't
-            // break out of its quoted token).
-            var sb = new System.Text.StringBuilder();
-            foreach (var a in prefixed)
-            {
-                if (sb.Length > 0) sb.Append(' ');
-                sb.Append(GithubService.ArgvQuote(a));
-            }
-            psi.Arguments = sb.ToString();
+            // break out of its quoted token.
+            string joined = Argv.Join(prefixed);
 
             try
             {
-                using (var p = Process.Start(psi))
-                {
-                    if (p == null) { stderr = "Failed to start git process."; return -1; }
-                    // Drain stdout + stderr in PARALLEL via async event handlers — the
-                    // sequential ReadToEnd → ReadToEnd → WaitForExit pattern deadlocks
-                    // when git fills the stdout pipe buffer before we drain it.
-                    try { p.StandardInput.Close(); } catch { }
-                    var outSb = new System.Text.StringBuilder();
-                    var errSb = new System.Text.StringBuilder();
-                    p.OutputDataReceived += (s, e) => { if (e.Data != null) outSb.AppendLine(e.Data); };
-                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) errSb.AppendLine(e.Data); };
-                    p.BeginOutputReadLine();
-                    p.BeginErrorReadLine();
-                    if (!p.WaitForExit(30000))
+                // No encoding passed: this caller has always read git's output in
+                // the console codepage, and forcing UTF-8 would change what it sees.
+                var outcome = ProcessLauncher.Run(
+                    "git",
+                    joined,
+                    workingDir,
+                    GitTimeoutMs,
+                    null,
+                    new Dictionary<string, string>
                     {
-                        try { p.Kill(); } catch { }
-                        stderr = "git " + sb.ToString() + " exceeded 30s in " + workingDir;
-                        return -1;
-                    }
-                    p.WaitForExit(); // flush async readers
-                    stdout = outSb.ToString();
-                    stderr = errSb.ToString();
-                    return p.ExitCode;
+                        { "GIT_TERMINAL_PROMPT", "0" },
+                        { "GIT_PAGER", "cat" },
+                    });
+
+                if (outcome.StartFailed) { stderr = "Failed to start git process."; return -1; }
+
+                if (outcome.TimedOut)
+                {
+                    // stdout is deliberately left alone here, as it was before.
+                    stderr = "git " + joined + " exceeded 30s in " + workingDir;
+                    return -1;
                 }
+
+                stdout = outcome.StdOut;
+                stderr = outcome.StdErr;
+                return outcome.ExitCode;
             }
             catch (Exception ex)
             {
@@ -310,6 +294,8 @@ namespace GxMcp.Worker.Services
                 return -1;
             }
         }
+
+        private const int GitTimeoutMs = 30000;
 
         private sealed class BlameEntry
         {

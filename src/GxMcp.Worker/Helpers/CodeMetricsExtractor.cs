@@ -10,7 +10,6 @@ namespace GxMcp.Worker.Helpers
     public static class CodeMetricsExtractor
     {
         private static readonly Regex RxForEach = new Regex(@"\bfor\s+each\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex RxEndFor  = new Regex(@"\bendfor\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex RxWhere   = new Regex(@"\bwhere\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex RxNew      = new Regex(@"\bnew\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex RxCommit   = new Regex(@"\bcommit\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);

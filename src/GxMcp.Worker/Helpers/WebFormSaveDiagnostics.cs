@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
+using GxMcp.Worker.Compatibility;
 
 namespace GxMcp.Worker.Helpers
 {
@@ -532,7 +533,7 @@ namespace GxMcp.Worker.Helpers
             try
             {
                 // 0-arg SaveHeader
-                var miNoArg = webFormPart.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                var miNoArg = webFormPart.GetType().GetMethods(SdkMemberProbe.InstanceAnyVisibility)
                     .FirstOrDefault(m => m.Name == "SaveHeader" && m.GetParameters().Length == 0);
                 if (miNoArg != null)
                 {
@@ -545,7 +546,7 @@ namespace GxMcp.Worker.Helpers
                 }
 
                 // 1-arg SaveHeader(SavePreferences)
-                var miArg = webFormPart.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                var miArg = webFormPart.GetType().GetMethods(SdkMemberProbe.InstanceAnyVisibility)
                     .FirstOrDefault(m => m.Name == "SaveHeader" && m.GetParameters().Length == 1);
                 if (miArg != null)
                 {
@@ -563,7 +564,7 @@ namespace GxMcp.Worker.Helpers
                 }
 
                 // Also try Save(SavePreferences) on the part — the 1-arg overload (not Save()).
-                var miSavePrefs = webFormPart.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                var miSavePrefs = webFormPart.GetType().GetMethods(SdkMemberProbe.InstanceAnyVisibility)
                     .FirstOrDefault(m => m.Name == "Save" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.Name.Contains("Preferences"));
                 if (miSavePrefs != null)
                 {
@@ -608,17 +609,14 @@ namespace GxMcp.Worker.Helpers
                 int? versionId = TryReadInt(webFormPart, "TypeVersionId");
                 if (typeId == null || versionId == null) { Logger.Info($"[Diag/{tag}] LoadOutput: no TypeId/VersionId"); return; }
 
-                // LoadModelEntityOutput(int, int, ref/out byte[]) — 3-arg overload.
-                var miByteOut = webFormPart.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
-                    .FirstOrDefault(m =>
-                    {
-                        if (m.Name != "LoadModelEntityOutput") return false;
-                        var ps = m.GetParameters();
-                        return ps.Length == 3
-                            && ps[0].ParameterType == typeof(int)
-                            && ps[1].ParameterType == typeof(int)
-                            && ps[2].ParameterType == typeof(byte[]).MakeByRefType();
-                    });
+                // LoadModelEntityOutput(int, int, ref/out byte[]) - 3-arg overload.
+                // Probe is instance-only on purpose: including static members would
+                // let an unrelated static overload of the same name answer first.
+                var miByteOut = SdkMemberProbe.Resolve(
+                    webFormPart.GetType(),
+                    "LoadModelEntityOutput",
+                    SdkMemberProbe.InstanceAnyVisibility,
+                    new[] { typeof(int), typeof(int), typeof(byte[]).MakeByRefType() });
                 if (miByteOut != null)
                 {
                     var args = new object[] { typeId.Value, versionId.Value, null };
@@ -643,27 +641,27 @@ namespace GxMcp.Worker.Helpers
         {
             try
             {
-                var miByteOut = webFormPart.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
-                    .FirstOrDefault(m =>
-                    {
-                        if (m.Name != "LoadModelEntityOutput") return false;
-                        var ps = m.GetParameters();
-                        return ps.Length == 3
-                            && ps[0].ParameterType == typeof(int)
-                            && ps[1].ParameterType == typeof(int)
-                            && ps[2].ParameterType == typeof(byte[]).MakeByRefType();
-                    });
+                // Same overload as TryLoadOutput probes: one lookup, one definition
+                // of which signature is meant, so the two diagnostics cannot report
+                // different answers for the same part.
+                var miByteOut = SdkMemberProbe.Resolve(
+                    webFormPart.GetType(),
+                    "LoadModelEntityOutput",
+                    SdkMemberProbe.InstanceAnyVisibility,
+                    new[] { typeof(int), typeof(int), typeof(byte[]).MakeByRefType() });
 
-                var miVerIndep = webFormPart.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
-                    .FirstOrDefault(m =>
+                // A different member from the one above - a four-argument overload
+                // that also reports when the output was produced - so it keeps its
+                // own lookup, but through the same resolver and the same flag set.
+                var miVerIndep = SdkMemberProbe.Resolve(
+                    webFormPart.GetType(),
+                    "LoadVersionIndependentOutput",
+                    SdkMemberProbe.InstanceAnyVisibility,
+                    new[]
                     {
-                        if (m.Name != "LoadVersionIndependentOutput") return false;
-                        var ps = m.GetParameters();
-                        return ps.Length == 4
-                            && ps[0].ParameterType == typeof(int)
-                            && ps[1].ParameterType == typeof(int)
-                            && ps[2].ParameterType == typeof(DateTime).MakeByRefType()
-                            && ps[3].ParameterType == typeof(byte[]).MakeByRefType();
+                        typeof(int), typeof(int),
+                        typeof(DateTime).MakeByRefType(),
+                        typeof(byte[]).MakeByRefType()
                     });
 
                 int hitsModel = 0, hitsIndep = 0;

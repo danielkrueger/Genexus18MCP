@@ -27,10 +27,9 @@ namespace GxMcp.Worker.Services
                         code: "KbNotOpen",
                         message: "No KB is currently open.",
                         hint: "Open a KB first with genexus_kb action=open.",
-                        nextSteps: new Newtonsoft.Json.Linq.JArray(McpResponse.NextStep(
-                            "genexus_kb",
-                            new JObject { ["action"] = "open", ["path"] = "<kb path>" },
-                            "Open the target KB before calling db_info.")));
+                        nextSteps: new Newtonsoft.Json.Linq.JArray(KbOpenNextStep.Step(
+                            "Open the target KB before calling db_info.",
+                            new JObject { ["path"] = "<kb path>" })));
                 }
 
                 dynamic environment = TryGet(() => (object)kb.DesignModel.Environment);

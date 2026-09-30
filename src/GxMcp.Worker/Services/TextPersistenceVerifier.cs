@@ -222,7 +222,6 @@ namespace GxMcp.Worker.Services
         private static int Count(string value, string needle) => (value ?? string.Empty).Split(new[] { needle }, StringSplitOptions.None).Length - 1;
         private static int CountLoneLf(string value) => (value ?? string.Empty).Replace("\r\n", string.Empty).Count(c => c == '\n');
         private static int CountLoneCr(string value) => (value ?? string.Empty).Replace("\r\n", string.Empty).Count(c => c == '\r');
-        private static bool IsSourceOrRules(string partName) => IsCodeOrTextPart(partName);
         internal static bool IsCodeOrTextPart(string partName) => string.IsNullOrWhiteSpace(partName)
             || string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase)
             || string.Equals(partName, "Rules", StringComparison.OrdinalIgnoreCase)

@@ -21,15 +21,7 @@ namespace GxMcp.Worker.Services
                 if (limit > 500) limit = 500;
 
                 var obj = _objectService.FindObject(target);
-                if (obj == null)
-                {
-                    return Models.McpResponse.Err(
-                        code: "ObjectNotFound",
-                        message: "Object not found.",
-                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
-                        target: target);
-                }
+                if (obj == null) return VisualObjectNotFound(target);
 
                 var partNames = new[] { "Layout", "PatternVirtual", "WebForm" };
                 var results = new JArray();

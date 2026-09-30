@@ -368,6 +368,69 @@ namespace GxMcp.Worker.Services
         public TextMirrorService GetTextMirrorService() { return _textMirrorService; }
 
         /// <summary>
+        /// The refusal a tool gets when the action is not one it serves.
+        ///
+        /// Every handler ends on this shape, and it was written out at each of them:
+        /// the same code, the same next step, the same two sentences with the tool's
+        /// name dropped in. Only the name varies, and for all of them the tool name
+        /// in the hint is this same string with a <c>genexus_</c> prefix - which is
+        /// what lets one argument carry both.
+        ///
+        /// It is shared because a refusal that is not recognisable as a refusal is
+        /// the one failure an agent cannot recover from: it is the tool telling the
+        /// caller that nothing was written and where to look instead, so a sixth
+        /// handler that forgot the next step, or spelled it differently, would strand
+        /// the caller rather than misdirect it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="tool"/> produces <em>both</em> strings - the message says
+        /// <c>Unsupported {tool} action</c> and the hint says <c>Call genexus_{tool}
+        /// </c> - so it must be the short name of a tool that is actually advertised
+        /// as <c>genexus_</c> plus that name. A handler whose advertised name does not
+        /// follow that shape cannot use this; it has to pass the advertised name, and
+        /// the two sentences will then disagree, which is the lesser evil compared to
+        /// naming a tool that is not there.
+        /// </remarks>
+        /// <param name="tool">
+        /// The tool's short name - <c>security</c>, not <c>genexus_security</c>.
+        /// </param>
+        /// <param name="action">The action that was asked for, quoted back verbatim.</param>
+        /// <param name="target">The target the call was made against, if it named one.</param>
+        internal static string UnsupportedAction(string tool, string action, string target)
+        {
+            return Models.McpResponse.Err(
+                code: "UnknownAction",
+                message: $"Unsupported {tool} action '{action}'.",
+                hint: $"Call genexus_{tool} with no action to see the supported list.",
+                nextSteps: OrientWelcomeNextSteps(),
+                target: target);
+        }
+
+        /// <summary>
+        /// The next step offered by every "you asked for something this tool does
+        /// not do" refusal: the welcome card.
+        ///
+        /// Shared between <see cref="UnsupportedAction"/> and the dispatcher's own
+        /// unknown-combination refusal, which is a different condition - the pair
+        /// named neither a known tool nor a known action - but reaches for the same
+        /// place, because in both cases the caller's next useful move is to find out
+        /// what exists.
+        ///
+        /// Built fresh on each call rather than held in a static field: a
+        /// <see cref="JArray"/> is mutable and is attached to the response object,
+        /// so a shared instance would let one envelope's next step be edited by
+        /// whoever happened to hold the response next.
+        /// </summary>
+        private static JArray OrientWelcomeNextSteps()
+        {
+            return new JArray(
+                Models.McpResponse.NextStep(
+                    tool: "genexus_orient",
+                    args: new JObject(),
+                    why: "Welcome card: KB info, recent edits, and top gotchas."));
+        }
+
+        /// <summary>
         /// GXPublic exposes its own metadata catalogue and does not populate the
         /// native SearchIndexService. Mark the gateway-facing index state usable
         /// after a successful provider open so query/list reach the GXPublic
@@ -789,11 +852,7 @@ namespace GxMcp.Worker.Services
                         code: "UnknownMethodOrAction",
                         message: string.Format("Unsupported dispatch combination. Method='{0}', Action='{1}'.", method ?? "", action ?? ""),
                         hint: "Call genexus_help action=route goal=<intent> for the right tool, or genexus_orient for an overview.",
-                        nextSteps: new JArray(
-                            Models.McpResponse.NextStep(
-                                tool: "genexus_orient",
-                                args: new JObject(),
-                                why: "Welcome card: KB info, recent edits, and top gotchas.")),
+                        nextSteps: OrientWelcomeNextSteps(),
                         target: target);
                 } // end using ProgressContext
             }
@@ -2572,16 +2631,7 @@ namespace GxMcp.Worker.Services
                 return _securityAuditService.ScanSecrets();
             if (string.Equals(action, "scan_native", StringComparison.OrdinalIgnoreCase))
                 return _securityScanService.Run(args ?? new JObject());
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported security action '{action}'.",
-                hint: "Call genexus_security with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("security", action, target);
                     // Item 65 — genexus_orient welcome card
         }
 
@@ -2589,16 +2639,7 @@ namespace GxMcp.Worker.Services
         {
             if (string.Equals(action, "Welcome", StringComparison.OrdinalIgnoreCase))
                 return _orientService.Welcome();
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported orient action '{action}'.",
-                hint: "Call genexus_orient with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("orient", action, target);
         }
 
         private string Handle_Property(JObject request, string method, string action, string target, string payload, JObject args)
@@ -3270,16 +3311,7 @@ namespace GxMcp.Worker.Services
                 string locName = target ?? args?["name"]?.ToString();
                 return _kbExplorerService.Locate(locName);
             }
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported kbexplorer action '{action}'.",
-                hint: "Call genexus_kbexplorer with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("kbexplorer", action, target);
         }
 
         private string Handle_Navigation(JObject request, string method, string action, string target, string payload, JObject args)
@@ -3290,16 +3322,7 @@ namespace GxMcp.Worker.Services
                 bool latest = args?["latest"]?.ToObject<bool?>() ?? false;
                 return _navigationViewService.View(navName, latest);
             }
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported navigation action '{action}'.",
-                hint: "Call genexus_navigation with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("navigation", action, target);
         }
 
         private string Handle_Blame(JObject request, string method, string action, string target, string payload, JObject args)
@@ -3316,16 +3339,7 @@ namespace GxMcp.Worker.Services
                 };
                 return _blameService.Blame(blameReq);
             }
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported blame action '{action}'.",
-                hint: "Call genexus_blame with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("blame", action, target);
         }
 
         private string Handle_BrowserCapture(JObject request, string method, string action, string target, string payload, JObject args)

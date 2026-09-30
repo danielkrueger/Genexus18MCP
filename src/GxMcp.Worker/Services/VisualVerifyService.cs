@@ -94,23 +94,7 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    var psi = new ProcessStartInfo("cmd.exe", "/c where " + command)
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    using (var p = Process.Start(psi))
-                    {
-                        string so = p.StandardOutput.ReadToEnd();
-                        p.WaitForExit(5000);
-                        if (p.ExitCode == 0)
-                        {
-                            var line = so.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
-                            return line?.Trim();
-                        }
-                    }
+                    return ConsoleProbe.Which(command);
                 }
                 catch { }
                 return null;

@@ -1,5 +1,5 @@
 using System;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Newtonsoft.Json.Linq;
@@ -91,85 +91,33 @@ namespace GxMcp.Worker.Services
         private string TryGetKbPath() { try { return _kbService?.GetKbPath(); } catch { return null; } }
         private static string Err(string m) => McpResponse.Err(code: "GithubError", message: m);
 
-        /// <summary>
-        /// Windows CommandLineToArgv-compatible quoting per the rules at
-        /// https://learn.microsoft.com/en-us/archive/blogs/twistylittlepassagesallalike/.
-        /// The naive `Replace("\"","\\\"")` pattern leaves trailing backslashes
-        /// unescaped, so a value ending in '\' lets the closing quote get
-        /// consumed and the next token bleeds into the argument — classic
-        /// Windows arg-confusion. This version doubles every run of
-        /// backslashes that precede a quote (and the closing quote).
-        /// </summary>
-        internal static string ArgvQuote(string arg)
-        {
-            if (arg == null) arg = string.Empty;
-            // If there are no problematic characters, no quoting needed.
-            if (arg.Length > 0 && arg.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0)
-                return arg;
-            var sb = new StringBuilder();
-            sb.Append('"');
-            for (int i = 0; i < arg.Length; i++)
-            {
-                int backslashes = 0;
-                while (i < arg.Length && arg[i] == '\\') { backslashes++; i++; }
-                if (i == arg.Length)
-                {
-                    // Escape all backslashes, but let the terminating quote be added below.
-                    sb.Append('\\', backslashes * 2);
-                    break;
-                }
-                if (arg[i] == '"')
-                {
-                    // Escape all backslashes and the following quote.
-                    sb.Append('\\', backslashes * 2 + 1);
-                    sb.Append(arg[i]);
-                }
-                else
-                {
-                    // Backslashes aren't special here.
-                    sb.Append('\\', backslashes);
-                    sb.Append(arg[i]);
-                }
-            }
-            sb.Append('"');
-            return sb.ToString();
-        }
-
         private static int Run(string exe, System.Collections.Generic.List<string> args, string cwd, out string stdout, out string stderr)
         {
-            var sb = new StringBuilder();
-            foreach (var a in args)
+            var outcome = ProcessLauncher.Run(
+                exe,
+                Argv.Join(args),
+                cwd,
+                GhTimeoutMs,
+                Encoding.UTF8,
+                // Stops gh blocking on a credential or device-code prompt reading
+                // the inherited stdio pipe.
+                new Dictionary<string, string> { { "GIT_TERMINAL_PROMPT", "0" } });
+
+            if (outcome.StartFailed)
             {
-                if (sb.Length > 0) sb.Append(' ');
-                sb.Append(ArgvQuote(a));
+                stdout = ""; stderr = "Process.Start returned null"; return -1;
             }
-            var psi = new ProcessStartInfo(exe, sb.ToString())
+
+            if (outcome.TimedOut)
             {
-                WorkingDirectory = cwd,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-            psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-            using (var p = Process.Start(psi))
-            {
-                if (p == null) { stdout = ""; stderr = "Process.Start returned null"; return -1; }
-                try { p.StandardInput.Close(); } catch { }
-                var outSb = new StringBuilder();
-                var errSb = new StringBuilder();
-                p.OutputDataReceived += (_, e) => { if (e.Data != null) outSb.AppendLine(e.Data); };
-                p.ErrorDataReceived += (_, e) => { if (e.Data != null) errSb.AppendLine(e.Data); };
-                p.BeginOutputReadLine(); p.BeginErrorReadLine();
-                if (!p.WaitForExit(30000)) { try { p.Kill(); } catch { } stdout = outSb.ToString(); stderr = "gh timed out"; return -1; }
-                p.WaitForExit();
-                stdout = outSb.ToString();
-                stderr = errSb.ToString();
-                return p.ExitCode;
+                stdout = outcome.StdOut; stderr = "gh timed out"; return -1;
             }
+
+            stdout = outcome.StdOut;
+            stderr = outcome.StdErr;
+            return outcome.ExitCode;
         }
+
+        private const int GhTimeoutMs = 30000;
     }
 }

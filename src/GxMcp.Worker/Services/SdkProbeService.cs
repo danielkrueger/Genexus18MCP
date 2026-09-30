@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Xml;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Compatibility;
 using Newtonsoft.Json.Linq;
 
@@ -344,14 +345,14 @@ namespace GxMcp.Worker.Services
                     string scope = m.IsStatic ? "static " : string.Empty;
                     string sig = scope + m.Name + "(" +
                         string.Join(", ", m.GetParameters()
-                            .Select(p => SafeTypeName(p.ParameterType) + " " + p.Name)) +
-                        ") -> " + SafeTypeName(m.ReturnType);
+                            .Select(p => SafeTypeName.Describe(p.ParameterType) + " " + p.Name)) +
+                        ") -> " + SafeTypeName.Describe(m.ReturnType);
 
                     methods.Add(new JObject
                     {
                         ["name"] = m.Name,
                         ["signature"] = sig,
-                        ["returnType"] = SafeTypeName(m.ReturnType),
+                        ["returnType"] = SafeTypeName.Describe(m.ReturnType),
                         ["oneLineDoc"] = doc?.LookupMethod(m) ?? string.Empty
                     });
                 }
@@ -366,7 +367,7 @@ namespace GxMcp.Worker.Services
                     props.Add(new JObject
                     {
                         ["name"] = p.Name,
-                        ["type"] = SafeTypeName(p.PropertyType),
+                        ["type"] = SafeTypeName.Describe(p.PropertyType),
                         ["canWrite"] = p.CanWrite,
                         ["oneLineDoc"] = doc?.LookupProperty(p) ?? string.Empty
                     });
@@ -387,21 +388,7 @@ namespace GxMcp.Worker.Services
             };
         }
 
-        private static string SafeTypeName(Type t)
-        {
-            if (t == null) return "?";
-            try
-            {
-                if (t.IsGenericType)
-                {
-                    var def = t.GetGenericTypeDefinition().Name;
-                    var args = string.Join(",", t.GetGenericArguments().Select(SafeTypeName));
-                    return def + "<" + args + ">";
-                }
-                return t.Name;
-            }
-            catch { return "?"; }
-        }
+        // (SafeTypeName moved to Helpers/SafeTypeName.cs, shared with SdkSurfaceProbe)
 
         private static int SafeCount(Func<int> f)
         {

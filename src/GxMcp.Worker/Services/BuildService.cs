@@ -2669,11 +2669,6 @@ namespace GxMcp.Worker.Services
             catch { return statusJson; }
         }
 
-        private static string GetStatusValue(BuildTaskStatus s)
-        {
-            lock (s._lock) { return s.Status; }
-        }
-
         // Adds _meta.snapshot=<current baseline> to a status JSON response so the
         // caller can chain status wait calls without recomputing the baseline.
         private string AnnotateWithBaseline(string statusJson, string taskId)

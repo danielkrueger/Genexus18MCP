@@ -75,6 +75,20 @@ namespace GxMcp.Worker.Services
                     message: "The requested grid-attribute change was not isolated; no mutation was applied.",
                     target: target, extra: new JObject { ["unrelatedChanges"] = unrelatedChanges });
 
+            // NOTE: the read-resolve-version-check prologue below is repeated in
+            // WwpActionService.Grid/Tables/Tabs/WebComponentReplacement/FormActions.
+            // It is deliberately NOT single-sourced. All six locals it declares
+            // (lockedTarget, currentXml, currentInstance, currentPart,
+            // currentVersion, expectedVersion) are read further down every one of
+            // those bodies, so the shared part is a declaration block rather than a
+            // computation: extracting it would mean either six out-parameters at
+            // each call site or a result object renamed across ~40 mutation lines
+            // in five rollback-sensitive files. Both trade inline clarity for a
+            // wider signature without removing any real duplication.
+            //
+            // The per-target lock must wrap the whole sequence - read, resolve,
+            // compare version, mutate - and must stay in the caller so that stays
+            // visible at a glance.
             lock (WriteService.AcquirePerTargetLock(target))
             {
                 KBObject lockedTarget = _objects.FindObject(target) ?? requestedObject;
@@ -83,18 +97,12 @@ namespace GxMcp.Worker.Services
                 _patterns.BuildPatternPartEnvelope(lockedTarget, "PatternInstance", currentXml, PatternRegistry.WorkWithPlusPatternId,
                     out _, out KBObjectPart currentPart);
                 if (currentInstance == null || currentPart == null || string.IsNullOrWhiteSpace(currentXml))
-                    return McpResponse.Err(code: "WWPInstanceNotFound",
-                        message: "The WorkWithPlus PatternInstance could not be re-resolved before save.", target: target);
+                    return BuildWwpInstanceNotResolvable(target);
 
                 string currentVersion = WriteService.ComputeContentVersionToken(currentInstance, currentXml);
                 if (!string.Equals(expectedVersion, currentVersion, StringComparison.Ordinal))
-                    return McpResponse.Err(code: "StaleObject",
-                        message: "The PatternInstance changed after the caller's read/dry-run; no grid attribute was changed.",
-                        target: target, extra: new JObject
-                        {
-                            ["expectedVersion"] = expectedVersion,
-                            ["currentVersion"] = currentVersion
-                        });
+                    return BuildWwpStaleObject(target, expectedVersion, currentVersion,
+                        "The PatternInstance changed after the caller's read/dry-run; no grid attribute was changed.");
 
                 XDocument lockedBefore = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
                 XDocument lockedAfter = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
@@ -117,8 +125,7 @@ namespace GxMcp.Worker.Services
                 SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
                 string applyOnSaveBefore = ReadObjectProperty(currentInstance, "SDPlus_Editor_Apply_On_Save");
 
-                if (nativeBytes == null || parent == null || parentWebFormBefore == null
-                    || snapshots.Pattern == null || snapshots.WebForm == null)
+                if (WwpSnapshotsIncomplete(nativeBytes, parent, parentWebFormBefore, snapshots))
                     return McpResponse.Err(code: "WwpSnapshotRequired",
                         message: "Complete PatternInstance and WebForm snapshots are required; no mutation was applied.",
                         target: target, extra: new JObject { ["snapshot"] = snapshots.ToJson(), ["persisted"] = false });

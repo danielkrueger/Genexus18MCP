@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -584,10 +583,9 @@ namespace GxMcp.Gateway
 
         internal static string LogValue(string value)
         {
-            string redacted = Regex.Replace(
-                value ?? string.Empty,
-                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
-                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            // Shared with KbImportHelper, MacroSuggestionService and the Worker's
+            // PreviewService/SharedWorkerHost: one redaction rule, not five.
+            string redacted = LogRedaction.Redact(value);
             return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
 

@@ -273,7 +273,7 @@ namespace GxMcp.Worker.Services
                 string relative = NormalizePath(item["file"]?.ToString());
                 if (string.IsNullOrWhiteSpace(relative) || emitted.Contains(relative)) continue;
                 if (!relative.EndsWith("/module.toml", StringComparison.OrdinalIgnoreCase)) continue;
-                if (TryGetRootFile(root, relative, out string full) && DeleteFile(full)) removed++;
+                if (MirrorRootFile.TryResolve(root, relative, out string full) && MirrorRootFile.TryDelete(full)) removed++;
             }
             return removed;
         }
@@ -287,7 +287,7 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrWhiteSpace(relative) || emitted.Contains(relative)) continue;
                 if (!relative.StartsWith("ref/", StringComparison.OrdinalIgnoreCase)
                     || !relative.EndsWith(".opc", StringComparison.OrdinalIgnoreCase)) continue;
-                if (TryGetRootFile(root, relative, out string full) && DeleteFile(full)) removed++;
+                if (MirrorRootFile.TryResolve(root, relative, out string full) && MirrorRootFile.TryDelete(full)) removed++;
             }
             return removed;
         }

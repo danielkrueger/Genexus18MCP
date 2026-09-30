@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
@@ -30,7 +31,7 @@ namespace GxMcp.Worker.Services
 
         public string Save(string fact, string objectName, string objectType, string[] tags, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -40,7 +41,7 @@ namespace GxMcp.Worker.Services
 
         public string Recall(string objectName, string objectType, string[] tags, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -50,7 +51,7 @@ namespace GxMcp.Worker.Services
 
         public string List(string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -60,7 +61,7 @@ namespace GxMcp.Worker.Services
 
         public string Forget(string id, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -75,7 +76,7 @@ namespace GxMcp.Worker.Services
         /// </summary>
         public string Promote(string message, string objectName, string objectType, string[] tags, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -98,7 +99,7 @@ namespace GxMcp.Worker.Services
         /// </summary>
         public string Consolidate(string objectName, string objectType, string[] tags, bool dryRun, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -642,12 +643,6 @@ namespace GxMcp.Worker.Services
 
         private static string MemoryFilePath(string kbPath) =>
             Path.Combine(kbPath, ".gx", "memory", "memory.jsonl");
-
-        private string ResolveKbPath(string kbPathOverride)
-        {
-            if (!string.IsNullOrEmpty(kbPathOverride)) return kbPathOverride;
-            try { return _kbService?.GetKbPath(); } catch { return null; }
-        }
 
         private static string Error(string code, string message) =>
             McpResponse.Err(code: code, message: message);

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 
@@ -24,14 +25,14 @@ namespace GxMcp.Worker.Services
 
         public string Report(string sinceIso = null, string untilIso = null, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return McpResponse.Err(
                     code: "NoKbOpen",
                     message: "No KB is currently open.",
                     hint: "Open a KB first via genexus_kb action=open.",
-                    nextSteps: new JArray { McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Open a KB.") });
+                    nextSteps: new JArray { KbOpenNextStep.Step("Open a KB.") });
             }
             return ReportCore(kbPath, sinceIso, untilIso);
         }
@@ -155,12 +156,6 @@ namespace GxMcp.Worker.Services
             if (DateTime.TryParse(s, null, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dt))
                 return dt;
             return null;
-        }
-
-        private string ResolveKbPath(string kbPathOverride)
-        {
-            if (!string.IsNullOrEmpty(kbPathOverride)) return kbPathOverride;
-            try { return _kbService?.GetKbPath(); } catch { return null; }
         }
     }
 }

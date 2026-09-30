@@ -86,6 +86,113 @@ namespace GxMcp.Worker.Services
                 });
         }
 
+        /// <summary>
+        /// The fail-closed guard every mutating operation shares: the
+        /// PatternInstance was re-resolved under the per-target lock, and the
+        /// re-read produced nothing usable. Each operation refuses to mutate in
+        /// that state rather than staging a change it cannot save, so the message
+        /// is written once here - it is the operator's only clue about which stage
+        /// refused, and five copies of it could drift apart.
+        ///
+        /// Distinct from <see cref="BuildWwpInstanceNotFound"/>, which fires when
+        /// the object resolved but is not a WorkWithPlus instance at all and has to
+        /// route the caller to a different tool.
+        /// </summary>
+        internal static string BuildWwpInstanceNotResolvable(string target)
+        {
+            return McpResponse.Err(code: "WWPInstanceNotFound",
+                message: "The WorkWithPlus PatternInstance could not be re-resolved before save.", target: target);
+        }
+
+        /// <summary>
+        /// The refusal a caller gets when the PatternInstance moved between their read
+        /// and the write.
+        ///
+        /// <para>
+        /// Six operations refuse this way - five under the per-target lock in the
+        /// partials, plus the router path - and each wrote the whole envelope out. The
+        /// <c>extra</c> is why that mattered: its two fields are the entire retry
+        /// contract, since a caller re-runs with <c>expectedVersion</c> and compares
+        /// against <c>currentVersion</c>. Six hand-written copies of a contract the
+        /// caller reads programmatically is six chances for one of them to drop a
+        /// field or rename it, and the result would be a caller with no way to
+        /// recover except re-reading the whole pattern.
+        /// </para>
+        ///
+        /// <para>
+        /// Only the envelope is shared, never the comparison that triggers it. The
+        /// condition genuinely differs: <c>add_grid_attribute</c> requires a version
+        /// and refuses up front with <c>ExpectedVersionRequired</c> when none is given,
+        /// so by the time it checks, comparing is unconditional; the other four treat an
+        /// absent version as "caller did not ask for a check" and skip it. Grid's is
+        /// therefore a stricter contract, not an oversight, and folding the condition
+        /// in would silently make the four lenient ones strict.
+        /// </para>
+        ///
+        /// <para>
+        /// The read-resolve-compare prologue around this call stays inline in each
+        /// partial, by the decision recorded in <c>WwpActionService.Grid.cs</c>: it is
+        /// a declaration block whose locals are read through ~40 mutation lines, so
+        /// sharing it would mean six out-parameters or a renamed result object, not
+        /// fewer lines. This helper is the part that declares nothing.
+        /// </para>
+        /// </summary>
+        /// <param name="target">The target whose instance moved.</param>
+        /// <param name="expectedVersion">The version the caller last saw.</param>
+        /// <param name="currentVersion">The version read back under the lock.</param>
+        /// <param name="message">
+        /// What this specific operation did not do. It stays an argument because the
+        /// six differ - naming the attribute, the table, the tab, the form action or
+        /// the component is what tells an operator which stage refused - and losing
+        /// that would make the refusal less useful than five copies.
+        /// </param>
+        internal static string BuildWwpStaleObject(string target, string expectedVersion, string currentVersion, string message)
+        {
+            return McpResponse.Err(code: "StaleObject",
+                message: message, target: target, extra: new JObject
+                {
+                    ["expectedVersion"] = expectedVersion,
+                    ["currentVersion"] = currentVersion
+                });
+        }
+
+        /// <summary>
+        /// Whether a WWP mutation cannot prove the change it is about to make.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Five things are needed to claim a change was written: the object's own
+        /// native bytes, its resolved parent, that parent's WebForm text, and the
+        /// before-snapshots of both the PatternInstance and the WebForm. If any is
+        /// missing, the operation refuses rather than stage a change it cannot verify
+        /// or roll back - which is the whole reason this list exists.
+        /// </para>
+        ///
+        /// <para>
+        /// The five-term check was written out identically at all five call sites. What
+        /// is shared here is the <em>condition</em> only, never the refusal that
+        /// follows it, because the five refusals are three different contracts: two
+        /// report only <c>snapshot</c> and <c>persisted</c>, three add four diagnostic
+        /// booleans, and one of those reports them through <c>errorExtra</c> so they
+        /// land inside <c>error</c> rather than at the envelope's top level. Unifying
+        /// the envelopes would change where a client reads those fields from, so each
+        /// site keeps its own and states which fields it has.
+        /// </para>
+        ///
+        /// <para>
+        /// <paramref name="snapshots"/> is dereferenced directly rather than
+        /// null-guarded, because <c>CaptureSnapshots</c> always constructs one - a
+        /// throw there happens before the call, not inside it. Adding <c>?.</c> would
+        /// be noise that implies a case that cannot occur.
+        /// </para>
+        /// </remarks>
+        internal static bool WwpSnapshotsIncomplete(
+            byte[] nativeBytes, KBObject parent, string parentWebFormBefore, SnapshotBundle snapshots)
+        {
+            return nativeBytes == null || parent == null || parentWebFormBefore == null
+                || snapshots.Pattern == null || snapshots.WebForm == null;
+        }
+
         public string Run(string target, JObject args)
         {
             target = ResolveTarget(target, args);
@@ -219,13 +326,8 @@ namespace GxMcp.Worker.Services
                      args["_variableReference"] = verifiedReference;
                  }
                  if (!IsExpectedVersion(expectedVersion, versionToken))
-                    return McpResponse.Err(code: "StaleObject",
-                        message: "The WorkWithPlus PatternInstance changed after the caller's read; no action mutation was applied.",
-                        target: target, extra: new JObject
-                        {
-                            ["expectedVersion"] = expectedVersion,
-                            ["currentVersion"] = versionToken
-                        });
+                    return BuildWwpStaleObject(target, expectedVersion, versionToken,
+                        "The WorkWithPlus PatternInstance changed after the caller's read; no action mutation was applied.");
                 _patterns.BuildPatternPartEnvelope(requestedObject, "PatternInstance", xml, PatternRegistry.WorkWithPlusPatternId,
                     out _, out KBObjectPart instancePart);
 

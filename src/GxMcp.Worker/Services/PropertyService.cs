@@ -25,6 +25,9 @@ namespace GxMcp.Worker.Services
         private static readonly object _propertyCacheLock = new object();
         private const int PropertyCacheTtlSeconds = 30;
 
+        /// <summary>
+        /// The properties a caller always gets, whatever projection it asked for.
+        /// </summary>
         internal static readonly HashSet<string> MinimalProjectionPropertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "Name",
@@ -47,64 +50,60 @@ namespace GxMcp.Worker.Services
             "DomainDefinition"
         };
 
-        internal static readonly HashSet<string> StandardProjectionPropertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            // Minimal set
-            "Name",
-            "Description",
-            "DescriptionValue",
-            "Type",
-            "DataType",
-            "DataTypeString",
-            "Length",
-            "AttMaxLen",
-            "Decimals",
-            "AttDec",
-            "Signed",
-            "AttSign",
-            "Picture",
-            "ATT_PICTURE",
-            "Domain",
-            "BasedOn",
-            "DomainBasedOn",
-            "DomainDefinition",
+        /// <summary>
+        /// The minimal set plus the standard object, domain and control metadata.
+        ///
+        /// It used to spell the minimal nineteen out a second time under a
+        /// "// Minimal set" comment marking where the copy ended. That comment
+        /// asserted a containment nothing enforced: adding a name to
+        /// <see cref="MinimalProjectionPropertyNames"/> and not to this list would
+        /// leave a property that every projection returns and the standard
+        /// projection does not, which shows up as a field missing from one shape of
+        /// the same object rather than as an error. The set is now built from the
+        /// minimal one, so the relationship holds by construction.
+        /// </summary>
+        internal static readonly HashSet<string> StandardProjectionPropertyNames = BuildStandardProjectionPropertyNames();
 
-            // Standard object / domain / control metadata
-            "IsNullable",
-            "Nullable",
-            "ALLOWNULL",
-            "Autonumber",
-            "Collection",
-            "AttCollection",
-            "Title",
-            "Caption",
-            "Module",
-            "Parent",
-            "Prefix",
-            "ControlValues",
-            "Values",
-            "EnumValues",
-            "ValidationFailedText",
-            "Help",
-            "Theme",
-            "MasterPage",
-            "Folder",
-            "ExternalName",
-            "ExternalNamespace",
-            "CommitOnExit",
-            "Protocol",
-            "ExposeAsWebService",
-            "SOAP",
-            "REST",
-            "ConnectivitySupport",
-            "WebNotification",
-            "WebUserExperience",
-            "FormClass",
-            "DefaultSelected",
-            "Visible",
-            "Enabled",
-            "Class"
-        };
+        private static HashSet<string> BuildStandardProjectionPropertyNames()
+        {
+            return new HashSet<string>(MinimalProjectionPropertyNames, StringComparer.OrdinalIgnoreCase)
+            {
+                "IsNullable",
+                "Nullable",
+                "ALLOWNULL",
+                "Autonumber",
+                "Collection",
+                "AttCollection",
+                "Title",
+                "Caption",
+                "Module",
+                "Parent",
+                "Prefix",
+                "ControlValues",
+                "Values",
+                "EnumValues",
+                "ValidationFailedText",
+                "Help",
+                "Theme",
+                "MasterPage",
+                "Folder",
+                "ExternalName",
+                "ExternalNamespace",
+                "CommitOnExit",
+                "Protocol",
+                "ExposeAsWebService",
+                "SOAP",
+                "REST",
+                "ConnectivitySupport",
+                "WebNotification",
+                "WebUserExperience",
+                "FormClass",
+                "DefaultSelected",
+                "Visible",
+                "Enabled",
+                "Class"
+            };
+        }
 
         public PropertyService(ObjectService objectService)
         {
@@ -668,61 +667,13 @@ namespace GxMcp.Worker.Services
             // Projection mode: minimal
             if (string.Equals(projection, "minimal", StringComparison.OrdinalIgnoreCase))
             {
-                var filteredProps = new JArray();
-                var valuesMap = new JObject();
-                foreach (JObject p in props)
-                {
-                    var n = p["name"]?.ToString();
-                    if (n != null && MinimalProjectionPropertyNames.Contains(n))
-                    {
-                        filteredProps.Add((JObject)p.DeepClone());
-                        if (valuesMap[n] == null)
-                        {
-                            valuesMap[n] = p["value"]?.ToString() ?? "";
-                        }
-                    }
-                }
-                var projResult = new JObject
-                {
-                    ["projection"] = "minimal",
-                    ["values"] = valuesMap,
-                    ["properties"] = filteredProps
-                };
-                if (!string.IsNullOrEmpty(versionToken))
-                {
-                    projResult["versionToken"] = versionToken;
-                }
-                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
+                return BuildProjectionResult(target, "minimal", props, MinimalProjectionPropertyNames, versionToken);
             }
 
             // Projection mode: standard
             if (string.Equals(projection, "standard", StringComparison.OrdinalIgnoreCase))
             {
-                var filteredProps = new JArray();
-                var valuesMap = new JObject();
-                foreach (JObject p in props)
-                {
-                    var n = p["name"]?.ToString();
-                    if (n != null && StandardProjectionPropertyNames.Contains(n))
-                    {
-                        filteredProps.Add((JObject)p.DeepClone());
-                        if (valuesMap[n] == null)
-                        {
-                            valuesMap[n] = p["value"]?.ToString() ?? "";
-                        }
-                    }
-                }
-                var projResult = new JObject
-                {
-                    ["projection"] = "standard",
-                    ["values"] = valuesMap,
-                    ["properties"] = filteredProps
-                };
-                if (!string.IsNullOrEmpty(versionToken))
-                {
-                    projResult["versionToken"] = versionToken;
-                }
-                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
+                return BuildProjectionResult(target, "standard", props, StandardProjectionPropertyNames, versionToken);
             }
 
             // Full / Default mode
@@ -742,6 +693,60 @@ namespace GxMcp.Worker.Services
                 fullResult["versionToken"] = versionToken;
             }
             return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: fullResult);
+        }
+
+        /// <summary>
+        /// Builds a filtered <c>projection=minimal</c> or <c>projection=standard</c>
+        /// read.
+        ///
+        /// The two were written out separately and identically, differing only in
+        /// the name they echo and the set they filter by. That shape is the client
+        /// contract: a caller asking for the standard projection is asking for the
+        /// minimal one plus more, so both must emit the same keys -
+        /// <c>projection</c>, <c>values</c>, <c>properties</c>, and
+        /// <c>versionToken</c> when one was supplied. Two copies meant a key added
+        /// to one was silently absent from the other.
+        ///
+        /// The first value seen for a name wins in <c>values</c>, matching the
+        /// unfiltered path: a duplicated property name reports its first value
+        /// rather than its last.
+        ///
+        /// The full/default read is deliberately not routed here. It does not
+        /// filter, and it returns the whole cloned result rather than a
+        /// reconstructed one.
+        /// </summary>
+        private static string BuildProjectionResult(
+            string target,
+            string projection,
+            JArray props,
+            HashSet<string> allowedNames,
+            string versionToken)
+        {
+            var filteredProps = new JArray();
+            var valuesMap = new JObject();
+            foreach (JObject p in props)
+            {
+                var n = p["name"]?.ToString();
+                if (n != null && allowedNames.Contains(n))
+                {
+                    filteredProps.Add((JObject)p.DeepClone());
+                    if (valuesMap[n] == null)
+                    {
+                        valuesMap[n] = p["value"]?.ToString() ?? "";
+                    }
+                }
+            }
+            var projResult = new JObject
+            {
+                ["projection"] = projection,
+                ["values"] = valuesMap,
+                ["properties"] = filteredProps
+            };
+            if (!string.IsNullOrEmpty(versionToken))
+            {
+                projResult["versionToken"] = versionToken;
+            }
+            return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
         }
 
         public string SetProperty(string target, string propName, string value, string controlName = null, string typeFilter = null)
@@ -1232,6 +1237,41 @@ namespace GxMcp.Worker.Services
             => !string.IsNullOrEmpty(propName) && _nonScalarProps.Contains(propName.Trim());
 
         // Best-effort read of a property's current value as a string (for the wipe check).
+        /// <summary>
+        /// Resolves a property entry by name from an SDK property bag, or null when
+        /// the container has no such property.
+        ///
+        /// The bag's own lookup is case-sensitive while GeneXus property names are
+        /// not, so a miss falls back to a case-insensitive scan. Both callers need
+        /// the same resolution: one reads the value, the other reads the declared
+        /// type to coerce a new value into. If the two disagreed on which entry
+        /// matched, a write would read one property's current value while coercing
+        /// against another property's type - a silent corruption that no individual
+        /// check would catch.
+        ///
+        /// Every SDK access here is individually guarded: a property bag on a
+        /// partially-loaded object throws on access rather than returning null.
+        /// </summary>
+        private static object ResolvePropertyEntry(dynamic container, string propName)
+        {
+            dynamic existing = null;
+            try { existing = container.Properties?[propName]; } catch { }
+            if (existing != null) return existing;
+
+            try
+            {
+                foreach (dynamic p in container.Properties)
+                {
+                    string n = null;
+                    try { n = (string)p.Name; } catch { }
+                    if (string.Equals(n, propName, StringComparison.OrdinalIgnoreCase)) return p;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
         private static string TryReadPropertyString(dynamic container, string propName)
         {
             try
@@ -1246,23 +1286,9 @@ namespace GxMcp.Worker.Services
                     catch { }
                 }
 
-                dynamic existing = null;
-                try { existing = container.Properties?[propName]; } catch { }
-                if (existing == null)
-                {
-                    try
-                    {
-                        foreach (dynamic p in container.Properties)
-                        {
-                            string n = null;
-                            try { n = (string)p.Name; } catch { }
-                            if (string.Equals(n, propName, StringComparison.OrdinalIgnoreCase)) { existing = p; break; }
-                        }
-                    }
-                    catch { }
-                }
+                object existing = ResolvePropertyEntry(container, propName);
                 object val = null;
-                try { val = existing?.Value; } catch { }
+                try { val = existing == null ? null : ((dynamic)existing).Value; } catch { }
                 return val?.ToString();
             }
             catch { return null; }
@@ -1561,21 +1587,7 @@ namespace GxMcp.Worker.Services
             // runtime type of the current Value.
             try
             {
-                dynamic existing = null;
-                try { existing = container.Properties?[propName]; } catch { }
-                if (existing == null)
-                {
-                    try
-                    {
-                        foreach (dynamic p in container.Properties)
-                        {
-                            string n = null;
-                            try { n = (string)p.Name; } catch { }
-                            if (string.Equals(n, propName, StringComparison.OrdinalIgnoreCase)) { existing = p; break; }
-                        }
-                    }
-                    catch { }
-                }
+                dynamic existing = ResolvePropertyEntry(container, propName);
                 if (existing != null)
                 {
                     try

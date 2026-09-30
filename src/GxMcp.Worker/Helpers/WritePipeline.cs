@@ -213,16 +213,7 @@ namespace GxMcp.Worker.Helpers
 
         private static string Sanitize(string target, string part)
         {
-            string combined = (target ?? "_") + "__" + (part ?? "_");
-            var sb = new System.Text.StringBuilder(combined.Length);
-            foreach (char c in combined)
-            {
-                if (char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.')
-                    sb.Append(c);
-                else
-                    sb.Append('_');
-            }
-            return sb.ToString();
+            return LockFileKey.Sanitize(target, part);
         }
 
         private static JObject TryReadLock(string path, out bool expired)

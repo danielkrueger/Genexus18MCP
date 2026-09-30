@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Newtonsoft.Json.Linq;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
@@ -24,7 +25,7 @@ namespace GxMcp.Worker.Services
 
         public string Append(string tool, string message, string severity, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -34,7 +35,7 @@ namespace GxMcp.Worker.Services
 
         public string Tail(int n, string kbPathOverride = null)
         {
-            string kbPath = ResolveKbPath(kbPathOverride);
+            string kbPath = EffectiveKbPath.Resolve(_kbService, kbPathOverride);
             if (string.IsNullOrEmpty(kbPath))
             {
                 return Error("NoKbOpen", "No KB is currently open.");
@@ -148,12 +149,6 @@ namespace GxMcp.Worker.Services
             {
                 return Error("TailFailed", ex.Message);
             }
-        }
-
-        private string ResolveKbPath(string kbPathOverride)
-        {
-            if (!string.IsNullOrEmpty(kbPathOverride)) return kbPathOverride;
-            try { return _kbService?.GetKbPath(); } catch { return null; }
         }
 
         private static string NormalizeSeverity(string sev)

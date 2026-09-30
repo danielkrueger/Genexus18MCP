@@ -28,17 +28,6 @@ namespace GxMcp.Worker.Services
             _artifactPaths = artifactPaths ?? throw new ArgumentNullException(nameof(artifactPaths));
         }
 
-        // Safely extract the substring after the first ':' in a "Type:Name" key.
-        // Returns null when input is null/empty or has nothing meaningful after the colon.
-        private static string ExtractNameAfterColon(string key)
-        {
-            if (string.IsNullOrEmpty(key)) return null;
-            int idx = key.IndexOf(':');
-            if (idx < 0) return key;
-            if (idx >= key.Length - 1) return null; // trailing colon, e.g. "Type:"
-            return key.Substring(idx + 1);
-        }
-
         public string GenerateGraph(string payload)
         {
             try

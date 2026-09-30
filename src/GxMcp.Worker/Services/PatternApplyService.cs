@@ -1562,14 +1562,6 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        // Ensures the engine adapter has run its reflection probe. The probe is lazy
-        // and gated by a private flag inside ReflectionPatternEngineAdapter — calling
-        // any of its public methods triggers it. We just trigger via a cheap call.
-        private void EnsureProbedEngine()
-        {
-            try { _engine?.GetPatternDefinition(WorkWithPlusPatternId); } catch { }
-        }
-
         internal static WwpEnvironmentContext InspectWwpEnvironment(
             string installationPath = null,
             Func<string, string> writeAccessProbe = null)

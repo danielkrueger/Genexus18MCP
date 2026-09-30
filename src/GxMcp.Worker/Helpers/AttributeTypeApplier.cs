@@ -295,5 +295,79 @@ namespace GxMcp.Worker.Helpers
             try { p.SetValue(attr, domainObj, null); return true; }
             catch { return false; }
         }
+
+        /// <summary>
+        /// Applies a DSL type string to an Attribute occurrence, resolving a Domain
+        /// reference against <paramref name="model"/> when the type names one.
+        ///
+        /// The Table and Transaction DSL parsers each carried this logic. They are
+        /// not interchangeable at the occurrence level: <c>TableAttribute</c> and
+        /// <c>TransactionAttribute</c> expose the underlying global Attribute through
+        /// a shadowed <c>Attribute</c> property, and a plain
+        /// <see cref="Type.GetProperty(string)"/> throws
+        /// <see cref="System.Reflection.AmbiguousMatchException"/> on the Transaction
+        /// one. Both now unwrap through <see cref="GetPropertyUnambiguous"/>, so the
+        /// two parsers cannot pick different Attributes out of the same SDK build.
+        ///
+        /// Never throws: a DSL type that cannot be applied leaves the Attribute
+        /// untouched, matching what both call sites did individually.
+        /// </summary>
+        /// <returns>
+        /// true when the type was applied. False when <paramref name="rawType"/> is
+        /// unrecognised, or the SDK exposed no writable surface.
+        /// </returns>
+        public static bool ApplyFromDslType(object attributeOrOccurrence, string rawType, object model)
+        {
+            if (attributeOrOccurrence == null || string.IsNullOrWhiteSpace(rawType)) return false;
+
+            var spec = Parse(rawType);
+            if (!spec.Recognized) return false;
+
+            // Unwrap an occurrence (TableAttribute / TransactionAttribute) to its
+            // global Attribute. A raw Attribute has no such property; keep the input.
+            object attribute = attributeOrOccurrence;
+            try
+            {
+                var attributeProperty = GetPropertyUnambiguous(attributeOrOccurrence.GetType(), "Attribute");
+                var underlying = attributeProperty?.GetValue(attributeOrOccurrence, null);
+                if (underlying != null) attribute = underlying;
+            }
+            catch { }
+
+            if (string.Equals(spec.CanonicalType, "DomainReference", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrEmpty(spec.DomainName) || model == null) return false;
+                try
+                {
+                    var domain = ResolveDomain(model, spec.DomainName);
+                    // No match is not an error the caller can act on; the type
+                    // simply did not land, which is what both call sites reported.
+                    if (domain == null) return false;
+                    return ApplyDomain(attribute, domain);
+                }
+                catch { return false; }
+            }
+
+            return ApplyPrimitive(attribute, spec.CanonicalType, spec.Length, spec.Decimals);
+        }
+
+        /// <summary>
+        /// First <see cref="Artech.Genexus.Common.Objects.Domain"/> in the model with
+        /// this name, or null.
+        /// </summary>
+        private static object ResolveDomain(object model, string name)
+        {
+            var objects = model.GetType().GetProperty("Objects")?.GetValue(model, null);
+            if (objects == null) return null;
+
+            var matches = objects.GetType()
+                .GetMethod("GetByName", new[] { typeof(string), typeof(string), typeof(string) })
+                ?.Invoke(objects, new object[] { null, null, name }) as System.Collections.IEnumerable;
+            if (matches == null) return null;
+
+            foreach (var candidate in matches)
+                if (candidate is Artech.Genexus.Common.Objects.Domain domain) return domain;
+            return null;
+        }
     }
 }

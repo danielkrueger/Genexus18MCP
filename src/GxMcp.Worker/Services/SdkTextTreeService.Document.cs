@@ -85,17 +85,35 @@ namespace GxMcp.Worker.Services
             if (!content.EndsWith("\n", StringComparison.Ordinal)) document.Append('\n');
         }
 
-        internal static bool TryParseObjectDocument(
+        /// <summary>
+        /// The header and brace-delimited body of an object text document.
+        /// </summary>
+        /// <remarks>
+        /// Splitting an object document is the first thing both readers do, and they
+        /// were each doing all of it: the emptiness check, the newline
+        /// normalisation, the header split, the two-part validation, the brace
+        /// search and the balance check - with the same three error strings, so a
+        /// client parsing malformed text could be told "Object header must contain
+        /// type and name." by one reader and something else by the other for the
+        /// same document.
+        ///
+        /// The body is returned raw, between the braces, so each reader can apply
+        /// its own interpretation: the source reader strips a leading
+        /// <c>#Source</c> marker, and the parts reader walks the body's own
+        /// <c>#Part</c> sections.
+        /// </remarks>
+        private static bool TrySplitObjectDocument(
             string document,
             out string type,
             out string name,
-            out string source,
+            out string body,
             out string error)
         {
             type = null;
             name = null;
-            source = null;
+            body = null;
             error = null;
+
             if (string.IsNullOrWhiteSpace(document))
             {
                 error = "Object text is empty.";
@@ -122,7 +140,22 @@ namespace GxMcp.Worker.Services
 
             type = headerParts[0].Trim();
             name = headerParts[1].Trim();
-            source = normalized.Substring(open + 1, close - open - 1).Trim('\n');
+            body = normalized.Substring(open + 1, close - open - 1).Trim('\n');
+            return true;
+        }
+
+        internal static bool TryParseObjectDocument(
+            string document,
+            out string type,
+            out string name,
+            out string source,
+            out string error)
+        {
+            source = null;
+            if (!TrySplitObjectDocument(document, out type, out name, out string body, out error))
+                return false;
+
+            source = body;
             if (source.StartsWith("#Source\n", StringComparison.OrdinalIgnoreCase))
                 source = source.Substring("#Source\n".Length);
             else if (string.Equals(source, "#Source", StringComparison.OrdinalIgnoreCase))
@@ -137,36 +170,10 @@ namespace GxMcp.Worker.Services
             out Dictionary<string, string> parts,
             out string error)
         {
-            type = null;
-            name = null;
             parts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            error = null;
-            if (string.IsNullOrWhiteSpace(document))
-            {
-                error = "Object text is empty.";
+            if (!TrySplitObjectDocument(document, out type, out name, out string body, out error))
                 return false;
-            }
 
-            string normalized = NormalizeNewlines(document);
-            int headerEnd = normalized.IndexOf('\n');
-            string header = (headerEnd >= 0 ? normalized.Substring(0, headerEnd) : normalized).Trim();
-            string[] headerParts = header.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
-            if (headerParts.Length != 2)
-            {
-                error = "Object header must contain type and name.";
-                return false;
-            }
-            int open = normalized.IndexOf('{', headerEnd >= 0 ? headerEnd : 0);
-            int close = normalized.LastIndexOf('}');
-            if (open < 0 || close <= open)
-            {
-                error = "Object document must contain a balanced body enclosed by braces.";
-                return false;
-            }
-
-            type = headerParts[0].Trim();
-            name = headerParts[1].Trim();
-            string body = normalized.Substring(open + 1, close - open - 1).Trim('\n');
             string current = null;
             string currentPrefix = string.Empty;
             var content = new StringBuilder();

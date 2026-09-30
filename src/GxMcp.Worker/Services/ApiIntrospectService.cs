@@ -268,17 +268,7 @@ namespace GxMcp.Worker.Services
 
             if (!string.Equals(expectedVersion, snapshot.VersionToken, StringComparison.Ordinal))
             {
-                return McpResponse.Err(
-                    code: "VersionConflict",
-                    message: "The API changed after the route preview; no route was written.",
-                    hint: "Run routes_inspect or dryRun again and retry with the new versionToken.",
-                    target: api.Name,
-                    extra: new JObject
-                    {
-                        ["persisted"] = false,
-                        ["versionToken"] = snapshot.VersionToken,
-                        ["expectedVersion"] = expectedVersion
-                    });
+                return VersionConflict(api, snapshot.VersionToken, expectedVersion);
             }
 
             if (plan.Conflicts.Count > 0)
@@ -318,17 +308,7 @@ namespace GxMcp.Worker.Services
                 || !string.Equals(latestSnapshot.VersionToken, snapshot.VersionToken, StringComparison.Ordinal)
                 || !LogicalSourceEquals(latestSnapshot.Methods, snapshot.Methods))
             {
-                return McpResponse.Err(
-                    code: "VersionConflict",
-                    message: "The API changed after the route preview; no route was written.",
-                    hint: "Run routes_inspect or dryRun again and retry with the new versionToken.",
-                    target: api.Name,
-                    extra: new JObject
-                    {
-                        ["persisted"] = false,
-                        ["versionToken"] = latestSnapshot.VersionToken,
-                        ["expectedVersion"] = expectedVersion
-                    });
+                return VersionConflict(api, latestSnapshot.VersionToken, expectedVersion);
             }
             api = latest;
 
@@ -696,6 +676,38 @@ namespace GxMcp.Worker.Services
             return routes;
         }
 
+        /// <summary>
+        /// The refusal a caller gets when the API changed since the version it
+        /// previewed against.
+        /// </summary>
+        /// <remarks>
+        /// The write path checks for a conflict twice - once against the snapshot it
+        /// planned from, and again after re-reading the API to make sure the plan was
+        /// still applicable - and the refusal was written out both times, identical
+        /// except for <em>which snapshot's token is reported</em>. That difference is
+        /// the whole point of the check and it is now an argument rather than a
+        /// coincidence of which variable each site happened to have in scope: the
+        /// second check reports the freshly-read token, so a caller re-running with it
+        /// is comparing against what the API looks like now.
+        ///
+        /// Both report <c>persisted: false</c>, which is the operative part: nothing
+        /// was written, so the caller can retry without unwinding anything.
+        /// </remarks>
+        private static string VersionConflict(Artech.Architecture.Common.Objects.KBObject api, string observedVersion, string expectedVersion)
+        {
+            return McpResponse.Err(
+                code: "VersionConflict",
+                message: "The API changed after the route preview; no route was written.",
+                hint: "Run routes_inspect or dryRun again and retry with the new versionToken.",
+                target: api.Name,
+                extra: new JObject
+                {
+                    ["persisted"] = false,
+                    ["versionToken"] = observedVersion,
+                    ["expectedVersion"] = expectedVersion
+                });
+        }
+
         private static ApiRoute CloneApiRoute(ApiRoute source, string sourcePrefix, string targetPrefix)
         {
             string methodName = Regex.Replace(
@@ -709,6 +721,34 @@ namespace GxMcp.Worker.Services
                 "/" + targetPrefix,
                 RegexOptions.IgnoreCase);
 
+            // The rewrite and the route assembly below are not repeated here: they
+            // were, and they are what CloneApiRouteTo already is. Two copies of the
+            // offset-ordered replacement is two chances for the two routes to come
+            // out differently, and this one differs only in where the new names come
+            // from - a prefix substitution rather than the caller's own strings.
+            return CloneApiRouteTo(source, methodName, path);
+        }
+
+        /// <summary>
+        /// Rewrites the method name and the path into a copy of a route's source block.
+        ///
+        /// Both live in the same block, and the order they are replaced in is the
+        /// whole content of this method: the recorded offsets are positions in the
+        /// original text, so replacing the <em>later</em> one first would shift the
+        /// earlier one's position and the second replacement would land in the wrong
+        /// place. The branch is not a style preference; it is the offset arithmetic.
+        ///
+        /// Written out twice, and the second copy is CloneApiRoute's - which differs
+        /// only in where the new names come from.
+        ///
+        /// <c>internal</c> rather than <c>private</c> so the ordering can be tested
+        /// against real offsets, which is the only way to show it is right: a source
+        /// check that the branch is written once says nothing about whether the
+        /// arithmetic in it is correct. <see cref="BuildApiRoutePlan"/> is exposed the
+        /// same way for the same reason.
+        /// </summary>
+        internal static string RewriteApiRouteSource(ApiRoute source, string methodName, string path)
+        {
             string block = source.SourceText;
             if (source.MethodOffset > source.PathOffset)
             {
@@ -720,34 +760,13 @@ namespace GxMcp.Worker.Services
                 block = ReplaceAt(block, source.PathOffset, source.PathLength, path);
                 block = ReplaceAt(block, source.MethodOffset, source.MethodName.Length, methodName);
             }
-
-            return new ApiRoute
-            {
-                MethodName = methodName,
-                Verb = source.Verb,
-                Path = path,
-                ParametersText = source.ParametersText,
-                CallText = source.CallText,
-                SourceText = block
-            };
+            return block;
         }
 
         private static ApiRoute CloneApiRouteTo(ApiRoute source, string methodName, string path)
         {
             if (source == null) return null;
 
-            string block = source.SourceText;
-            if (source.MethodOffset > source.PathOffset)
-            {
-                block = ReplaceAt(block, source.MethodOffset, source.MethodName.Length, methodName);
-                block = ReplaceAt(block, source.PathOffset, source.PathLength, path);
-            }
-            else
-            {
-                block = ReplaceAt(block, source.PathOffset, source.PathLength, path);
-                block = ReplaceAt(block, source.MethodOffset, source.MethodName.Length, methodName);
-            }
-
             return new ApiRoute
             {
                 MethodName = methodName,
@@ -755,7 +774,7 @@ namespace GxMcp.Worker.Services
                 Path = path,
                 ParametersText = source.ParametersText,
                 CallText = source.CallText,
-                SourceText = block
+                SourceText = RewriteApiRouteSource(source, methodName, path)
             };
         }
 
@@ -797,37 +816,7 @@ namespace GxMcp.Worker.Services
                 var candidate = CloneApiRoute(sourceRoute, sourcePrefix, targetPrefix);
                 plan.TargetMethodNames.Add(candidate.MethodName);
 
-                var existing = current.FirstOrDefault(r =>
-                    string.Equals(r.MethodName, candidate.MethodName, StringComparison.OrdinalIgnoreCase));
-                if (existing == null)
-                {
-                    existing = current.FirstOrDefault(r =>
-                        string.Equals(r.Verb, candidate.Verb, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(r.Path, candidate.Path, StringComparison.OrdinalIgnoreCase));
-                    if (existing != null)
-                    {
-                        plan.Conflicts.Add(candidate.MethodName + " (" + candidate.Verb + " " + candidate.Path + ")");
-                        continue;
-                    }
-
-                    additions.Add(candidate);
-                    plan.Added.Add(candidate);
-                    continue;
-                }
-
-                if (string.Equals(existing.SourceText, candidate.SourceText, StringComparison.Ordinal))
-                {
-                    plan.Unchanged.Add(candidate);
-                }
-                else if (updateExisting)
-                {
-                    plan.Updated.Add(candidate);
-                    replacements.Add(new ApiRouteChange { Existing = existing, Replacement = candidate.SourceText });
-                }
-                else
-                {
-                    plan.Conflicts.Add(candidate.MethodName + " (method already exists with different content)");
-                }
+                ClassifyRouteCandidate(plan, current, candidate, updateExisting, replacements, additions);
             }
 
             // Never write a partial clone/update when one target collides.
@@ -837,7 +826,86 @@ namespace GxMcp.Worker.Services
                 return plan;
             }
 
-            string candidateSource = source ?? string.Empty;
+            plan.CandidateSource = ApplyRouteChanges(source, replacements, additions);
+            return plan;
+        }
+
+        /// <summary>
+        /// Files one candidate route under exactly one of added, unchanged,
+        /// updated or conflicting.
+        ///
+        /// Prefix-driven cloning and explicitly-requested routes reach this from
+        /// different validation paths but classify identically, and the
+        /// classification is the part that decides whether a plan is applied at
+        /// all - a candidate that lands in two buckets, or in none, produces a
+        /// partial rewrite of the API declaration. Which bucket it lands in also
+        /// has to agree between the two callers, or the same target route would be
+        /// reported added by one plan and a conflict by the other.
+        ///
+        /// The candidate is classified for its effect on <paramref name="plan"/> and
+        /// on the two edit lists; nothing after it happens, because there is
+        /// nothing after it - the original inline code needed a <c>continue</c> to
+        /// skip the tail of that block and the extracted method has no tail.
+        /// </summary>
+        private static void ClassifyRouteCandidate(
+            ApiRoutePlan plan,
+            List<ApiRoute> current,
+            ApiRoute candidate,
+            bool updateExisting,
+            List<ApiRouteChange> replacements,
+            List<ApiRoute> additions)
+        {
+            var existing = current.FirstOrDefault(r =>
+                string.Equals(r.MethodName, candidate.MethodName, StringComparison.OrdinalIgnoreCase));
+            if (existing == null)
+            {
+                // A different method already answering this verb+path is a routing
+                // conflict, not something to merge or overwrite.
+                existing = current.FirstOrDefault(r =>
+                    string.Equals(r.Verb, candidate.Verb, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(r.Path, candidate.Path, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                {
+                    plan.Conflicts.Add(candidate.MethodName + " (" + candidate.Verb + " " + candidate.Path + ")");
+                    return;
+                }
+
+                additions.Add(candidate);
+                plan.Added.Add(candidate);
+                return;
+            }
+
+            if (string.Equals(existing.SourceText, candidate.SourceText, StringComparison.Ordinal))
+            {
+                plan.Unchanged.Add(candidate);
+            }
+            else if (updateExisting)
+            {
+                plan.Updated.Add(candidate);
+                replacements.Add(new ApiRouteChange { Existing = existing, Replacement = candidate.SourceText });
+            }
+            else
+            {
+                plan.Conflicts.Add(candidate.MethodName + " (method already exists with different content)");
+            }
+        }
+
+        /// <summary>
+        /// Produces the source a conflict-free plan proposes: every replacement
+        /// spliced in place, then every addition appended inside the declaration.
+        ///
+        /// Replacements are applied from the highest source offset downwards
+        /// because each one splices a run of different length into the text ahead
+        /// of it. Applying them in any other order would shift the offsets of the
+        /// replacements still pending and rewrite the wrong span - which corrupts
+        /// the API declaration rather than failing loudly.
+        /// </summary>
+        private static string ApplyRouteChanges(
+            string baseSource,
+            List<ApiRouteChange> replacements,
+            List<ApiRoute> additions)
+        {
+            string candidateSource = baseSource ?? string.Empty;
             foreach (var change in replacements.OrderByDescending(c => c.Existing.SourceIndex))
             {
                 candidateSource = candidateSource.Substring(0, change.Existing.SourceIndex)
@@ -847,8 +915,7 @@ namespace GxMcp.Worker.Services
             if (additions.Count > 0)
                 candidateSource = AppendApiRouteBlocks(candidateSource, additions.Select(a => a.SourceText));
 
-            plan.CandidateSource = candidateSource;
-            return plan;
+            return candidateSource;
         }
 
         private static ApiRoutePlan BuildExplicitApiRoutePlan(
@@ -910,54 +977,18 @@ namespace GxMcp.Worker.Services
                     continue;
                 }
                 plan.TargetMethodNames.Add(candidate.MethodName);
-                var existing = current.FirstOrDefault(r =>
-                    string.Equals(r.MethodName, candidate.MethodName, StringComparison.OrdinalIgnoreCase));
-                if (existing == null)
-                {
-                    existing = current.FirstOrDefault(r =>
-                        string.Equals(r.Verb, candidate.Verb, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(r.Path, candidate.Path, StringComparison.OrdinalIgnoreCase));
-                    if (existing != null)
-                    {
-                        plan.Conflicts.Add(candidate.MethodName + " (" + candidate.Verb + " " + candidate.Path + ")");
-                        continue;
-                    }
-
-                    additions.Add(candidate);
-                    plan.Added.Add(candidate);
-                    continue;
-                }
-
-                if (string.Equals(existing.SourceText, candidate.SourceText, StringComparison.Ordinal))
-                {
-                    plan.Unchanged.Add(candidate);
-                }
-                else if (updateExisting)
-                {
-                    plan.Updated.Add(candidate);
-                    replacements.Add(new ApiRouteChange { Existing = existing, Replacement = candidate.SourceText });
-                }
-                else
-                {
-                    plan.Conflicts.Add(candidate.MethodName + " (method already exists with different content)");
-                }
+                ClassifyRouteCandidate(plan, current, candidate, updateExisting, replacements, additions);
             }
 
             // Never write a partial explicit clone/update when one target collides.
+            // Unlike the prefix-driven path, CandidateSource is deliberately left
+            // as the caller supplied it rather than reset: this path is entered
+            // with the plan's source already set, and a validation error elsewhere
+            // reports the original text, not a rewrite that was never applied.
             if (plan.Conflicts.Count > 0)
                 return plan;
 
-            string candidateSource = plan.CandidateSource ?? string.Empty;
-            foreach (var change in replacements.OrderByDescending(c => c.Existing.SourceIndex))
-            {
-                candidateSource = candidateSource.Substring(0, change.Existing.SourceIndex)
-                    + change.Replacement
-                    + candidateSource.Substring(change.Existing.SourceIndex + change.Existing.SourceText.Length);
-            }
-            if (additions.Count > 0)
-                candidateSource = AppendApiRouteBlocks(candidateSource, additions.Select(a => a.SourceText));
-
-            plan.CandidateSource = candidateSource;
+            plan.CandidateSource = ApplyRouteChanges(plan.CandidateSource, replacements, additions);
             return plan;
         }
 
@@ -1481,15 +1512,10 @@ namespace GxMcp.Worker.Services
             return CallProtocolHttpRegex.IsMatch(rulesSource);
         }
 
-        internal static bool IsSafeBaselineName(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name) || name.Length > 64) return false;
-            foreach (var c in name)
-            {
-                if (!(char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '-')) return false;
-            }
-            return name != "." && name != "..";
-        }
+        // A baseline name also becomes a filename under the API's baseline
+        // directory, so it uses the shared segment allowlist — with the tighter
+        // 64-character ceiling this call site always had.
+        internal static bool IsSafeBaselineName(string name) => SafePathSegment.IsSafe(name, 64);
 
         public class HttpEndpoint
         {

@@ -108,14 +108,8 @@ namespace GxMcp.Worker.Parsers
                         }
                     } catch { }
 
-                    var lineElements = new List<string>();
-                    lineElements.Add(string.Format("{0}{1} : {2}", attr.Name, keyMarker, typeStr));
-                    if (!string.IsNullOrEmpty(desc) && !desc.Equals(attr.Name, StringComparison.OrdinalIgnoreCase)) lineElements.Add(string.Format("\"{0}\"", desc));
-                    if (!string.IsNullOrEmpty(formula)) lineElements.Add(string.Format("[Formula: {0}]", formula));
-                    if (isNullable) lineElements.Add("[Nullable]");
-
-                    string extraInfo = lineElements.Count > 1 ? " // " + string.Join(", ", lineElements.Skip(1)) : "";
-                    sb.AppendLine(string.Format("{0}{1}{2}{3}", indentStr, indent > 0 ? "    " : "", lineElements[0], extraInfo));
+                    var declaration = AttributeDeclaration.Render(attr.Name, keyMarker, typeStr, desc, formula, isNullable);
+                    sb.AppendLine(string.Format("{0}{1}{2}{3}", indentStr, indent > 0 ? "    " : "", declaration.Head, declaration.Comment));
                 }
             }
 
@@ -332,55 +326,7 @@ namespace GxMcp.Worker.Parsers
 
         private static void ApplyTypeFromDsl(dynamic trnAttrOrAttribute, string typeStr, KBModel model)
         {
-            if (trnAttrOrAttribute == null || string.IsNullOrWhiteSpace(typeStr)) return;
-            var spec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(typeStr);
-            if (!spec.Recognized) return;
-
-            // Resolve to the underlying global Attribute. For TransactionAttribute the property is .Attribute;
-            // for a raw Artech.Genexus.Common.Objects.Attribute it is itself.
-            object globalAttr = trnAttrOrAttribute;
-            try
-            {
-                // Walk the hierarchy to avoid AmbiguousMatchException when the SDK shadows
-                // an inherited `Attribute` property on the derived TransactionAttribute.
-                System.Reflection.PropertyInfo attrProp = null;
-                Type tt = trnAttrOrAttribute.GetType();
-                try { attrProp = tt.GetProperty("Attribute"); }
-                catch (System.Reflection.AmbiguousMatchException)
-                {
-                    for (Type cur = tt; cur != null && attrProp == null; cur = cur.BaseType)
-                    {
-                        attrProp = cur.GetProperty("Attribute",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly);
-                    }
-                }
-                if (attrProp != null)
-                {
-                    var maybeAttr = attrProp.GetValue(trnAttrOrAttribute, null);
-                    if (maybeAttr != null) globalAttr = maybeAttr;
-                }
-            }
-            catch { }
-
-            if (spec.CanonicalType == "DomainReference" && !string.IsNullOrEmpty(spec.DomainName))
-            {
-                try
-                {
-                    Artech.Genexus.Common.Objects.Domain domain = null;
-                    foreach (var obj in model.Objects.GetByName(null, null, spec.DomainName))
-                    {
-                        if (obj is Artech.Genexus.Common.Objects.Domain d) { domain = d; break; }
-                    }
-                    if (domain != null)
-                    {
-                        GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyDomain(globalAttr, domain);
-                    }
-                }
-                catch { }
-                return;
-            }
-
-            GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyPrimitive(globalAttr, spec.CanonicalType, spec.Length, spec.Decimals);
+            GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyFromDslType(trnAttrOrAttribute, typeStr, model);
         }
 
         private static void ApplyMetadataFromDsl(object trnAttrOrAttribute, DslParserUtils.ParsedNode node)

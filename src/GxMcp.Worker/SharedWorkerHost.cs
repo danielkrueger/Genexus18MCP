@@ -5,7 +5,6 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -678,10 +677,10 @@ namespace GxMcp.Worker
 
         private static string RedactDiagnostic(string value)
         {
-            string redacted = Regex.Replace(
-                value ?? string.Empty,
-                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential|connectionstring)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'[^']*'|(?:Bearer\s+)?[^\s,;}&\]]+)",
-                match => match.Groups["key"].Value + match.Groups["separator"].Value + "[REDACTED]");
+            // Same rule as PreviewService.LogValue: this copy was the only one
+            // that knew about connectionstring, so a connection string reaching
+            // a log was masked only on the paths that went through here.
+            string redacted = LogRedaction.Redact(value);
             return redacted.Length <= 2048 ? redacted : redacted.Substring(0, 2048) + "…";
         }
 

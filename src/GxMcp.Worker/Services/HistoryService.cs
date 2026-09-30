@@ -75,6 +75,49 @@ namespace GxMcp.Worker.Services
             return string.IsNullOrWhiteSpace(partName) ? "Source" : partName.Trim();
         }
 
+        /// <summary>
+        /// The single ObjectNotFound envelope for the edit-snapshot paths (restore,
+        /// dry-run, list, discard, save). Those sites all resolve the target the same
+        /// way, so their recovery contract — re-list by name, then force a reindex when
+        /// the object exists but is not indexed — is built once here instead of being
+        /// copy-pasted at each call site.
+        /// </summary>
+        internal static string SnapshotObjectNotFound(string target)
+        {
+            return Models.McpResponse.Err(
+                code: "ObjectNotFound",
+                message: "Object not found.",
+                hint: "Verify the object name and ensure the KB is open.",
+                nextSteps: new JArray(
+                    Models.McpResponse.NextStep(
+                        tool: "genexus_list_objects",
+                        args: new JObject { ["name_contains"] = target },
+                        why: "Lists objects whose names match, in case of a typo."),
+                    Models.McpResponse.NextStep(
+                        tool: "genexus_lifecycle",
+                        args: new JObject { ["action"] = "index", ["force"] = true },
+                        why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
+                target: target);
+        }
+
+        /// <summary>
+        /// The ObjectNotFound envelope for the KB revision paths (get source, list
+        /// revisions). Kept distinct from <see cref="SnapshotObjectNotFound"/> because
+        /// its hint names the KB revision surface rather than the edit-snapshot one.
+        /// </summary>
+        internal static string RevisionObjectNotFound(string target)
+        {
+            return Models.McpResponse.Err(
+                code: "ObjectNotFound",
+                message: "Object not found.",
+                hint: "The requested object is not available in the active Knowledge Base.",
+                nextSteps: new JArray(Models.McpResponse.NextStep(
+                    tool: "genexus_list_objects",
+                    args: new JObject(),
+                    why: "Lists available objects in the KB.")),
+                target: target);
+        }
+
         private static string LegacyHistoryRoot()
         {
             return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".history");
@@ -204,20 +247,7 @@ namespace GxMcp.Worker.Services
         private string DryRunRestore(string target, string partName, string snapshotToken, bool discard)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Object not found.",
-                hint: "Verify the object name and ensure the KB is open.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject { ["name_contains"] = target },
-                        why: "Lists objects whose names match, in case of a typo."),
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_lifecycle",
-                        args: new JObject { ["action"] = "index", ["force"] = true },
-                        why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
-                target: target);
+            if (obj == null) return SnapshotObjectNotFound(target);
             string guid;
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "DryRunFailed", message: ex.Message, target: target); }
@@ -297,20 +327,7 @@ namespace GxMcp.Worker.Services
         private string ListEditSnapshots(string target, string partName)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Object not found.",
-                hint: "Verify the object name and ensure the KB is open.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject { ["name_contains"] = target },
-                        why: "Lists objects whose names match, in case of a typo."),
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_lifecycle",
-                        args: new JObject { ["action"] = "index", ["force"] = true },
-                        why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
-                target: target);
+            if (obj == null) return SnapshotObjectNotFound(target);
             string guid;
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "SnapshotListFailed", message: ex.Message, target: target); }
@@ -355,20 +372,7 @@ namespace GxMcp.Worker.Services
         private string DiscardLatestEditSnapshot(string target, string partName)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Object not found.",
-                hint: "Verify the object name and ensure the KB is open.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject { ["name_contains"] = target },
-                        why: "Lists objects whose names match, in case of a typo."),
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_lifecycle",
-                        args: new JObject { ["action"] = "index", ["force"] = true },
-                        why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
-                target: target);
+            if (obj == null) return SnapshotObjectNotFound(target);
             string guid;
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "DiscardFailed", message: ex.Message, target: target); }
@@ -436,20 +440,7 @@ namespace GxMcp.Worker.Services
         private string RestoreEditSnapshot(string target, string partName, string snapshotToken)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Object not found.",
-                hint: "Verify the object name and ensure the KB is open.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject { ["name_contains"] = target },
-                        why: "Lists objects whose names match, in case of a typo."),
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_lifecycle",
-                        args: new JObject { ["action"] = "index", ["force"] = true },
-                        why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
-                target: target);
+            if (obj == null) return SnapshotObjectNotFound(target);
             string guid;
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "SnapshotRestoreFailed", message: ex.Message, target: target); }
@@ -492,18 +483,7 @@ namespace GxMcp.Worker.Services
         private string GetVersionSource(string target, int versionId, string partName)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null)
-            {
-                return Models.McpResponse.Err(
-                    code: "ObjectNotFound",
-                    message: "Object not found.",
-                    hint: "The requested object is not available in the active Knowledge Base.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject(),
-                        why: "Lists available objects in the KB.")),
-                    target: target);
-            }
+            if (obj == null) return RevisionObjectNotFound(target);
 
             string requestedPart = NormalizePartName(partName);
             if (!TryGetVersionPartContent(obj, versionId, requestedPart, out string content, out string errorCode, out string reason))
@@ -679,18 +659,7 @@ namespace GxMcp.Worker.Services
         private string ListRevisions(string target)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null)
-            {
-                return Models.McpResponse.Err(
-                    code: "ObjectNotFound",
-                    message: "Object not found.",
-                    hint: "The requested object is not available in the active Knowledge Base.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject(),
-                        why: "Lists available objects in the KB.")),
-                    target: target);
-            }
+            if (obj == null) return RevisionObjectNotFound(target);
 
             string guid;
             try { guid = obj.Guid.ToString(); }
@@ -765,20 +734,7 @@ namespace GxMcp.Worker.Services
         private string SaveSnapshot(string target, string partName)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Object not found.",
-                hint: "Verify the object name and ensure the KB is open.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject { ["name_contains"] = target },
-                        why: "Lists objects whose names match, in case of a typo."),
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_lifecycle",
-                        args: new JObject { ["action"] = "index", ["force"] = true },
-                        why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
-                target: target);
+            if (obj == null) return SnapshotObjectNotFound(target);
 
             string part = NormalizePartName(partName);
             string root = ResolveActiveSnapshotRoot();
@@ -840,20 +796,7 @@ namespace GxMcp.Worker.Services
         private string RestoreSnapshot(string target, string partName)
         {
             var obj = _objectService.FindObject(target);
-            if (obj == null) return Models.McpResponse.Err(
-                code: "ObjectNotFound",
-                message: "Object not found.",
-                hint: "Verify the object name and ensure the KB is open.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_list_objects",
-                        args: new JObject { ["name_contains"] = target },
-                        why: "Lists objects whose names match, in case of a typo."),
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_lifecycle",
-                        args: new JObject { ["action"] = "index", ["force"] = true },
-                        why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
-                target: target);
+            if (obj == null) return SnapshotObjectNotFound(target);
 
             string part = NormalizePartName(partName);
             string root = ResolveActiveSnapshotRoot();
