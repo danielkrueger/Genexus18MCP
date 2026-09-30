@@ -2645,7 +2645,14 @@ namespace GxMcp.Worker.Services
         private string Handle_Property(JObject request, string method, string action, string target, string payload, JObject args)
         {
             var propType = args?["type"]?.ToString();
-            if (args?["targets"] != null)
+
+            // An explicit `"targets": null` is an absent argument, not a supplied one:
+            // a caller that serialises every schema property leaves the ones it is not
+            // using as nulls, and testing the token against null cannot tell that from
+            // an absent property. Taken as supplied it reached the batch guard with
+            // name set, which refused the call with a message about a `targets` the
+            // caller never sent - see issue #331.
+            if (Helpers.JsonUtil.IsSupplied(args?["targets"]))
             {
                 if (!string.Equals(action, "Get", StringComparison.OrdinalIgnoreCase) ||
                     !string.IsNullOrWhiteSpace(args?["name"]?.ToString()) ||

@@ -67,7 +67,7 @@ namespace GxMcp.Worker.Helpers
             if (parseError != null) return parseError;
             string css = request?["css"]?.ToString() ?? request?["source"]?.ToString();
             if (css != null) return ValidateCss(css);
-            if (request != null && request["properties"] != null && request["properties"].Type != JTokenType.Object)
+            if (request != null && JsonUtil.IsSupplied(request["properties"]) && request["properties"].Type != JTokenType.Object)
                 return "Style properties must be a JSON object.";
             return request == null ? ValidateCss(content) : null;
         }

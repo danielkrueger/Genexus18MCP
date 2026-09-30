@@ -40,7 +40,11 @@ namespace GxMcp.Worker.Services
             // because args was forwarded to WriteService.WriteObject(target, args)
             // which only consulted args.content. Normalize the patch shape here so
             // the API matches genexus_edit's input contract.
-            if (args["patch"] != null && args["content"] == null)
+            // IsSupplied, not != null: an explicit `"patch": null` read back as a live
+            // JValue of type Null, so this guard ran, set mode=patch, and then matched
+            // neither the object nor the string shape below - selecting patch mode for a
+            // request that carried no patch at all.
+            if (Helpers.JsonUtil.IsSupplied(args["patch"]) && args["content"] == null)
             {
                 args["mode"] = args["mode"] ?? "patch";
                 if (args["patch"] is JObject patchObj && patchObj["find"] != null && patchObj["replace"] != null)
