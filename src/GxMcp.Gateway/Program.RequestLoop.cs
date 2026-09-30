@@ -545,7 +545,7 @@ namespace GxMcp.Gateway
                                     {
                                         ["tool"] = "genexus_orient",
                                         ["args"] = new JObject(),
-                                        ["why"] = "Lists each tool's input schema."
+                                        ["why"] = "Welcome card: KB info, recent edits, and top gotchas."
                                     }
                                 },
                                 ["violations"] = violationsArr

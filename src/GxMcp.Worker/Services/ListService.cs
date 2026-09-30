@@ -648,6 +648,7 @@ namespace GxMcp.Worker.Services
                     try { rtLastUpdate = SdkTimestampNormalizer.NormalizeUtc(item.Object.LastUpdate); } catch { }
                     try { rtCreatedAt = SdkTimestampNormalizer.NormalizeUtc(item.Object.VersionDate); } catch { }
                     try { rtLastModifiedBy = item.Object.UserName; } catch { }
+                    KbEntityIdentity.ReadAll(item.Object, out string entityKey, out string entityTypeGuid, out int? entityId);
 
                     array.Add(BuildItemInternal(
                         item.Object.Name,
@@ -664,9 +665,9 @@ namespace GxMcp.Worker.Services
                         rtLastModifiedBy,
                         runtimeLegacyMode,
                         item.Object.Guid.ToString(),
-                        SafeEntityKey(item.Object),
-                        SafeEntityTypeGuid(item.Object),
-                        SafeEntityId(item.Object)
+                        entityKey,
+                        entityTypeGuid,
+                        entityId
                     ));
                 }
 
@@ -971,21 +972,6 @@ namespace GxMcp.Worker.Services
             }
 
             return item;
-        }
-
-        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.ToString(); } catch { return null; }
-        }
-
-        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.Type.ToString(); } catch { return null; }
-        }
-
-        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.Id; } catch { return null; }
         }
 
         private HierarchyInfo ResolveHierarchy(dynamic obj)

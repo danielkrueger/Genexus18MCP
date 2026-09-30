@@ -971,10 +971,12 @@ namespace GxMcp.Worker.Services
 
                 if (LooksLikeAuthScreen(snap1Text))
                 {
-                    result["status"] = "auth_required";
-                    result["url"] = launcherUrl;
-                    if (authAttempted) result["message"] = "GAM injection attempted but login screen still detected.";
-                    return result;
+                    // The target is behind an auth wall. This used to answer with a
+                    // bare `status: auth_required`, which forced an agent to
+                    // string-match the message to learn whether it was a GAM redirect
+                    // and whether credentials were tried. Answer with the published
+                    // code/hint/nextStep shape so the recovery is explicit.
+                    return AuthRequiredResult(result, launcherUrl, finalUrl, authAttempted);
                 }
                 if (!LooksLikeLauncherForm(snap1Text, mergedParms))
                 {
@@ -1306,6 +1308,53 @@ namespace GxMcp.Worker.Services
                 .Replace("\r", "\\r")
                 .Replace("\n", "\\n")
                 .Replace("</", "<\\/");
+
+        /// <summary>
+        /// Shapes the auth-wall response. The three cases are distinct recoveries, so
+        /// they get distinct codes: a GAM redirect with no credentials (pass them), a
+        /// GAM redirect whose credentials were submitted and refused (fix them), and
+        /// an auth wall that is not GAM (GAM credentials will not help). Reporting one
+        /// generic <c>auth_required</c> left an agent guessing which one it hit.
+        ///
+        /// "attempted" stays in the rejected-GAM message: callers have keyed on it to
+        /// learn that injection ran, so the code and hint add precision rather than
+        /// replacing that signal.
+        /// </summary>
+        internal static JObject AuthRequiredResult(JObject result, string launcherUrl, string finalUrl, bool authAttempted)
+        {
+            bool gamRedirect = LooksLikeGamLoginUrl(launcherUrl) || LooksLikeGamLoginUrl(finalUrl);
+
+            string code, message, hint;
+            if (authAttempted)
+            {
+                code = "GamLoginRejected";
+                message = "GAM login was attempted and submitted but the auth screen is still showing.";
+                hint = "The credentials reached the GAM form and were not accepted. Verify the user/password and that the account can reach this environment.";
+            }
+            else if (gamRedirect)
+            {
+                code = "GamLoginRequired";
+                message = "The launcher redirected to a GAM login page and no credentials were supplied, so the preview stopped at the login screen.";
+                hint = "Pass auth={mode:\"gam\", user, pass} on this call, or set GXMCP_GAM_USER / GXMCP_GAM_PASS in the Worker's environment. Credentials are read from the request and never echoed back.";
+            }
+            else
+            {
+                code = "AuthRequired";
+                message = "The launcher returned an auth screen that is not a GAM login, so the preview stopped.";
+                hint = "No GAM credentials apply to this auth wall. Authenticate the environment out of band (or point baseUrl at an unauthenticated host) and retry.";
+            }
+
+            result["status"] = "auth_required";
+            result["url"] = launcherUrl;
+            result["finalUrl"] = finalUrl;
+            result["authWall"] = gamRedirect ? "gam" : "unknown";
+            result["credentialsSupplied"] = authAttempted;
+            result["code"] = code;
+            result["message"] = message;
+            result["hint"] = hint;
+            result["nextStep"] = "Retry with auth supplied, or capture a screenshot of the auth screen to see which wall it is.";
+            return result;
+        }
 
         private static JObject InvalidPreviewRequest(JObject result, string message)
         {

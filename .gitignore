@@ -86,3 +86,6 @@ skills-lock.json
 __pycache__/
 *.py[cod]
 *$py.class
+
+# OpenCode local goal state
+.opencode/

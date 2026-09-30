@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Models;
-
+using GxMcp.Worker.Helpers;
 namespace GxMcp.Worker.Services
 {
     /// <summary>
@@ -117,7 +117,7 @@ namespace GxMcp.Worker.Services
                     {
                         sb.Append("| `").Append(SafeMd(t.Entry.Name)).Append("` | ")
                           .Append(t.Refs).Append(" | ")
-                          .Append(SafeMd(Truncate(t.Entry.Description, 80))).Append(" |\n");
+                          .Append(SafeMd(SdkReflection.Truncate(t.Entry.Description, 80))).Append(" |\n");
                     }
                     sb.Append('\n');
                 }
@@ -261,10 +261,5 @@ namespace GxMcp.Worker.Services
             return s.Replace("|", "\\|").Replace("\r", " ").Replace("\n", " ");
         }
 
-        private static string Truncate(string s, int max)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            return s.Length <= max ? s : s.Substring(0, max - 1) + "…";
-        }
     }
 }

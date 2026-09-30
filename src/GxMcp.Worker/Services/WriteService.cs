@@ -391,8 +391,6 @@ namespace GxMcp.Worker.Services
             return set;
         }
 
-        private static string Truncate(string s, int max) =>
-            string.IsNullOrEmpty(s) ? s : (s.Length <= max ? s : s.Substring(0, max) + "…");
 
         // Reads the declared variable names from the object's Variables part. Used to
         // distinguish "user wrote &Var.Foo without declaring &Var" (real bug) from
@@ -1703,7 +1701,7 @@ namespace GxMcp.Worker.Services
                                     if (!StructureDslMatches(decodedCode, persisted))
                                     {
                                         roundTripError = "Structure DSL applied in-memory but post-Save read-back didn't include all items. The SDK may have persisted the prior version. Re-read with genexus_read part=Structure and retry; if still wrong, the SDT's persisted EntityVersion is stale (see WebFormCompositionRepair pattern).";
-                                        Logger.Warn("[DEBUG-SAVE] SDT Structure round-trip mismatch for " + target + ". expected=\"" + Truncate(decodedCode, 200) + "\" persisted=\"" + Truncate(persisted, 200) + "\"");
+                                        Logger.Warn("[DEBUG-SAVE] SDT Structure round-trip mismatch for " + target + ". expected=\"" + SdkReflection.Truncate(decodedCode, 200) + "\" persisted=\"" + SdkReflection.Truncate(persisted, 200) + "\"");
                                     }
                                 }
                             }
@@ -1938,25 +1936,21 @@ namespace GxMcp.Worker.Services
                 }
 
                 // 2. FORCE DIRTY (Crucial)
-                try {
-                    // Mark Part as Dirty
-                    var pType = part.GetType();
-                    var pDirtyProp = pType.GetProperty("Dirty", BindingFlags.Public | BindingFlags.Instance) 
-                                  ?? pType.GetProperty("IsDirty", BindingFlags.Public | BindingFlags.Instance);
-                    if (pDirtyProp != null) {
-                        pDirtyProp.SetValue(part, true);
-                        Logger.Debug("[DEBUG-SAVE] Part property '" + pDirtyProp.Name + "' set to TRUE");
-                    }
-
-                    // Mark Header Object as Dirty (Essential for Save)
-                    var oType = obj.GetType();
-                    var oDirtyProp = oType.GetProperty("Dirty", BindingFlags.Public | BindingFlags.Instance)
-                                  ?? oType.GetProperty("IsDirty", BindingFlags.Public | BindingFlags.Instance);
-                    if (oDirtyProp != null) {
-                        oDirtyProp.SetValue(obj, true);
-                        Logger.Debug("[DEBUG-SAVE] Object property '" + oDirtyProp.Name + "' set to TRUE");
-                    }
-                } catch (Exception ex) { Logger.Debug("[DEBUG-SAVE] Force Dirty failed: " + ex.Message); }
+                // SdkReflection.MarkDirty checks CanWrite and the property type before
+                // SetValue. The previous code called SetValue unguarded, so on a major
+                // that exposes a read-only `Dirty` the call threw, the outer catch
+                // swallowed it, and BOTH the part and its object stayed clean — a
+                // write that reported success and persisted nothing. A false return
+                // is now visible instead of silent.
+                bool partMarkedDirty = SdkReflection.MarkDirty(part);
+                bool objectMarkedDirty = SdkReflection.MarkDirty(obj);
+                if (!partMarkedDirty || !objectMarkedDirty)
+                {
+                    Logger.Debug("[DEBUG-SAVE] Force Dirty incomplete: part=" + partMarkedDirty
+                        + " object=" + objectMarkedDirty
+                        + " (no writable bool Dirty/IsDirty on "
+                        + (partMarkedDirty ? obj.GetType().Name : part.GetType().Name) + ").");
+                }
 
                 // 3. PERSISTENCE SEQUENCE
                 bool metadataStampPersisted = false;
@@ -2390,7 +2384,6 @@ namespace GxMcp.Worker.Services
                 return "Disambiguate with type=<Transaction|Procedure|...> or list_objects to confirm the name.";
             return null;
         }
-
 
 
     }

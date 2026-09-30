@@ -509,16 +509,9 @@ namespace GxMcp.Worker.Services
                 Logger.Info("[PATTERN-WRITE] InvalidateLastModification skipped: " + ex.Message);
             }
 
-            try
-            {
-                var dirtyProp = part.GetType().GetProperty("Dirty", flags);
-                if (dirtyProp != null && dirtyProp.CanWrite && dirtyProp.PropertyType == typeof(bool))
-                {
-                    dirtyProp.SetValue(part, true);
-                    Logger.Info("[PATTERN-WRITE] Forced part.Dirty = true.");
-                }
-            }
-            catch (Exception ex) { Logger.Info("[PATTERN-WRITE] Set Dirty=true skipped: " + ex.Message); }
+            Logger.Info("[PATTERN-WRITE] " + (SdkReflection.MarkDirty(part)
+                ? "Forced part.Dirty = true."
+                : "No writable bool Dirty/IsDirty on " + part.GetType().Name + "; the save may not see the change."));
 
             try
             {

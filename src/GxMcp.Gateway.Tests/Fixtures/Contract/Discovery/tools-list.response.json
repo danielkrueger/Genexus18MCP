@@ -63,6 +63,7 @@
               "code_metrics",
               "kb_stats",
               "table_relations",
+              "theme_classes",
               "explain"
             ],
             "type": "string"

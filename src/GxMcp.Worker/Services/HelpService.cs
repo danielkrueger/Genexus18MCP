@@ -91,7 +91,7 @@ namespace GxMcp.Worker.Services
                         McpResponse.NextStep(
                             tool: "genexus_orient",
                             args: new JObject(),
-                            why: "Orient returns the welcome card so the LLM can browse tools by surface.")));
+                            why: "Welcome card: KB info, recent edits, and top gotchas.")));
             }
 
             var words = Tokenize(goal);
@@ -114,7 +114,7 @@ namespace GxMcp.Worker.Services
                         {
                             ["tool"] = "genexus_orient",
                             ["args"] = new JObject(),
-                            ["why"] = "No keyword in the goal matched a known intent. Orient gives an overview."
+                            ["why"] = "Welcome card: KB info, recent edits, and top gotchas."
                         }
                     });
             }

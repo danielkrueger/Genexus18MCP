@@ -64,18 +64,40 @@ Ordered by impact-to-effort ratio. Each delivers value standalone.
 (SDK `SetTagProperty`) instead of raw XML mutation. This is what unlocks
 gxButton OnClickEvent and other event-wiring properties.
 
-**Current state:** `WebFormPropertyDeltaDetector` + `WebFormTypedPropertyWriter`
-exist but only fire when the XML diff is detected as "supported" (attribute-only
-on existing controls). Structural changes (add/remove controls) fall back to
-raw XML.
+**Current state (2026-09-29):** steps 1-3 landed; step 4 (acceptance) open.
+
+- `WebFormPropertyDeltaDetector` classifies whole-element add/remove/move into
+  `StructuralChanges[]` instead of failing with an opaque count message.
+  Pairing is id-free (the SDK regenerates element ids on materialization) and `id`
+  is SDK-managed, never an authorable delta.
+- `Compatibility.WebTagFactoryAdapter` probes `WebTagFactory.Create` structurally
+  (GeneXus 18: static `Create(XmlNode, KBObject, IWebTag, bool)`, verified by
+  reflection against the installed SDK; `IWebTag` carries no Remove/Delete, so
+  removal stays on the document path).
+- `Helpers.WebFormTypedCreateRouter` implements the attempt but is **off by
+  default** (`ApplyEditableXml(..., attemptTypedCreate: false)`). It runs only
+  when a caller opts in, and whenever it does the raw rewrite still runs
+  afterwards, so the existing post-write verification stays the fail-closed gate.
+  Live on GeneXus 18: `Create` binds and returns, the node is imported into
+  the part document with an SDK-resolvable `id`, and the created tag is
+  re-asserted after the push (`SaveProperties`) — but the SDK still refuses the
+  control back (`SaveProperties=False`) and persists the structure without it.
+  Persisting an added control is therefore **blocked** on GeneXus 18 headless.
+  It is gated rather than deleted because the attempt cannot make a write worse
+  but also cannot make one better on any measured major, so charging every
+  structural WebForm write an SDK round-trip for a known-zero outcome is not
+  justified; the flag keeps the experiment reproducible when a major is
+  measured to persist the tag. Steps 2-3 are complete rather than pending.
 
 **Steps:**
-1. Extend `WebFormPropertyDeltaDetector` to recognize add/remove of controls
-   (today returns `IsSupported: false` for those)
-2. Implement `IWebTag.Create` / `IWebTag.Remove` via reflection (probe needed
-   first — `WebFormSdkProbe` style dump)
-3. Route `LayoutService.SetProperty` and `genexus_edit part=layout` through the
-   typed writer when available, falling back to XML only on probe failure
+1. ~~Extend `WebFormPropertyDeltaDetector` to recognize add/remove of controls~~
+2. `IWebTag.Create` / `IWebTag.Remove` via reflection — `Create` done (static
+   factory probe, structural matcher, fail-closed on ambiguity). `Remove` has no
+   SDK member (`IWebTag` exposes only Get/SetProperties/SaveProperties and
+   value accessors) and stays on the document path.
+3. `LayoutService.SetProperty` / `genexus_edit part=layout` through the typed
+   writer when available, falling back to XML only on probe failure — done for
+   property deltas and attempted for control adds (see the blocked note above)
 4. Acceptance test: `gxButton OnClickEvent="'Foo'"` in html-form produces
    `data-gx-evt=<correct N>` at runtime (currently always 5/Enter)
 
@@ -172,14 +194,32 @@ escape hatch.
 
 ### W6 — Theme/class introspection (P2, ~2 days)
 
-**Outcome:** `genexus_inspect type=Theme` returns the list of available classes
-with metadata (which controls they apply to, what they look like). Agent picks
-canonical class names instead of guessing GUIDs.
+**Outcome:** the agent can see which classes a KB defines, instead of guessing
+a class name or inventing an identifier.
 
 **Steps:**
-1. Walk the KB's active Theme via SDK
-2. Return classes grouped by applicable control type
-3. Add `class=<name>` shorthand to layout writers — MCP resolves to GUID
+1. **DONE** — list the KB's `ThemeClass` objects
+   (`genexus_analyze mode=theme_classes`). Live on GX18/KBTeste: 129 classes,
+   sorted by name, `truncated` marks a cut. The loaded index is the only
+   complete enumeration available headlessly; a `KBModel.Objects.GetAll()`
+   walk and a theme's style tree each yield a single theme-root object, so
+   neither is a fallback. The discriminator is the index entry `Type`, not the
+   `TypeIndex` bucket (whose storage-key format is internal to
+   `IndexCacheService`). It was first built as
+   `genexus_layout action=list_controls includeThemeClasses=true`, which mixed
+   an index read into a service that answers from
+   `IUserControlsManagerService`; it is now its own analyze mode.
+2. **BLOCKED** — group classes by applicable control type. `ThemeTypes` exists
+   on the SDK object but is not in the index, and resolving 129 objects per call
+   to read one cosmetic field is not worth the cost. The response reports
+   `controlTypesAvailable: false` instead of guessing.
+3. **BLOCKED** — `class=<name>` shorthand. Measured on GX18/KBTeste, a layout
+   `class` attribute is `<guid>-<suffix>` and matches **none** of the KB's 129
+   class GUIDs, so it is an SDK style reference this Server cannot resolve from
+   a name. The response carries `authorableInLayoutClassAttribute: false` and
+   authoring `class` stays on the layout-document path. A wrong class value
+   silently loses styling, so this stays blocked until the style-reference
+   mapping is measured, not guessed.
 
 ## Milestones
 

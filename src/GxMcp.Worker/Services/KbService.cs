@@ -902,12 +902,13 @@ namespace GxMcp.Worker.Services
                             try { ca = SdkTimestampNormalizer.NormalizeUtc(obj.VersionDate); } catch { }
                             try { lub = obj.UserName; } catch { }
                             var hierarchy = _indexCacheService.ResolveHierarchyForIndex(obj);
+                            KbEntityIdentity.ReadAll(obj, out string entityKey, out string entityTypeGuid, out int? entityId);
                             var liteEntry = new SearchIndex.IndexEntry
                             {
                                 Guid = objectGuid,
-                                EntityKey = SafeEntityKey(obj),
-                                EntityTypeGuid = SafeEntityTypeGuid(obj),
-                                EntityId = SafeEntityId(obj),
+                                EntityKey = entityKey,
+                                EntityTypeGuid = entityTypeGuid,
+                                EntityId = entityId,
                                 Name = objectName,
                                 Type = typeName,
                                 Description = description,
@@ -1169,20 +1170,6 @@ namespace GxMcp.Worker.Services
         // EntityKey is the SDK identity that survives modular-name qualification.
         // Keep its scalar pieces in the index so a warm process can reconstruct it
         // without depending on a facade object's Guid lookup.
-        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.ToString(); } catch { return null; }
-        }
-
-        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.Type.ToString(); } catch { return null; }
-        }
-
-        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.Id; } catch { return null; }
-        }
 
         // Fase 1: bounded delta refresh on warm start. The in-memory index is already
         // hydrated from the validated on-disk cache and serving reads; here we ask the SDK

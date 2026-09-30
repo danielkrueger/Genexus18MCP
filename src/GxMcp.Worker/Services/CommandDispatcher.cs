@@ -128,6 +128,7 @@ namespace GxMcp.Worker.Services
         private readonly CiPipelineService _ciPipelineService;
         // genexus_analyze mode=table_relations — table↔transaction relations over ITablesService.
         private readonly TableRelationsService _tableRelationsService;
+        private readonly ThemeClassCatalogService _themeClassCatalogService;
         // genexus_layout action=list_controls — control/theme catalog over IUserControlsManagerService.
         private readonly UserControlsListService _userControlsListService;
         // genexus_create action=curl_procedure — curl→Procedure over ICurlGeneratorService.
@@ -277,6 +278,7 @@ namespace GxMcp.Worker.Services
             _securityScanService = new SecurityScanService(_kbService);
             _ciPipelineService = new CiPipelineService(_kbService);
             _tableRelationsService = new TableRelationsService(_kbService, _objectService);
+            _themeClassCatalogService = new ThemeClassCatalogService(_objectService);
             _userControlsListService = new UserControlsListService(_kbService);
             _curlProcService = new CurlProcService(_kbService, _objectService);
             _designSystemService = new DesignSystemService(_kbService, _objectService);
@@ -791,7 +793,7 @@ namespace GxMcp.Worker.Services
                             Models.McpResponse.NextStep(
                                 tool: "genexus_orient",
                                 args: new JObject(),
-                                why: "Shows the tool catalog so the right action can be chosen.")),
+                                why: "Welcome card: KB info, recent edits, and top gotchas.")),
                         target: target);
                 } // end using ProgressContext
             }
@@ -882,6 +884,7 @@ namespace GxMcp.Worker.Services
                 ["reorgimpact"] = Handle_ReorgImpact,
                 ["kbstats"] = Handle_KbStats,
                 ["tablerelations"] = Handle_TableRelations,
+                ["themeclasses"] = Handle_ThemeClasses,
                 ["usercontrols"] = Handle_UserControls,
                 ["wwpaction"] = Handle_WwpAction,
                 ["curlproc"] = Handle_CurlProc,
@@ -2577,7 +2580,7 @@ namespace GxMcp.Worker.Services
                     Models.McpResponse.NextStep(
                         tool: "genexus_orient",
                         args: new JObject(),
-                        why: "Shows the tool catalog so the right action can be chosen.")),
+                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
                 target: target);
                     // Item 65 — genexus_orient welcome card
         }
@@ -2594,7 +2597,7 @@ namespace GxMcp.Worker.Services
                     Models.McpResponse.NextStep(
                         tool: "genexus_orient",
                         args: new JObject(),
-                        why: "Shows the tool catalog so the right action can be chosen.")),
+                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
                 target: target);
         }
 
@@ -3072,9 +3075,15 @@ namespace GxMcp.Worker.Services
             return _tableRelationsService.Run(args ?? new JObject());
         }
 
+        private string Handle_ThemeClasses(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_analyze mode=theme_classes — the KB's theme classes (read-only).
+            return _themeClassCatalogService.Run(args ?? new JObject());
+        }
+
         private string Handle_UserControls(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            // genexus_layout action=list_controls — control/theme catalog (read-only).
+            // genexus_layout action=list_controls — control catalog (read-only).
             return _userControlsListService.Run(args ?? new JObject());
         }
 
@@ -3269,7 +3278,7 @@ namespace GxMcp.Worker.Services
                     Models.McpResponse.NextStep(
                         tool: "genexus_orient",
                         args: new JObject(),
-                        why: "Shows the tool catalog so the right action can be chosen.")),
+                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
                 target: target);
         }
 
@@ -3289,7 +3298,7 @@ namespace GxMcp.Worker.Services
                     Models.McpResponse.NextStep(
                         tool: "genexus_orient",
                         args: new JObject(),
-                        why: "Shows the tool catalog so the right action can be chosen.")),
+                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
                 target: target);
         }
 
@@ -3315,7 +3324,7 @@ namespace GxMcp.Worker.Services
                     Models.McpResponse.NextStep(
                         tool: "genexus_orient",
                         args: new JObject(),
-                        why: "Shows the tool catalog so the right action can be chosen.")),
+                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
                 target: target);
         }
 

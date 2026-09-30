@@ -114,6 +114,10 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("gam", result["auth"]["mode"]?.ToString());
             Assert.Contains("attempted", result["message"]?.ToString() ?? "",
                 StringComparison.OrdinalIgnoreCase);
+            // A refused GAM login is its own recovery: retrying with the same
+            // credentials cannot succeed, so the response must say which it was.
+            Assert.Equal("GamLoginRejected", result["code"]?.ToString());
+            Assert.True(result["credentialsSupplied"]?.ToObject<bool>() ?? false);
 
             // Submit JS must have been issued at least once.
             bool sawSubmit = false;

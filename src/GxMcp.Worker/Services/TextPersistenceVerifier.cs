@@ -4,7 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using Newtonsoft.Json.Linq;
-
+using GxMcp.Worker.Helpers;
 namespace GxMcp.Worker.Services
 {
     /// <summary>
@@ -217,8 +217,7 @@ namespace GxMcp.Worker.Services
         private static bool IsWordish(char value) => char.IsLetterOrDigit(value) || value == '_' || value == '&' || value == '#';
         internal static string Sha256(string value)
         {
-            using (var sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty))).Replace("-", string.Empty).ToLowerInvariant();
+            return SdkReflection.Sha256Hex(value);
         }
         private static int Count(string value, string needle) => (value ?? string.Empty).Split(new[] { needle }, StringSplitOptions.None).Length - 1;
         private static int CountLoneLf(string value) => (value ?? string.Empty).Replace("\r\n", string.Empty).Count(c => c == '\n');

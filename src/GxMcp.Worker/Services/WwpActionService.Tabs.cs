@@ -520,6 +520,26 @@ namespace GxMcp.Worker.Services
             instance.Save(new KBObjectSavePreferences { ForceSave = true, ForceSaveDefaultParts = true, SkipValidation = true });
         }
 
+        /// <summary>
+        /// Do two persisted contents match, byte for byte?
+        ///
+        /// <para>A missing side is NOT a match. The previous comparison was
+        /// <c>Equals(Sha256(a), Sha256(b))</c> and <c>Sha256</c> returned null for a
+        /// null input, so a restore that produced no readable content on either side
+        /// compared null to null, evaluated true, and reported
+        /// <c>patternRestoredExactly: true</c> for a snapshot that was never
+        /// restored. A restore check that cannot see a difference must not certify
+        /// one.</para>
+        /// </summary>
+        private static bool ContentMatches(string restored, string expected)
+        {
+            if (restored == null || expected == null) return false;
+            return string.Equals(
+                SdkReflection.Sha256Hex(restored),
+                SdkReflection.Sha256Hex(expected),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
         private SnapshotBundle CaptureSnapshots(KBObject instance, string patternXml, KBObject parent, string webForm)
         {
             string root = EditSnapshotStore.ResolveRoot(_objects.GetKbService().GetKbPath());
@@ -547,7 +567,7 @@ namespace GxMcp.Worker.Services
                 SaveNativePattern(instance, part);
                 if (!IsFalse(applyOnSaveBefore)) WwpApplyOnSaveHelper.TryEnable(instance);
                 string restored = _patterns.ReadPatternPartXml(instance, "PatternInstance", PatternRegistry.WorkWithPlusPatternId, out _, out _);
-                patternRestored = string.Equals(Sha256(restored), Sha256(patternXml), StringComparison.OrdinalIgnoreCase);
+                patternRestored = ContentMatches(restored, patternXml);
                 applyOnSaveRestored = string.Equals(ReadObjectProperty(instance,
                     "SDPlus_Editor_Apply_On_Save"), applyOnSaveBefore, StringComparison.OrdinalIgnoreCase);
             }
@@ -563,8 +583,7 @@ namespace GxMcp.Worker.Services
                         ["validate"] = true, ["rollbackOnFailure"] = true
                     }));
                     string restored = ReadPart(parent, "WebForm");
-                    webFormRestored = IsSuccess(response)
-                        && string.Equals(Sha256(restored), Sha256(webForm), StringComparison.OrdinalIgnoreCase);
+                    webFormRestored = IsSuccess(response) && ContentMatches(restored, webForm);
                 }
                 catch (Exception ex) { webFormError = (ex.InnerException ?? ex).Message; }
             }
@@ -802,9 +821,7 @@ namespace GxMcp.Worker.Services
         private static JObject TabError(string code, string message) => new JObject { ["code"] = code, ["error"] = message };
         private static string Sha256(string value)
         {
-            if (value == null) return null;
-            using (SHA256 sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-", string.Empty).ToLowerInvariant();
+            return SdkReflection.Sha256Hex(value);
         }
 
         private sealed class SnapshotBundle

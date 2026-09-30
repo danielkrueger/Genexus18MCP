@@ -149,9 +149,7 @@ namespace GxMcp.Worker.Helpers
 
         internal static string ContentHash(string value)
         {
-            using (var sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(value ?? string.Empty)))
-                    .Replace("-", string.Empty).ToLowerInvariant();
+            return SdkReflection.Sha256Hex(value);
         }
 
         internal static bool SourceEquivalent(string left, string right)

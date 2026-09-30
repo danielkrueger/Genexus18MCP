@@ -265,7 +265,7 @@ namespace GxMcp.Worker.Helpers
                         continue;
                     }
                     diff = "Attribute '" + ax[i].Name + "' differs at " + path + x.Name
-                           + ": '" + Truncate(ax[i].Value) + "' vs '" + Truncate(ay[i].Value) + "'";
+                           + ": '" + SdkReflection.Truncate(ax[i].Value, 80) + "' vs '" + SdkReflection.Truncate(ay[i].Value, 80) + "'";
                     structured = new XmlEquivalenceDiff { Path = path + x.Name, ElementName = x.Name.LocalName, Summary = diff, LeftAttributes = lNames, RightAttributes = rNames };
                     return false;
                 }
@@ -299,7 +299,7 @@ namespace GxMcp.Worker.Helpers
                     var vy = (ty.Value ?? string.Empty).Trim();
                     if (!string.Equals(vx, vy, StringComparison.Ordinal))
                     {
-                        diff = "Text differs at " + path + x.Name + "[" + i + "]: '" + Truncate(vx) + "' vs '" + Truncate(vy) + "'";
+                        diff = "Text differs at " + path + x.Name + "[" + i + "]: '" + SdkReflection.Truncate(vx, 80) + "' vs '" + SdkReflection.Truncate(vy, 80) + "'";
                         return false;
                     }
                 }
@@ -319,12 +319,6 @@ namespace GxMcp.Worker.Helpers
                 else if (n is XComment) continue;
                 else yield return n;
             }
-        }
-
-        private static string Truncate(string s)
-        {
-            if (s == null) return string.Empty;
-            return s.Length <= 80 ? s : s.Substring(0, 80) + "…";
         }
 
         // Friction 2026-05-25 — set of attributes whose values are theme-class

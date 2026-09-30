@@ -1908,22 +1908,9 @@ namespace GxMcp.Gateway
                 var indexSuggestion = BuildIndexSuggestionForSnapshot(snap);
                 if (indexSuggestion != null) arr.Add(indexSuggestion);
 
-                // Update available — surface as a soft hint, not blocking.
-                try
-                {
-                    var update = UpdateNotifier.GetCachedStatusSync();
-                    if (update != null && update["updateAvailable"]?.ToObject<bool>() == true)
-                    {
-                        string latest = update["latestVersion"]?.ToString() ?? "<latest>";
-                        arr.Add(new JObject
-                        {
-                            ["tool"] = "genexus_orient",
-                            ["args"] = new JObject { ["topic"] = "update" },
-                            ["why"] = $"GeneXus MCP v{latest} is available. Ask the user before installing — npx genexus-mcp@latest init."
-                        });
-                    }
-                }
-                catch { /* update check best-effort */ }
+                // Note: no update-available suggestedNext entry here. The update
+                // status already ships in this payload's own update block, and the
+                // former orient suggestion carried a topic arg Welcome ignores.
 
                 // Phase 2 — memory orientation. Once per KB alias per gateway process
                 // lifetime (mirrors UpdateNotifier._triggered), nudge the agent to

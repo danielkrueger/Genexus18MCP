@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Models;
-
+using GxMcp.Worker.Helpers;
 namespace GxMcp.Worker.Services
 {
     /// <summary>
@@ -564,7 +564,7 @@ namespace GxMcp.Worker.Services
                     SortAttributes = sortAttrs,
                     WhereSignature = sig,
                     Line = line,
-                    Snippet = Truncate(wholeBlock, 200),
+                    Snippet = SdkReflection.Truncate(wholeBlock, 200),
                     Confidence = confidence
                 };
             }
@@ -722,12 +722,6 @@ namespace GxMcp.Worker.Services
             for (int i = 0; i < charIndex && i < text.Length; i++)
                 if (text[i] == '\n') line++;
             return line;
-        }
-
-        private static string Truncate(string s, int max)
-        {
-            if (string.IsNullOrEmpty(s) || s.Length <= max) return s;
-            return s.Substring(0, max) + "…";
         }
 
         // ---- Index coverage helpers --------------------------------------------

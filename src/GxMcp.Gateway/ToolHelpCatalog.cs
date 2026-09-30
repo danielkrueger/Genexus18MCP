@@ -159,6 +159,7 @@ namespace GxMcp.Gateway
                 "- `complexity` — line/cyclomatic counts.\n" +
                 "- `naming` — naming-convention audit.\n" +
                 "- `summary` — LLM-oriented summary of the object.\n" +
+                "- `theme_classes` — the KB's theme classes, so you can pick one by name instead of guessing. Returns `name` + `objectGuid`, sorted, with `truncated` marking a cut; `limit` caps the result (default 200).\n" +
                 "- `explain` — legacy compatibility route; returns a typed NotImplemented envelope instead of inventing an explanation.\n\n" +
                 "## When to use what\n" +
                 "- Raw source: `genexus_read`.\n" +
@@ -166,7 +167,8 @@ namespace GxMcp.Gateway
                 "- Cross-object reasoning: `genexus_analyze`.\n\n" +
                 "## Notes\n" +
                 "- `impact` waits up to 30s for the index to be ready unless `waitForIndex: false`; set `waitTimeoutMs` to override that wait bound.\n" +
-                "- Returns `callersTruncated: true` and `_meta.partial` when the graph is incomplete.\n\n" +
+                "- Returns `callersTruncated: true` and `_meta.partial` when the graph is incomplete.\n" +
+                "- `theme_classes` returns `objectGuid`, which is the class KB object's GUID and is **not** the value a layout `class` attribute takes — a measured layout class attribute (`<guid>-<suffix>`) matched none of the KB's class GUIDs. There is no `class=<name>` shorthand, and authoring a layout class stays on the layout-document path. A wrong class value silently loses styling. `controlTypesAvailable` is false because the index does not carry it. A KB whose index has no ThemeClass objects answers `ThemeClassesUnavailable` with a reason rather than a partial list.\n\n" +
                 "## Examples\n" +
                 "- `{ mode: 'impact', target: 'InvoiceProc' }`\n" +
                 "- `{ mode: 'summary', target: 'OrderTrn' }`\n",
@@ -574,7 +576,8 @@ namespace GxMcp.Gateway
                 "- `set_visibility` — change a control's visibility expression.\n" +
                 "- `remove_control` — remove a named control after checking references.\n" +
                 "- `wrap_in_fieldset` — wrap selected controls in a fieldset container.\n\n" +
-                "Every action mutates the layout. Prefer a read of the authoritative WebForm/PatternInstance first and verify the persisted tree after the write. Pass `baseVersion` and `rollbackOnFailure` for guarded persistence; a read-back mismatch is reported as persisted-but-unverified rather than silently restored. `dryRun` returns a bounded changed-fragment diff and the same descriptor transformation preview used by the real save.\n",
+                "Every action mutates the layout. Prefer a read of the authoritative WebForm/PatternInstance first and verify the persisted tree after the write. Pass `baseVersion` and `rollbackOnFailure` for guarded persistence; a read-back mismatch is reported as persisted-but-unverified rather than silently restored. `dryRun` returns a bounded changed-fragment diff and the same descriptor transformation preview used by the real save.\n" +
+                "  The PatternInstance part is a property-edit route only. It never infers a layout reordering: the childrenOrderedList attribute and the other child-order metadata are owned by the pattern, and XML document order is not a reliable description of it, so changing them — or adding, removing or renaming nodes — is rejected as PatternMetadataChangeUnsupported / PatternStructureChangeUnsupported. Use the SDK pattern authoring actions for structural work.\n",
 
             ["genexus_module"] =
                 "# genexus_module\n\n" +
@@ -612,7 +615,9 @@ namespace GxMcp.Gateway
                 "- `capture` — collect a screenshot or browser artifact.\n" +
                 "- `cross` — exercise cross-browser verification.\n" +
                 "- `preview` — inspect a preview surface.\n\n" +
-                "The inspection actions are read-only with respect to the KB, but `preview` becomes state-changing when `buildFirst=true`, `updateBaseline=true`, or `capture` includes `screenshot`; those options can build or write browser artifacts. Use the response path and cleanup guidance.\n",
+                "The inspection actions are read-only with respect to the KB, but `preview` becomes state-changing when `buildFirst=true`, `updateBaseline=true`, or `capture` includes `screenshot`; those options can build or write browser artifacts. Use the response path and cleanup guidance.\n\n" +
+                "## Auth walls\n" +
+                "When a target sits behind a login, the call stops at the auth screen and returns `status: \"auth_required\"` with a `code` naming the recovery: `GamLoginRequired` (redirected to a GAM login, no credentials supplied — pass `auth={mode:\"gam\",user,pass}` or set `GXMCP_GAM_USER`/`GXMCP_GAM_PASS`), `GamLoginRejected` (credentials were submitted and refused — fix the account, retrying unchanged will fail again), or `AuthRequired` (an auth wall that is not GAM — GAM credentials will not help; authenticate out of band). `authWall` and `credentialsSupplied` say which wall it is and whether anything was tried. No credential is ever echoed back.\n",
 
             ["genexus_telemetry"] =
                 "# genexus_telemetry\n\n" +

@@ -84,6 +84,10 @@ namespace GxMcp.Gateway.Routers
                             // P2 #7: table↔transaction relations + redundant-attribute
                             // detection over ITablesService. Read-only. Needs a Transaction name.
                             return new { module = "TableRelations", action = "Run", @params = args };
+                        case "theme_classes":
+                            // W6: the KB's theme classes, so an agent can pick one by
+                            // name instead of guessing. KB-wide, read-only, no target.
+                            return new { module = "ThemeClasses", action = "Run", @params = args };
                         case "explain":
                             return new { module = "Analyze", action = "ExplainCode", target = target, payload = args?["code"]?.ToString(), type = type };
                         case "callers":

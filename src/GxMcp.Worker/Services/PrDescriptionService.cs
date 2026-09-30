@@ -6,7 +6,7 @@ using System.Linq;
 using System.Text;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
-
+using GxMcp.Worker.Helpers;
 namespace GxMcp.Worker.Services
 {
     /// <summary>
@@ -129,7 +129,7 @@ namespace GxMcp.Worker.Services
                 // Lead bucket → title prefix.
                 var lead = typeBuckets.OrderByDescending(kv => kv.Value).FirstOrDefault();
                 string leadType = string.IsNullOrEmpty(lead.Key) ? "chore" : lead.Key;
-                title = leadType + ": " + commits.Count + " commits — " + Truncate(commits[0].subject ?? "", 60);
+                title = leadType + ": " + commits.Count + " commits — " + SdkReflection.Truncate(commits[0].subject ?? "", 60);
             }
 
             var summary = new JArray();
@@ -182,12 +182,6 @@ namespace GxMcp.Worker.Services
                 if (!char.IsLetter(ch)) return null;
             }
             return type.ToLowerInvariant();
-        }
-
-        private static string Truncate(string s, int max)
-        {
-            if (string.IsNullOrEmpty(s) || s.Length <= max) return s ?? "";
-            return s.Substring(0, max - 1) + "…";
         }
 
         /// <summary>

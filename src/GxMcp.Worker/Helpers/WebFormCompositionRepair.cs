@@ -89,7 +89,7 @@ namespace GxMcp.Worker.Helpers
 
                     if (matchedVersionId <= 0)
                     {
-                        Logger.Info("[CompositionRepair] no new row contains expected token '" + Truncate(expectedToken, 60) + "'; saw " + newRows.Count + " new row(s).");
+                        Logger.Info("[CompositionRepair] no new row contains expected token '" + SdkReflection.Truncate(expectedToken, 60) + "'; saw " + newRows.Count + " new row(s).");
                         return;
                     }
 
@@ -408,7 +408,5 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
-        private static string Truncate(string s, int max) =>
-            string.IsNullOrEmpty(s) ? s : (s.Length <= max ? s : s.Substring(0, max) + "…");
     }
 }

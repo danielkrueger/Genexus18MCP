@@ -263,10 +263,10 @@ namespace GxMcp.Worker.Services
                 if (suppressVisualSourceEcho)
                 {
                     parsed["sourceEchoOmitted"] = true;
-                    parsed["sourcePreview"] = Truncate(finalSource, 2000);
+                    parsed["sourcePreview"] = SdkReflection.Truncate(finalSource, 2000);
                     string snippet = parsed["persistedSnippet"]?.ToString();
                     if (!string.IsNullOrEmpty(snippet) && snippet.Length > 2000)
-                        parsed["persistedSnippet"] = snippet.Substring(0, 2000) + "…[truncated]";
+                        parsed["persistedSnippet"] = SdkReflection.Truncate(snippet, 2000) + "[truncated]";
                 }
                 else
                 {

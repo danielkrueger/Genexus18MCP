@@ -98,17 +98,15 @@ namespace GxMcp.Worker.Helpers
 
             if (injectedAny)
             {
-                try
+                // SdkReflection.MarkDirty tries both the Dirty and IsDirty alias and
+                // checks the property is a writable bool. The previous copy checked
+                // CanWrite but not the type, so a `Dirty` of any other type got
+                // SetValue(true) and the caller's catch swallowed the mismatch.
+                if (!SdkReflection.MarkDirty(variablesPart))
                 {
-                    var pType = variablesPart.GetType();
-                    var pDirtyProp = pType.GetProperty("Dirty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
-                                  ?? pType.GetProperty("IsDirty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                    if (pDirtyProp != null && pDirtyProp.CanWrite)
-                    {
-                        pDirtyProp.SetValue(variablesPart, true);
-                    }
+                    Logger.Debug("[VarInject] no writable bool Dirty/IsDirty on "
+                        + variablesPart.GetType().Name + "; the save may not see the change.");
                 }
-                catch { /* best-effort */ }
             }
         }
 

@@ -200,7 +200,17 @@ namespace GxMcp.Worker.Helpers
             return attr?.Value;
         }
 
-        public static void ApplyEditableXml(KBObjectPart part, string xml, string baselineXml = null)
+        /// <summary>
+        /// Writes <paramref name="xml"/> into a WebForm part.
+        ///
+        /// <paramref name="attemptTypedCreate"/> opts into the blocked
+        /// <see cref="WebFormTypedCreateRouter"/> experiment. It is off by default: on
+        /// every measured GeneXus 18 major the created control is stripped anyway, so
+        /// running it costs an SDK round-trip per created tag and changes nothing. The
+        /// flag exists so the experiment is reproducible on demand, not so every
+        /// structural write pays for it.
+        /// </summary>
+        public static void ApplyEditableXml(KBObjectPart part, string xml, string baselineXml = null, bool attemptTypedCreate = false)
         {
             if (part == null)
             {
@@ -247,6 +257,8 @@ namespace GxMcp.Worker.Helpers
 
             var propertyDeltas = WebFormPropertyDeltaDetector.DetectSupportedPropertyDeltas(currentXml, normalized);
             var changedControlNames = WebFormTypedPropertyWriter.GetChangedControlNames(currentXml, normalized);
+            // Tags materialized through WebTagFactory.Create, re-asserted after the push.
+            var createdTags = new List<object>();
             if (propertyDeltas.IsSupported && propertyDeltas.Deltas.Count > 0)
             {
                 Logger.Info("[LayoutFix] Detected " + propertyDeltas.Deltas.Count + " property delta(s) — trying typed-property write via IWebTag.");
@@ -269,6 +281,23 @@ namespace GxMcp.Worker.Helpers
             else if (!propertyDeltas.IsSupported)
             {
                 Logger.Info("[LayoutFix] Delta detector rejected diff: " + propertyDeltas.Reason + " — using raw XML rewrite.");
+                if (attemptTypedCreate)
+                {
+                    // The raw rewrite always runs afterwards and post-write verification
+                    // still gates, so a failed attempt degrades to the current behaviour
+                    // (an attempt can only flip WriteFailed → Success, never the reverse).
+                    XmlDocument editableDoc = new XmlDocument();
+                    editableDoc.LoadXml(normalized);
+                    if (WebFormTypedCreateRouter.TryApplyTypedCreates(
+                            part, editableDoc, propertyDeltas.StructuralChanges, createdTags, out string createFailure, out int materialized))
+                    {
+                        Logger.Info("[LayoutFix] Typed-create materialized " + materialized + " control(s); continuing to raw rewrite for persistence.");
+                    }
+                    else
+                    {
+                        Logger.Info("[LayoutFix] Typed-create skipped/failed: " + createFailure + " — continuing to raw rewrite.");
+                    }
+                }
             }
 
             // CANONICAL IDE FLOW for WebFormPart (verified via SDK reflection):
@@ -292,6 +321,13 @@ namespace GxMcp.Worker.Helpers
             }
 
             PushDocumentToStoredModel(part);
+
+            // A control materialized through WebTagFactory.Create must survive the push.
+            // DeserializeDataFromDocument() reparses the tree and DROPS control elements it
+            // cannot resolve (measured live: the row/cell persisted, the gxTextBlock was
+            // stripped), so re-assert the created tags afterwards. No-op unless the
+            // blocked typed-create experiment actually ran this call.
+            WebFormTypedCreateRouter.ReassertCreatedTags(part, createdTags);
 
             // FR#1 (friction-report 2026-05-19): post-write descriptor-property hook.
             // Some XML attributes the user authors are descriptor names (e.g. gxButton

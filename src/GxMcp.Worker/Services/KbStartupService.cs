@@ -188,16 +188,14 @@ namespace GxMcp.Worker.Services
                 return null;
             }
 
+            // All three go through SdkReflection. The previous get helper had no
+            // try/catch at all: a throwing GetPropertyValue escaped a method whose name
+            // promised it would not, and the caller's guard was the only thing between
+            // a bad property read and a failed KB startup.
+
             private static object TryInvokeGetPropertyValue(object target, string propName)
             {
-                if (target == null) return null;
-                var t = target.GetType();
-                var mi = t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                    .FirstOrDefault(m => m.Name == "GetPropertyValue"
-                                      && m.GetParameters().Length == 1
-                                      && m.GetParameters()[0].ParameterType == typeof(string));
-                if (mi == null) return null;
-                return mi.Invoke(target, new object[] { propName });
+                return Helpers.SdkReflection.TryGetPropertyBagValue(target, propName);
             }
 
             private static bool TryInvokeSetPropertyValueString(object target, string propName, string value)
@@ -205,12 +203,7 @@ namespace GxMcp.Worker.Services
                 if (target == null) return false;
                 try
                 {
-                    var t = target.GetType();
-                    var mi = t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                        .FirstOrDefault(m => m.Name == "SetPropertyValueString"
-                                          && m.GetParameters().Length == 2
-                                          && m.GetParameters()[0].ParameterType == typeof(string)
-                                          && m.GetParameters()[1].ParameterType == typeof(string));
+                    var mi = FindPropertyBagSetter(target, "SetPropertyValueString", typeof(string), typeof(string));
                     if (mi == null) return false;
                     mi.Invoke(target, new object[] { propName, value });
                     return true;
@@ -223,16 +216,28 @@ namespace GxMcp.Worker.Services
                 if (target == null) return false;
                 try
                 {
-                    var t = target.GetType();
-                    var mi = t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                        .FirstOrDefault(m => m.Name == "SetPropertyValue"
-                                          && m.GetParameters().Length == 2
-                                          && m.GetParameters()[0].ParameterType == typeof(string));
+                    var mi = FindPropertyBagSetter(target, "SetPropertyValue", typeof(string), typeof(object));
                     if (mi == null) return false;
                     mi.Invoke(target, new object[] { propName, value });
                     return true;
                 }
                 catch (Exception ex) { Logger.Debug("[KbStartup] SetPropertyValue failed: " + ex.Message); return false; }
+            }
+
+            /// <summary>
+            /// Locates a two-argument property-bag setter, checking BOTH parameter
+            /// types. The previous setter matched only the first, so on a major that
+            /// also declares <c>SetPropertyValue(string, int)</c> it could bind the
+            /// wrong overload and fail at invoke time with a confusing cast error.
+            /// </summary>
+            private static System.Reflection.MethodInfo FindPropertyBagSetter(
+                object target, string name, System.Type first, System.Type second)
+            {
+                return target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .FirstOrDefault(m => m.Name == name
+                                      && m.GetParameters().Length == 2
+                                      && m.GetParameters()[0].ParameterType == first
+                                      && m.GetParameters()[1].ParameterType == second);
             }
         }
     }

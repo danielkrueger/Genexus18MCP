@@ -44,7 +44,7 @@ namespace GxMcp.Worker.Helpers
                 // 3. SerializeData() bytes (what the SDK actually persists)
                 try
                 {
-                    var serializeMi = FindNonPublicMethod(webFormPart.GetType(), "SerializeData", Type.EmptyTypes);
+                    var serializeMi = SdkReflection.FindMethod(webFormPart.GetType(), "SerializeData");
                     if (serializeMi != null)
                     {
                         var bytes = serializeMi.Invoke(webFormPart, null) as byte[];
@@ -218,7 +218,7 @@ namespace GxMcp.Worker.Helpers
                 var node = doc.SelectSingleNode(xp) as XmlElement;
                 if (node == null) return "(no probe)";
                 var capExpr = node.Attributes["CaptionExpression"]?.Value;
-                return Truncate(capExpr ?? "(null)", 120);
+                return SdkReflection.Truncate(capExpr ?? "(null)", 120);
             }
             catch (Exception ex)
             {
@@ -237,7 +237,7 @@ namespace GxMcp.Worker.Helpers
             }
             catch (Exception ex)
             {
-                return "(parse threw: " + Truncate(ex.Message, 60) + ")";
+                return "(parse threw: " + SdkReflection.Truncate(ex.Message, 60) + ")";
             }
         }
 
@@ -272,30 +272,10 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
-        private static MethodInfo FindNonPublicMethod(Type t, string name, Type[] paramTypes)
-        {
-            var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-            for (var cur = t; cur != null && cur != typeof(object); cur = cur.BaseType)
-            {
-                var m = cur.GetMethod(name, flags, null, paramTypes, null);
-                if (m != null) return m;
-            }
-            return null;
-        }
-
         private static Type FindType(string fullName)
         {
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type t = null;
-                try { t = asm.GetType(fullName, false); } catch { }
-                if (t != null) return t;
-            }
-            return null;
+            return SdkReflection.FindType(fullName);
         }
-
-        private static string Truncate(string s, int n) =>
-            string.IsNullOrEmpty(s) ? s : (s.Length > n ? s.Substring(0, n) + "…" : s);
 
         /// <summary>
         /// Bypass path: directly call Entity.SaveModelEntityOutput(outputTypeId, version, ts, bytes)
@@ -319,20 +299,20 @@ namespace GxMcp.Worker.Helpers
                 }
 
                 // Fresh bytes from the part (with our mutation).
-                var serializeMi = FindNonPublicMethod(webFormPart.GetType(), "SerializeData", Type.EmptyTypes);
+                var serializeMi = SdkReflection.FindMethod(webFormPart.GetType(), "SerializeData");
                 if (serializeMi == null) { Logger.Info("[DirectSave] SerializeData not found"); return; }
                 var bytes = serializeMi.Invoke(webFormPart, null) as byte[];
                 if (bytes == null || bytes.Length == 0) { Logger.Info("[DirectSave] SerializeData returned empty"); return; }
                 Logger.Info($"[DirectSave] SerializeData bytes={bytes.Length} hash={Sha1Bytes(bytes)}");
 
                 // Find SaveModelEntityOutput(int, int, DateTime, byte[]) on the part (inherited from Entity).
-                var saveMi = FindMethod(webFormPart.GetType(), "SaveModelEntityOutput",
-                    new[] { typeof(int), typeof(int), typeof(DateTime), typeof(byte[]) });
+                var saveMi = SdkReflection.FindMethod(webFormPart.GetType(), "SaveModelEntityOutput",
+                    typeof(int), typeof(int), typeof(DateTime), typeof(byte[]));
                 if (saveMi == null)
                 {
                     // Try on kbObject as fallback.
-                    saveMi = FindMethod(kbObject.GetType(), "SaveModelEntityOutput",
-                        new[] { typeof(int), typeof(int), typeof(DateTime), typeof(byte[]) });
+                    saveMi = SdkReflection.FindMethod(kbObject.GetType(), "SaveModelEntityOutput",
+                        typeof(int), typeof(int), typeof(DateTime), typeof(byte[]));
                     if (saveMi == null)
                     {
                         Logger.Info("[DirectSave] SaveModelEntityOutput method not found on part or kbObject");
@@ -372,26 +352,17 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
-        private static MethodInfo FindMethod(Type t, string name, Type[] paramTypes)
-        {
-            var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-            for (var cur = t; cur != null && cur != typeof(object); cur = cur.BaseType)
-            {
-                var m = cur.GetMethod(name, flags, null, paramTypes, null);
-                if (m != null) return m;
-            }
-            return null;
-        }
-
         private static void LogGateFlag(object o, string methodName, string prefix)
         {
+            // This file had two byte-identical base-chain finders, FindNonPublicMethod
+            // and FindMethod, and every call site wrote
+            //     FindNonPublicMethod(...) ?? FindMethod(...)
+            // The second operand could never be reached, so the fallback read as
+            // defensive coverage that did not exist. One finder, no dead fallback.
             try
             {
-                var mi = FindNonPublicMethod(o.GetType(), methodName, Type.EmptyTypes)
-                        ?? FindMethod(o.GetType(), methodName, Type.EmptyTypes);
-                if (mi == null) { Logger.Info($"{prefix}.{methodName}=<no method>"); return; }
-                var v = mi.Invoke(o, null);
-                Logger.Info($"{prefix}.{methodName}()={v}");
+                var v = SdkReflection.TryInvokeNoArgs(o, methodName);
+                Logger.Info($"{prefix}.{methodName}=" + (v == null ? "<no method>" : v + "()"));
             }
             catch (Exception ex) { Logger.Info($"{prefix}.{methodName}() threw: {(ex.InnerException ?? ex).Message}"); }
         }
@@ -432,15 +403,7 @@ namespace GxMcp.Worker.Helpers
 
         private static bool SafeInvokeBool(object o, string methodName)
         {
-            try
-            {
-                var mi = FindNonPublicMethod(o.GetType(), methodName, Type.EmptyTypes)
-                        ?? FindMethod(o.GetType(), methodName, Type.EmptyTypes);
-                if (mi == null) return false;
-                var v = mi.Invoke(o, null);
-                return v is bool b && b;
-            }
-            catch { return false; }
+            return SdkReflection.TryInvokeBool(o, methodName);
         }
 
         private static void TryLogKbFile(string tag)

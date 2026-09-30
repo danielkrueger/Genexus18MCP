@@ -32,52 +32,23 @@ namespace GxMcp.Worker.Helpers
             if (webFormPart == null) { failure = "part is null"; return false; }
             if (deltas == null || deltas.Count == 0) { failure = "no deltas"; return false; }
 
-            Type helperType = FindType(HelperTypeName);
+            Type helperType = WebFormSdkReflection.FindType(HelperTypeName);
             if (helperType == null) { failure = "WebFormHelper type not loaded"; return false; }
 
-            Type editableType = FindType(EditableTypeName);
+            Type editableType = WebFormSdkReflection.FindType(EditableTypeName);
             if (editableType == null) { failure = "WebFormEditable type not loaded"; return false; }
 
-            // Pick the EnumerateWebTag overload that takes (KBObject, XmlDocument) so tags are rooted
-            // in part.Document — the SAME document the SDK's BeforeSaveKBObject iterates.
-            // Access the m_Document FIELD (not the property) — the property may clone.
-            XmlDocument partDocForEnum = null;
-            try
-            {
-                var docField = webFormPart.GetType().GetField("m_Document",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-                partDocForEnum = docField?.GetValue(webFormPart) as XmlDocument;
-            }
-            catch { }
-            if (partDocForEnum == null) partDocForEnum = GetReadProperty(webFormPart, "Document") as XmlDocument;
-            Logger.Info("[TypedWriter] m_Document field length=" + (partDocForEnum?.OuterXml.Length ?? -1));
-            var partKbObj = GetReadProperty(webFormPart, "KBObject") ?? GetReadProperty(webFormPart, "ContainerObject") ?? GetReadProperty(webFormPart, "Parent") ?? GetReadProperty(webFormPart, "Container");
-            MethodInfo enumerate = null;
-            object[] enumArgs = null;
-            if (partDocForEnum != null && partKbObj != null)
-            {
-                enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
-                    .FirstOrDefault(m =>
-                    {
-                        if (m.Name != "EnumerateWebTag") return false;
-                        var ps = m.GetParameters();
-                        return ps.Length == 2 && ps[1].ParameterType == typeof(XmlDocument) && ps[0].ParameterType.IsInstanceOfType(partKbObj);
-                    });
-                if (enumerate != null) enumArgs = new object[] { partKbObj, partDocForEnum };
-            }
-            if (enumerate == null)
-            {
-                enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
-                    .FirstOrDefault(m =>
-                    {
-                        if (m.Name != "EnumerateWebTag") return false;
-                        var ps = m.GetParameters();
-                        return ps.Length == 1 && ps[0].ParameterType.IsInstanceOfType(webFormPart);
-                    });
-                enumArgs = new object[] { webFormPart };
-            }
-            if (enumerate == null) { failure = "no EnumerateWebTag overload found"; return false; }
-            Logger.Info("[TypedWriter] using " + enumerate.Name + "(" + string.Join(",", enumerate.GetParameters().Select(p => p.ParameterType.Name)) + ")");
+            // Shared with WebFormTypedCreateRouter: one enumeration, one node-resolution
+            // rule, one identity order. These were duplicated and the copies had drifted
+            // (different attribute sets, different EnumerateWebTag overload preference),
+            // so a control could resolve on this path and miss on the other.
+            var enumeration = WebFormSdkReflection.IndexLiveTags(webFormPart);
+            if (!enumeration.Succeeded) { failure = enumeration.Failure; return false; }
+            XmlDocument partDocForEnum = enumeration.PartDocument;
+            Logger.Info("[TypedWriter] indexed " + enumeration.TagCount + " IWebTag(s) into "
+                + enumeration.Tags.Count + " identit(ies) via " + enumeration.Overload
+                + "; m_Document length=" + (partDocForEnum?.OuterXml.Length ?? -1));
+            IDictionary<string, object> tagIndex = enumeration.Tags;
 
             MethodInfo setTagProperty = editableType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
                 .FirstOrDefault(m => m.Name == "SetTagProperty");
@@ -85,33 +56,8 @@ namespace GxMcp.Worker.Helpers
 
             // Alternative path: IWebTag.SetProperties(IDictionary) — higher-level API exposed by the
             // interface itself. Used when SetTagProperty throws because of TypeDescriptorContext=null.
-            Type webTagInterface = FindType("Artech.Genexus.Common.Parts.WebForm.IWebTag");
+            Type webTagInterface = WebFormSdkReflection.FindType("Artech.Genexus.Common.Parts.WebForm.IWebTag");
             MethodInfo setPropertiesDict = webTagInterface?.GetMethod("SetProperties", new[] { typeof(IDictionary) });
-
-            IDictionary<string, object> byId = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-            IDictionary<string, object> byControlName = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-            int total = 0;
-            try
-            {
-                IEnumerable tags = (IEnumerable)enumerate.Invoke(null, enumArgs);
-                foreach (var tag in tags)
-                {
-                    total++;
-                    var node = GetReadProperty(tag, "Node") as XmlNode;
-                    if (node?.Attributes == null) continue;
-                    string id = node.Attributes["id"]?.Value;
-                    string cn = node.Attributes["ControlName"]?.Value ?? node.Attributes["controlName"]?.Value;
-                    if (!string.IsNullOrEmpty(id) && !byId.ContainsKey(id)) byId[id] = tag;
-                    if (!string.IsNullOrEmpty(cn) && !byControlName.ContainsKey(cn)) byControlName[cn] = tag;
-                }
-            }
-            catch (Exception ex)
-            {
-                var inner = ex.InnerException ?? ex;
-                failure = "EnumerateWebTag threw: " + inner.GetType().Name + ": " + inner.Message;
-                return false;
-            }
-            Logger.Info("[TypedWriter] Indexed " + total + " IWebTag(s): " + byId.Count + " by id, " + byControlName.Count + " by ControlName.");
 
             // Group deltas by control so SetProperties is called once per tag with all changes.
             var byControl = new Dictionary<string, List<WebFormPropertyDelta>>(StringComparer.OrdinalIgnoreCase);
@@ -125,11 +71,7 @@ namespace GxMcp.Worker.Helpers
             {
                 string controlName = kv.Key;
                 object tag = null;
-                if (!string.IsNullOrEmpty(controlName))
-                {
-                    byId.TryGetValue(controlName, out tag);
-                    if (tag == null) byControlName.TryGetValue(controlName, out tag);
-                }
+                if (!string.IsNullOrEmpty(controlName)) tagIndex.TryGetValue(controlName, out tag);
                 if (tag == null) { failure = "control '" + controlName + "' not found in tag enumeration"; return false; }
 
                 // Canonical-XML strategy:
@@ -144,7 +86,7 @@ namespace GxMcp.Worker.Helpers
                 // Find the matching element in part.Document by id/ControlName and mutate THAT instead.
                 var partDoc = partDocForEnum;
                 if (partDoc == null) { failure = "part m_Document is null"; return false; }
-                XmlElement node = FindElementInPartDoc(partDoc, controlName);
+                XmlElement node = WebFormSdkReflection.FindElementInPartDoc(partDoc, controlName);
                 if (node == null) { failure = "no element id='" + controlName + "' (nor ControlName) in part.Document"; return false; }
 
                 // FR#1 (friction-report 2026-05-19): properties whose XML attribute name differs
@@ -196,7 +138,7 @@ namespace GxMcp.Worker.Helpers
                         node.Attributes.Append(attr);
                     }
                     attr.Value = d.Value;
-                    Logger.Info("[TypedWriter] node[" + controlName + "]." + d.PropertyName + " <- '" + Truncate(d.Value, 80) + "'");
+                    Logger.Info("[TypedWriter] node[" + controlName + "]." + d.PropertyName + " <- '" + SdkReflection.Truncate(d.Value, 80) + "'");
                 }
 
                 // Invalidate the tag's cached typed Properties so the next read reloads from the new XML.
@@ -234,7 +176,7 @@ namespace GxMcp.Worker.Helpers
                         // Fallback: WebFormEditable.SetTagProperty per key.
                         try
                         {
-                            var propsBag = GetReadProperty(tag, "Properties");
+                            var propsBag = WebFormSdkReflection.GetReadProperty(tag, "Properties");
                             foreach (var d in effectiveDeltas)
                             {
                                 if (propsBag == null) break;
@@ -253,11 +195,11 @@ namespace GxMcp.Worker.Helpers
                 }
 
                 // Verify the mutation actually landed in part.Document by re-querying.
-                var verify = FindElementInPartDoc(partDoc, controlName);
+                var verify = WebFormSdkReflection.FindElementInPartDoc(partDoc, controlName);
                 foreach (var d in effectiveDeltas)
                 {
                     string after = verify?.Attributes?[d.PropertyName]?.Value;
-                    Logger.Info("[TypedWriter] verify part.Document <" + node.Name + " id=" + controlName + ">." + d.PropertyName + " = '" + Truncate(after, 80) + "' (wanted '" + Truncate(d.Value, 80) + "', match=" + (after == d.Value) + ")");
+                    Logger.Info("[TypedWriter] verify part.Document <" + node.Name + " id=" + controlName + ">." + d.PropertyName + " = '" + SdkReflection.Truncate(after, 80) + "' (wanted '" + SdkReflection.Truncate(d.Value, 80) + "', match=" + (after == d.Value) + ")");
                 }
             }
 
@@ -275,7 +217,7 @@ namespace GxMcp.Worker.Helpers
             // SetModeModified(Modification.Data, null) is the canonical "data changed" notification.
             try
             {
-                Type modEnum = FindType("Artech.Udm.Framework.Entity+Modification");
+                Type modEnum = WebFormSdkReflection.FindType("Artech.Udm.Framework.Entity+Modification");
                 object dataMod = modEnum != null ? Enum.Parse(modEnum, "Data") : null;
                 if (dataMod != null)
                 {
@@ -293,17 +235,9 @@ namespace GxMcp.Worker.Helpers
             }
 
             // Belt-and-suspenders: also set Entity.Dirty = true via property.
-            try
-            {
-                var dirtyProp = webFormPart.GetType().GetProperty("Dirty",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (dirtyProp != null && dirtyProp.CanWrite && dirtyProp.PropertyType == typeof(bool))
-                {
-                    dirtyProp.SetValue(webFormPart, true, null);
-                    Logger.Info("[TypedWriter] Entity.Dirty = true.");
-                }
-            }
-            catch { }
+            Logger.Info("[TypedWriter] " + (SdkReflection.MarkDirty(webFormPart)
+                ? "Entity.Dirty = true."
+                : "No writable bool Dirty/IsDirty on " + webFormPart.GetType().Name + "."));
 
             // Call EditableToStored to sync typed model from XML through the SDK's canonical converter.
             // For pure attribute changes (no new att:NNNN references), this should not throw.
@@ -340,7 +274,7 @@ namespace GxMcp.Worker.Helpers
             // through "editable -> stored" produces the same result we wrote directly to m_Document.
             try
             {
-                var docNow = GetReadProperty(webFormPart, "Document") as XmlDocument;
+                var docNow = WebFormSdkReflection.GetReadProperty(webFormPart, "Document") as XmlDocument;
                 if (docNow != null)
                 {
                     var ecField = webFormPart.GetType().GetField("m_EditableContent",
@@ -370,7 +304,7 @@ namespace GxMcp.Worker.Helpers
             // cause EditableToStored to run on save and throw on unresolved att: refs).
             try
             {
-                var docNow = GetReadProperty(webFormPart, "Document") as XmlDocument;
+                var docNow = WebFormSdkReflection.GetReadProperty(webFormPart, "Document") as XmlDocument;
                 if (docNow != null)
                 {
                     var clone = (XmlDocument)docNow.Clone();
@@ -419,19 +353,12 @@ namespace GxMcp.Worker.Helpers
             if (webFormPart == null) return;
             try
             {
-                Type helperType = FindType(HelperTypeName);
-                if (helperType == null) return;
-
-                XmlDocument partDoc = null;
-                try
-                {
-                    var docField = webFormPart.GetType().GetField("m_Document",
-                        BindingFlags.NonPublic | BindingFlags.Instance);
-                    partDoc = docField?.GetValue(webFormPart) as XmlDocument;
-                }
-                catch { }
-                if (partDoc == null) partDoc = GetReadProperty(webFormPart, "Document") as XmlDocument;
-                if (partDoc == null) return;
+                // Same shared enumeration as TryApply — one overload preference, one
+                // document resolution, one tag identity order across this file and the
+                // create router.
+                var enumeration = WebFormSdkReflection.IndexLiveTags(webFormPart);
+                if (!enumeration.Succeeded || enumeration.PartDocument == null) return;
+                XmlDocument partDoc = enumeration.PartDocument;
 
                 var scope = ResolveChangedControlNames(baselineXml, updatedXml);
                 if (changedControlNames != null)
@@ -442,42 +369,12 @@ namespace GxMcp.Worker.Helpers
                 }
                 bool legacyHtml = WebFormXmlHelper.IsLegacyHtmlWebForm(partDoc.OuterXml);
 
-                var partKbObj = GetReadProperty(webFormPart, "KBObject") ?? GetReadProperty(webFormPart, "ContainerObject") ?? GetReadProperty(webFormPart, "Parent") ?? GetReadProperty(webFormPart, "Container");
-                MethodInfo enumerate = null;
-                object[] enumArgs = null;
-                if (partKbObj != null)
-                {
-                    enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
-                        .FirstOrDefault(m =>
-                        {
-                            if (m.Name != "EnumerateWebTag") return false;
-                            var ps = m.GetParameters();
-                            return ps.Length == 2 && ps[1].ParameterType == typeof(XmlDocument) && ps[0].ParameterType.IsInstanceOfType(partKbObj);
-                        });
-                    if (enumerate != null) enumArgs = new object[] { partKbObj, partDoc };
-                }
-                if (enumerate == null)
-                {
-                    enumerate = helperType.GetMethods(Compatibility.SdkMemberProbe.Static)
-                        .FirstOrDefault(m =>
-                        {
-                            if (m.Name != "EnumerateWebTag") return false;
-                            var ps = m.GetParameters();
-                            return ps.Length == 1 && ps[0].ParameterType.IsInstanceOfType(webFormPart);
-                        });
-                    enumArgs = new object[] { webFormPart };
-                }
-                if (enumerate == null) return;
-
                 int fixupCount = 0;
                 int preservedCount = 0;
-                IEnumerable tags;
-                try { tags = (IEnumerable)enumerate.Invoke(null, enumArgs); }
-                catch (Exception ex) { Logger.Info("[DescFixup] EnumerateWebTag threw: " + (ex.InnerException ?? ex).Message); return; }
 
-                foreach (var tag in tags)
+                foreach (object tag in enumeration.OrderedTags)
                 {
-                    var node = GetReadProperty(tag, "Node") as XmlNode;
+                    var node = WebFormSdkReflection.GetReadProperty(tag, "Node") as XmlNode;
                     if (node?.Attributes == null) continue;
 
                     string ctrlId = GetControlId(node);
@@ -518,7 +415,7 @@ namespace GxMcp.Worker.Helpers
                         }
 
                         RemoveAttribute(node, d.PropertyName);
-                        var liveNode = FindElementInPartDoc(partDoc, ctrlId);
+                        var liveNode = WebFormSdkReflection.FindElementInPartDoc(partDoc, ctrlId);
                         if (liveNode != null && !object.ReferenceEquals(liveNode, node))
                             RemoveAttribute(liveNode, d.PropertyName);
                         fixupCount++;
@@ -652,7 +549,7 @@ namespace GxMcp.Worker.Helpers
             foreach (var d in deltas) results[d.PropertyName] = false;
 
             object propsObj;
-            try { propsObj = GetReadProperty(tag, "Properties"); }
+            try { propsObj = WebFormSdkReflection.GetReadProperty(tag, "Properties"); }
             catch (Exception ex)
             {
                 Logger.Info("[TypedWriter] descriptor path: GetProperties on " + controlName + " threw: " + (ex.InnerException ?? ex).Message);
@@ -703,7 +600,7 @@ namespace GxMcp.Worker.Helpers
                         else
                             args = new object[] { d.PropertyName, (object)(d.Value ?? string.Empty) };
                         setMethod.Invoke(propsObj, args);
-                        Logger.Info("[TypedWriter] descriptor " + controlName + "." + d.PropertyName + " <- '" + Truncate(d.Value, 80) + "' via " + setMethod.Name + "(" + ps[1].ParameterType.Name + ")");
+                        Logger.Info("[TypedWriter] descriptor " + controlName + "." + d.PropertyName + " <- '" + SdkReflection.Truncate(d.Value, 80) + "' via " + setMethod.Name + "(" + ps[1].ParameterType.Name + ")");
                         applied = true;
                         break;
                     }
@@ -1040,27 +937,10 @@ namespace GxMcp.Worker.Helpers
             // Only the live m_Document node is persistence evidence. A canonical
             // attribute that exists solely on an internal SDK tag is not enough
             // to authorize deleting the source from the part that will be saved.
-            var liveNode = FindElementInPartDoc(partDoc, controlName);
+            var liveNode = WebFormSdkReflection.FindElementInPartDoc(partDoc, controlName);
             return liveNode != null && FindAttribute(liveNode, canonical) != null;
         }
 
-        private static XmlElement FindElementInPartDoc(XmlDocument doc, string controlName)
-        {
-            if (doc?.DocumentElement == null || string.IsNullOrEmpty(controlName)) return null;
-            var names = controlName.Split('|');
-            foreach (XmlNode candidate in doc.SelectNodes("//*"))
-            {
-                var element = candidate as XmlElement;
-                if (element == null) continue;
-                foreach (var name in new[] { "id", "ControlName", "controlName", "InternalName", "name" })
-                {
-                    string value = FindAttribute(element, name)?.Value;
-                    if (names.Any(candidateName => string.Equals(value, candidateName, StringComparison.OrdinalIgnoreCase)))
-                        return element;
-                }
-            }
-            return null;
-        }
         private static void InvalidateTagPropertyCache(object tag, string controlName)
         {
             var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -1098,29 +978,5 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
-        private static Type FindType(string fullName)
-        {
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type t = null;
-                try { t = asm.GetType(fullName, false); } catch { }
-                if (t != null) return t;
-            }
-            return null;
-        }
-
-        private static object GetReadProperty(object instance, string name)
-        {
-            if (instance == null) return null;
-            try
-            {
-                var pi = instance.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (pi != null && pi.CanRead && pi.GetIndexParameters().Length == 0) return pi.GetValue(instance);
-            }
-            catch { }
-            return null;
-        }
-
-        private static string Truncate(string s, int n) => string.IsNullOrEmpty(s) ? s : (s.Length > n ? s.Substring(0, n) + "…" : s);
     }
 }

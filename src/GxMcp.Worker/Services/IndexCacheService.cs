@@ -2622,12 +2622,13 @@ namespace GxMcp.Worker.Services
             _hierarchyCache.TryRemove(obj.Guid, out _);
             var hierarchy = ResolveHierarchy(obj);
 
+            KbEntityIdentity.ReadAll(obj, out string entityKey, out string entityTypeGuid, out int? entityId);
             var entry = new SearchIndex.IndexEntry
             {
                 Guid = obj.Guid.ToString(),
-                EntityKey = SafeEntityKey(obj),
-                EntityTypeGuid = SafeEntityTypeGuid(obj),
-                EntityId = SafeEntityId(obj),
+                EntityKey = entityKey,
+                EntityTypeGuid = entityTypeGuid,
+                EntityId = entityId,
                 Name = obj.Name,
                 // Low-cardinality shared vocabulary (~dozens of types/modules, not
                 // per-object uniques): intern at creation so 38k entries share one
@@ -2829,20 +2830,6 @@ namespace GxMcp.Worker.Services
         internal (string ParentName, string ParentPath, string Path, string ModuleName) ResolveHierarchyForIndex(global::Artech.Architecture.Common.Objects.KBObject obj)
             => ResolveHierarchy(obj);
 
-        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.ToString(); } catch { return null; }
-        }
-
-        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.Type.ToString(); } catch { return null; }
-        }
-
-        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
-        {
-            try { return obj?.Key?.Id; } catch { return null; }
-        }
 
         // ── Copy-on-write edge lists ────────────────────────────────────────────
         // FlushToDisk serializes LIVE entries on a threadpool thread with no lock.
