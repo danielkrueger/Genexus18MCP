@@ -493,13 +493,13 @@ namespace GxMcp.Gateway.Tests
                 }, timeoutMs: 120_000);
                 var diagnosis = LiveGatewayHarness.ParseToolPayload(diagnose);
                 Assert.NotNull(diagnosis);
-                var findings = (JArray)diagnosis!["findings"];
+                var findings = diagnosis!["findings"] as JArray;
                 Assert.NotNull(findings);
 
                 bool diagnoseBlocked = findings!.Any(f => f["severity"]?.ToString() == "critical");
-                Assert.True(diagnoseBlocked == (diagnosis["status"]?.ToString() == "blocked"),
+                Assert.True(diagnoseBlocked == (diagnosis!["status"]?.ToString() == "blocked"),
                     "diagnose must answer 'blocked' exactly when it reported a critical finding");
-                Assert.True(diagnoseBlocked != findings.Any(f => f["reason"]?.ToString() == "ok"),
+                Assert.True(diagnoseBlocked != findings!.Any(f => f["reason"]?.ToString() == "ok"),
                     "diagnose must not report 'All pre-apply checks passed' alongside a critical finding");
 
                 var apply = await _h.CallToolAsync("genexus_apply_pattern", new JObject
@@ -538,13 +538,13 @@ namespace GxMcp.Gateway.Tests
 
                 // A failed attach must name the stage. This is the specific
                 // information the original envelope destroyed.
-                string code = applied!["error"]?["code"]?.ToString() ?? applied["code"]?.ToString();
+                string? code = applied!["error"]?["code"]?.ToString() ?? applied["code"]?.ToString();
                 Assert.False(string.IsNullOrEmpty(code));
                 Assert.True(code != "PatternNoOp",
                     "a failed WebPanel attach must report a stage-specific code, not the generic PatternNoOp. "
                     + "payload=" + applied!.ToString(Newtonsoft.Json.Formatting.None));
                 var result = applied["error"]?["result"] as JObject ?? applied;
-                string stage = result["failureStage"]?.ToString();
+                string? stage = result["failureStage"]?.ToString();
                 Assert.False(string.IsNullOrEmpty(stage),
                     "a failed WebPanel attach must report failureStage. code=" + code
                     + " payload=" + applied!.ToString(Newtonsoft.Json.Formatting.None));
@@ -552,9 +552,9 @@ namespace GxMcp.Gateway.Tests
                 // The diagnosis has to have warned about it: a preflight block
                 // predicts a preflight-stage failure, and a runtime failure is
                 // reported by the apply alone (it cannot be known in advance).
-                if (diagnosis["status"]?.ToString() == "blocked")
+                if (diagnosis!["status"]?.ToString() == "blocked")
                 {
-                    var blockedStages = findings
+                    var blockedStages = findings!
                         .Where(f => f["severity"]?.ToString() == "critical")
                         .Select(f => f["stage"]?.ToString())
                         .Where(s => !string.IsNullOrEmpty(s))
