@@ -372,6 +372,145 @@ namespace GxMcp.Worker.Tests
             Assert.Null(obj["routeCapabilities"]);
         }
 
+        // ── Issue #330: diagnose must predict the apply ─────────────────────────
+        // Reported symptom: mode=diagnose answered "All pre-apply checks passed.
+        // The pattern should apply cleanly." for a WebPanel that then failed with
+        // PatternNoOp. Diagnose now runs the same WwpAttachPreflight the attach
+        // runs, so an unservable target is blocked and the "ok" finding is
+        // suppressed. The service here has no ObjectService, so the attach route
+        // cannot be serviced in any environment — the invariant holds regardless of
+        // whether the WorkWithPlus package is installed on the test machine.
+        [Fact]
+        public void Diagnose_WebPanel_WithoutServableAttachRoute_IsBlockedAndNeverReportsOk()
+        {
+            var svc = MakeK2BService(new FakeEngine());
+            var registry = K2BRegistry();
+            Assert.True(registry.TryResolve("WorkWithPlus", out var wwp));
+
+            var obj = JObject.Parse(svc.DiagnoseForObject("MyPanel", null, "WebPanel", "WorkWithPlus", wwp, null, null));
+
+            var findings = (JArray)obj["findings"]!;
+            Assert.Contains(findings, f => f["severity"]?.ToString() == "critical");
+            Assert.DoesNotContain(findings, f => f["reason"]?.ToString() == "ok");
+            Assert.Equal("blocked", obj["status"]?.ToString());
+        }
+
+        [Fact]
+        public void Diagnose_WebPanel_AttachRouteBlocked_RenamesTheStageAndTheRemediation()
+        {
+            var svc = MakeK2BService(new FakeEngine());
+            var registry = K2BRegistry();
+            Assert.True(registry.TryResolve("WorkWithPlus", out var wwp));
+
+            var obj = JObject.Parse(svc.DiagnoseForObject("MyPanel", null, "WebPanel", "WorkWithPlus", wwp, null, null));
+            var findings = (JArray)obj["findings"]!;
+
+            // The preflight must never throw. It did once, while assembling the
+            // "package not installed" remediation, and the fail-closed catch turned
+            // that into a generic attachPreflightFailed instead of the real answer.
+            Assert.DoesNotContain(findings, f => f["reason"]?.ToString() == "attachPreflightFailed");
+
+            // The attach findings are the ones this issue is about. One of them must
+            // always fire here: with no ObjectService there is no KB to discover a
+            // template in, so the direct-attach route is unservable in any environment.
+            var attachFinding = findings
+                .FirstOrDefault(f => f["reason"]?.ToString()?.StartsWith("wwp") == true);
+            Assert.NotNull(attachFinding);
+            Assert.Equal("critical", attachFinding!["severity"]?.ToString());
+            // The whole point of the finding: it must name a machine-readable stage
+            // and carry a remediation, not just say "cannot apply".
+            Assert.False(string.IsNullOrEmpty(attachFinding["stage"]?.ToString()));
+            Assert.False(string.IsNullOrEmpty(attachFinding["detail"]?.ToString()));
+            Assert.False(string.IsNullOrEmpty(attachFinding["remediation"]?.ToString()));
+        }
+
+        // ── Issue #330: a failed apply must name the stage that failed ─────────
+        // The old wording collapsed every failure mode into "the CreatePatternInstance
+        // WithTemplate fallback also failed: <last line of the pipeline>", which is why
+        // the reporter could not tell a template problem from a package problem.
+        [Fact]
+        public void AttachRecommendation_PreflightBlock_PointsAtThePackageNotAtTemplates()
+        {
+            var attach = new PatternApplyService.WwpAttachResult
+            {
+                FailureStage = WwpAttachPreflight.StageCreateOverload,
+                ErrorCode = WwpAttachPreflight.BlockedCode,
+                ErrorMessage = "No usable CreatePatternInstanceWithTemplate overload"
+            };
+
+            var recommendation = PatternApplyService.BuildAttachRecommendation(attach, "WebPanel", "MyPanel");
+
+            Assert.Contains("Update the WorkWithPlus pattern package", recommendation);
+            // Retrying with a different template cannot fix an absent overload.
+            Assert.DoesNotContain("settings.template", recommendation);
+        }
+
+        [Fact]
+        public void AttachRecommendation_PreflightBlock_PointsAtDiagnoseNotAtRetryWithTemplate()
+        {
+            var steps = PatternApplyService.BuildAttachNextSteps(
+                WwpAttachPreflight.StageCreateOverload, "MyPanel", "WorkWithPlus");
+
+            Assert.Contains(steps, s => s["tool"]?.ToString() == "genexus_apply_pattern"
+                && s["args"]?["mode"]?.ToString() == "diagnose");
+        }
+
+        [Fact]
+        public void AttachRecommendation_HostConflict_PointsAtDeleteNotAtRetry()
+        {
+            // Adopting a host this call did not create is what turned a failed attach
+            // into a WebPanel that renders but whose events never fire.
+            var attach = new PatternApplyService.WwpAttachResult
+            {
+                FailureStage = "hostConflict",
+                ErrorCode = "PatternHostAlreadyExists",
+                ErrorMessage = "host exists"
+            };
+
+            var recommendation = PatternApplyService.BuildAttachRecommendation(attach, "WebPanel", "MyPanel");
+            var steps = PatternApplyService.BuildAttachNextSteps("hostConflict", "MyPanel", "WorkWithPlus");
+
+            Assert.Contains("genexus_delete_object name=WorkWithPlusMyPanel", recommendation);
+            Assert.Contains(steps, s => s["tool"]?.ToString() == "genexus_delete_object");
+            Assert.Contains(steps, s => s["tool"]?.ToString() == "genexus_apply_pattern"
+                && s["args"]?["reapply"]?.ToObject<bool>() == true);
+        }
+
+        [Fact]
+        public void AttachRecommendation_ValidateFailed_ReportsWhetherTheOrphanWasRemoved()
+        {
+            var cleaned = new PatternApplyService.WwpAttachResult
+            {
+                FailureStage = "validateAndSave",
+                ErrorCode = "PatternAttachValidateFailed",
+                RemovedOrphanHost = "WorkWithPlusMyPanel"
+            };
+            var stuck = new PatternApplyService.WwpAttachResult
+            {
+                FailureStage = "validateAndSave",
+                ErrorCode = "PatternAttachValidateFailed"
+            };
+
+            Assert.Contains("was removed, so a retry starts clean",
+                PatternApplyService.BuildAttachRecommendation(cleaned, "WebPanel", "MyPanel"));
+            Assert.Contains("could not be removed automatically",
+                PatternApplyService.BuildAttachRecommendation(stuck, "WebPanel", "MyPanel"));
+        }
+
+        [Fact]
+        public void AttachResult_OmitsFieldsThatWouldClaimSomethingThatDidNotHappen()
+        {
+            var attach = new PatternApplyService.WwpAttachResult { FailureStage = "projection" };
+
+            var json = attach.ToJson();
+
+            Assert.Equal("projection", json["failureStage"]?.ToString());
+            Assert.Null(json["removedOrphanHost"]);
+            Assert.Null(json["orphanHostWarning"]);
+            Assert.Null(json["lastResortDetail"]);
+            Assert.Null(json["attachPreflight"]);
+        }
+
         [Fact]
         public void DecideReapply_RequestedMatchesExisting_Proceeds()
         {

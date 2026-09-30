@@ -452,6 +452,126 @@ namespace GxMcp.Gateway.Tests
                 "validation must reflect a real build (>2s)");
         }
 
+        // Issue #330 — mode=diagnose reported "All pre-apply checks passed. The
+        // pattern should apply cleanly." for a WebPanel that then returned
+        // PatternNoOp. This asserts the invariant that made the bug invisible,
+        // against a real KB and a real KBObject: whatever diagnose concludes, the
+        // apply must agree with it, and a failed attach must name the stage.
+        //
+        // Environment-independent by construction. On a machine with the
+        // WorkWithPlus package the attach succeeds and there is nothing to
+        // reconcile; without it, or against a KB with no WorkWithPlus for Web
+        // Template, the preflight blocks and the apply must say so. What must
+        // never happen is a green diagnosis followed by a silent no-op.
+        [LiveKbFact]
+        public async Task ApplyPattern_WebPanel_DiagnoseAndApplyAgree()
+        {
+            string ticksHex = DateTime.UtcNow.Ticks.ToString("X");
+            string stamp = ticksHex.Substring(ticksHex.Length - 6).ToLowerInvariant();
+            string wp = "TestDgnWp" + stamp;
+
+            var create = await _h.CallToolAsync("genexus_create_object", new JObject
+            {
+                ["type"] = "WebPanel",
+                ["name"] = wp
+            }, timeoutMs: 60_000);
+            if (LiveGatewayHarness.IsToolError(create))
+            {
+                var createPayload = LiveGatewayHarness.ParseToolPayload(create);
+                throw new XunitException(
+                    "WebPanel create must succeed. Envelope: "
+                    + (createPayload?.ToString(Newtonsoft.Json.Formatting.None) ?? "<null>"));
+            }
+
+            try
+            {
+                var diagnose = await _h.CallToolAsync("genexus_apply_pattern", new JObject
+                {
+                    ["name"] = wp,
+                    ["pattern"] = "WorkWithPlus",
+                    ["mode"] = "diagnose"
+                }, timeoutMs: 120_000);
+                var diagnosis = LiveGatewayHarness.ParseToolPayload(diagnose);
+                Assert.NotNull(diagnosis);
+                var findings = (JArray)diagnosis!["findings"];
+                Assert.NotNull(findings);
+
+                bool diagnoseBlocked = findings!.Any(f => f["severity"]?.ToString() == "critical");
+                Assert.True(diagnoseBlocked == (diagnosis["status"]?.ToString() == "blocked"),
+                    "diagnose must answer 'blocked' exactly when it reported a critical finding");
+                Assert.True(diagnoseBlocked != findings.Any(f => f["reason"]?.ToString() == "ok"),
+                    "diagnose must not report 'All pre-apply checks passed' alongside a critical finding");
+
+                var apply = await _h.CallToolAsync("genexus_apply_pattern", new JObject
+                {
+                    ["name"] = wp,
+                    ["pattern"] = "WorkWithPlus"
+                }, timeoutMs: 240_000);
+                var applied = LiveGatewayHarness.ParseToolPayload(apply);
+                Assert.NotNull(applied);
+                string applyStatus = applied!["status"]?.ToString() ?? "";
+
+                if (applyStatus == "pattern_unavailable")
+                {
+                    // The pattern engine cannot see WorkWithPlus on this install, so
+                    // the attach pipeline is never reached. That is a non-fatal
+                    // envelope, not a success: it must not have touched the target,
+                    // and diagnose must have flagged the same thing.
+                    Assert.True(diagnoseBlocked,
+                        "the engine reported the pattern as unavailable but diagnose returned "
+                        + diagnosis["status"]?.ToString());
+                    Assert.Null(applied["patternHost"]);
+                    Assert.Null(applied["generatedObjects"]);
+                    return;
+                }
+
+                bool applySucceeded = !LiveGatewayHarness.IsToolError(apply);
+                if (applySucceeded)
+                {
+                    // A green diagnosis must not be followed by a no-op, and a real
+                    // attach must leave a host behind.
+                    Assert.False(diagnoseBlocked,
+                        $"diagnose reported blocked but the apply succeeded. findings={findings.ToString(Newtonsoft.Json.Formatting.None)}");
+                    Assert.NotNull(applied!["patternHost"]);
+                    return;
+                }
+
+                // A failed attach must name the stage. This is the specific
+                // information the original envelope destroyed.
+                string code = applied!["error"]?["code"]?.ToString() ?? applied["code"]?.ToString();
+                Assert.False(string.IsNullOrEmpty(code));
+                Assert.True(code != "PatternNoOp",
+                    "a failed WebPanel attach must report a stage-specific code, not the generic PatternNoOp. "
+                    + "payload=" + applied!.ToString(Newtonsoft.Json.Formatting.None));
+                var result = applied["error"]?["result"] as JObject ?? applied;
+                string stage = result["failureStage"]?.ToString();
+                Assert.False(string.IsNullOrEmpty(stage),
+                    "a failed WebPanel attach must report failureStage. code=" + code
+                    + " payload=" + applied!.ToString(Newtonsoft.Json.Formatting.None));
+
+                // The diagnosis has to have warned about it: a preflight block
+                // predicts a preflight-stage failure, and a runtime failure is
+                // reported by the apply alone (it cannot be known in advance).
+                if (diagnosis["status"]?.ToString() == "blocked")
+                {
+                    var blockedStages = findings
+                        .Where(f => f["severity"]?.ToString() == "critical")
+                        .Select(f => f["stage"]?.ToString())
+                        .Where(s => !string.IsNullOrEmpty(s))
+                        .ToList();
+                    Assert.Contains(stage, blockedStages);
+                }
+            }
+            finally
+            {
+                await _h.CallToolAsync("genexus_delete_object", new JObject
+                {
+                    ["name"] = wp,
+                    ["confirm"] = true
+                }, timeoutMs: 60_000);
+            }
+        }
+
         [LiveKbFact]
         public async Task Edit_AutoDeclareVariables_CreatesVariablesOnSourceWrite()
         {

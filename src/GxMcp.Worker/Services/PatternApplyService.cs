@@ -60,6 +60,49 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// Outcome of the WorkWithPlus direct-attach attempt. A result object rather
+        /// than a pile of out parameters because the caller has to act on three
+        /// distinct pieces of state that a bool cannot carry: which pipeline stage
+        /// failed, what the preflight already knew, and whether the attempt left an
+        /// orphan <c>WorkWithPlus&lt;Parent&gt;</c> host behind (issue #330).
+        /// </summary>
+        internal sealed class WwpAttachResult
+        {
+            internal bool Attached;
+            internal string HostName;
+            internal string Template;
+            internal string ErrorMessage;
+            /// <summary>Envelope code to surface; null falls back to <c>PatternNoOp</c>.</summary>
+            internal string ErrorCode;
+            /// <summary>Pipeline stage that failed, e.g. <c>createInstance</c>.</summary>
+            internal string FailureStage;
+            internal JObject EnvironmentContext;
+            /// <summary>Preflight findings, so the response explains itself.</summary>
+            internal JArray PreflightFindings;
+            /// <summary>Name of an orphan host removed by the fail-closed cleanup.</summary>
+            internal string RemovedOrphanHost;
+            /// <summary>Set when an orphan host survived cleanup; the KB needs attention.</summary>
+            internal string OrphanHostWarning;
+            /// <summary>Route that succeeded, when the official one did not.</summary>
+            internal string DirectAttachRoute;
+            /// <summary>Why the last-resort MSBuild task did not carry the attach.</summary>
+            internal string LastResortDetail;
+
+            internal JObject ToJson()
+            {
+                var json = new JObject();
+                // Only emit what actually happened — a null field in `extra` reads as a
+                // claim the attach did not make.
+                if (!string.IsNullOrEmpty(FailureStage)) json["failureStage"] = FailureStage;
+                if (PreflightFindings != null && PreflightFindings.Count > 0) json["attachPreflight"] = PreflightFindings;
+                if (!string.IsNullOrEmpty(LastResortDetail)) json["lastResortDetail"] = LastResortDetail;
+                if (!string.IsNullOrEmpty(RemovedOrphanHost)) json["removedOrphanHost"] = RemovedOrphanHost;
+                if (!string.IsNullOrEmpty(OrphanHostWarning)) json["orphanHostWarning"] = OrphanHostWarning;
+                return json;
+            }
+        }
+
         private readonly ObjectService _objectService;
         private readonly IPatternEngineAdapter _engine;
         // Test seam: when set, used instead of _objectService.FindObject to resolve
@@ -1062,36 +1105,30 @@ namespace GxMcp.Worker.Services
                 if (!targetHasPatternInstance)
                 {
                     string sett_template = settings != null ? settings["template"]?.ToString() : null;
-                    bool packageAttached = false;
-                    string packageAttachError = null;
-                    string packageAttachCode = null;
-                    JObject packageEnvironmentContext = null;
-                    string createdHostName = null;
-                    string usedTemplate = null;
+                    WwpAttachResult attach;
                     try
                     {
-                        packageAttached = TryPackageInterfaceAttach(
-                            obj,
-                            sett_template,
-                            out createdHostName,
-                            out usedTemplate,
-                            out packageAttachError,
-                            out packageAttachCode,
-                            out packageEnvironmentContext);
+                        attach = TryPackageInterfaceAttach(obj, sett_template);
                     }
                     catch (Exception ex)
                     {
-                        packageAttachError = ex.GetType().Name + ": " + ex.Message;
+                        attach = new WwpAttachResult
+                        {
+                            FailureStage = "attach",
+                            ErrorMessage = ex.GetType().Name + ": " + ex.Message
+                        };
                     }
+                    string createdHostName = attach.HostName;
+                    string usedTemplate = attach.Template;
 
-                    if (packageAttached)
+                    if (attach.Attached)
                     {
                         response["_opStatus"] = "Success";
                         patternResult["wasFirstApply"] = true;
                         patternResult["directAttach"] = true;
-                        patternResult["directAttachRoute"] = "PatternInstancePackageInterface";
+                        patternResult["directAttachRoute"] = attach.DirectAttachRoute ?? "PatternInstancePackageInterface";
                         patternResult["template"] = usedTemplate;
-                        patternResult["directAttachNote"] = "Attached via the official WWP package API (CreatePatternInstanceWithTemplate + SetPatternApplyOnSave + ValidateAndSave). Host '" + createdHostName + "' is bound through the IDE's canonical lifecycle, so PatternInstance edits trigger regeneration on save.";
+                        patternResult["directAttachNote"] = "Attached via the official WWP package API (CreatePatternInstanceWithTemplate + SetPatternApplyOnSave + ValidateAndSave + IPatternBuildProcess.UpdateParentObject). Host '" + createdHostName + "' is bound through the IDE's canonical lifecycle, so PatternInstance edits trigger regeneration on save.";
                         if (!string.IsNullOrEmpty(createdHostName))
                         {
                             patternResult["patternHost"] = createdHostName;
@@ -1111,15 +1148,22 @@ namespace GxMcp.Worker.Services
                     else
                     {
                         isNoOp = true;
-                        if (packageEnvironmentContext != null)
-                            patternResult["wwpEnvironment"] = packageEnvironmentContext;
-                        patternResult["noOpReason"] = "Engine ApplyPattern void overload no-op'd on this target, and the WWP package's CreatePatternInstanceWithTemplate fallback also failed: " + (packageAttachError ?? "unknown");
-                        patternResult["failureCode"] = packageAttachCode ?? "PatternNoOp";
-                        patternResult["recommendation"] = string.Equals(packageAttachCode, "PatternEnvironmentAccessDenied", StringComparison.Ordinal)
-                            ? "Grant Modify permission on the effective Environment.config to the non-elevated MCP identity, then run mode=diagnose again. Do not redirect UserAppDataPath away from the value configured for the GeneXus IDE."
-                            : IsWwpDirectAttachParentType(obj.TypeDescriptor?.Name)
-                            ? "Either: (1) pass an explicit `settings.template` matching a `WorkWithPlus for Web Template` object in this KB (we tried auto-discovery first). (2) Apply WorkWithPlus to a Transaction — the engine generates 'WW<Trn>' as a wired WWP screen."
-                            : "Apply WorkWithPlus to a Transaction to generate the WWP family.";
+                        if (attach.EnvironmentContext != null)
+                            patternResult["wwpEnvironment"] = attach.EnvironmentContext;
+                        // Name the stage that actually failed. The previous wording
+                        // ("the fallback also failed: <last message>") made every
+                        // failure mode read identically, which is why issue #330 could
+                        // not be triaged from the tool's own output.
+                        patternResult["failureStage"] = attach.FailureStage;
+                        patternResult["noOpReason"] = "Engine ApplyPattern void overload no-op'd on a " + parentTypeName +
+                            " target, and the WorkWithPlus direct-attach route failed at stage '" +
+                            (attach.FailureStage ?? "unknown") + "': " + (attach.ErrorMessage ?? "unknown");
+                        patternResult["failureCode"] = attach.ErrorCode ?? "PatternNoOp";
+                        foreach (var kv in attach.ToJson())
+                        {
+                            if (patternResult[kv.Key] == null) patternResult[kv.Key] = kv.Value;
+                        }
+                        patternResult["recommendation"] = BuildAttachRecommendation(attach, parentTypeName, targetName);
 
                         if (string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SDK_PROBE"), "1", StringComparison.Ordinal))
                         {
@@ -1162,17 +1206,14 @@ namespace GxMcp.Worker.Services
             if (isNoOp)
             {
                 // NoOp: engine completed but nothing was generated — emit as error so the
-                // agent gets actionable nextSteps rather than a misleading ok.
+                // agent gets actionable nextSteps rather than a misleading ok. The next
+                // step follows the stage that failed: retrying the same call is only
+                // correct for the stages where the caller supplied something wrong.
                 canonicalJson = McpResponse.Err(
                     code: canonicalCode,
                     message: patternResult["noOpReason"]?.ToString() ?? "Pattern apply produced no generated objects.",
                     hint: patternResult["recommendation"]?.ToString() ?? "Apply WorkWithPlus to a Transaction or supply settings.template for a WebPanel.",
-                    nextSteps: new JArray(McpResponse.NextStep(
-                        tool: "genexus_apply_pattern",
-                        args: new JObject { ["name"] = targetName, ["pattern"] = patternKey, ["settings"] = new JObject { ["template"] = "(available template name)" } },
-                        why: string.Equals(canonicalCode, "PatternEnvironmentAccessDenied", StringComparison.Ordinal)
-                            ? "After correcting the Environment.config ACL, rerun mode=diagnose before applying."
-                            : "Retry with an explicit template name from patternResult.availableTemplates.")),
+                    nextSteps: BuildAttachNextSteps(patternResult["failureStage"]?.ToString(), targetName, patternKey),
                     target: targetName,
                     extra: patternResult);
             }
@@ -1798,83 +1839,113 @@ namespace GxMcp.Worker.Services
                 })) + ")";
         }
 
-        // OFFICIAL APPLY PATH for WebPanel/WebComponent/Procedure/SDPanel targets via the WWP
-        // package's `PatternInstancePackageInterface` helper. This is the IDE's
-        // canonical Right-click → Apply Pattern → WWP route. Three static methods:
-        //   1. CreatePatternInstanceWithTemplate(KBModel, KBObject, String, out PatternInstance) -> Boolean
-        //   2. SetPatternApplyOnSave(KBObject) -> Boolean
-        //   3. ValidateAndSave(KBObject) -> Boolean
+        // DIRECT-ATTACH APPLY PATH for WebPanel/WebComponent/SDPanel targets. Two routes,
+        // in this order:
         //
-        // Resolves a Template (caller hint via settings.template, else auto-discovers
-        // a registered `WorkWithPlus for Web Template` in this KB). Falls through to
-        // NoOp on any failure with the SDK error message attached.
-        internal bool TryPackageInterfaceAttach(
-            KBObject parent,
-            string preferredTemplate,
-            out string hostName,
-            out string usedTemplate,
-            out string errorMessage,
-            out string errorCode,
-            out JObject environmentContext)
+        //   1. OFFICIAL (TryOfficialAttach) — the IDE's canonical Right-click → Apply
+        //      Pattern route: PatternInstancePackageInterface.CreatePatternInstanceWithTemplate
+        //      + SetPatternApplyOnSave + ValidateAndSave, then the projection step
+        //      (IPatternBuildProcess.UpdateParentObject) that writes the pattern onto the
+        //      target's WebForm. The engine's own ApplyPattern is a silent no-op on these
+        //      targets, so this is the only route that can work.
+        //   2. LAST RESORT (WWP_ApplyTemplate MSBuild task) — kept only for a future SDK
+        //      that relaxes its headless ctor requirement. See the method body.
+        //
+        // The template is the caller's hint via settings.template, else auto-discovered
+        // among the registered `WorkWithPlus for Web Template` objects in this KB. Fails
+        // closed on the WwpAttachPreflight and names the exact stage that failed, so the
+        // caller can answer "why" instead of relaying the last line of a multi-step
+        // pipeline (#330).
+        internal WwpAttachResult TryPackageInterfaceAttach(KBObject parent, string preferredTemplate)
         {
-            hostName = null;
-            usedTemplate = null;
-            errorMessage = null;
-            errorCode = null;
-            environmentContext = null;
-            if (parent == null) { errorMessage = "parent KBObject is null"; return false; }
-            if (_objectService == null) { errorMessage = "ObjectService unavailable"; return false; }
+            var result = TryOfficialAttach(parent, preferredTemplate);
+            if (result.Attached) return result;
+
+            // Last resort: the WWP_ApplyTemplate MSBuild task. This route is documented
+            // as a dead end headlessly (docs/sdk-probe/wwp-projection-discovery.md, dead
+            // end #5 — the task ctor needs an MSBuild engine host) and is kept only in
+            // case a future SDK relaxes that. It used to run FIRST, ahead of the verified
+            // route, and could leave a WorkWithPlus<X> host that the official create then
+            // collided with — which is how a WebPanel apply ended in a false
+            // "ValidateAndSave returned false" (issue #330). After the official route it
+            // can no longer poison anything: the orphan host it may create is removed on
+            // failure by the same fail-closed cleanup.
+            if (string.Equals(parent?.TypeDescriptor?.Name, "WebPanel", StringComparison.Ordinal)
+                && !string.IsNullOrEmpty(result.Template)
+                && !string.Equals(result.FailureStage, "hostConflict", StringComparison.Ordinal))
+            {
+                var surface = WwpPackageSurface.Resolve();
+                string taskHost = null;
+                string taskError = null;
+                if (surface.Assembly != null
+                    && TryRunWwpApplyTemplateTask(surface.Assembly, parent, result.Template, out taskHost, out taskError))
+                {
+                    var taskHostObj = _objectService?.FindObject(taskHost);
+                    string projectionFailure = null;
+                    if (taskHostObj != null
+                        && TryInvokeBuildProcessUpdateParent(parent, taskHostObj, out projectionFailure))
+                    {
+                        Logger.Info("WWP_ApplyTemplate last-resort attach succeeded: host='" + taskHost + "' parent='" + parent.Name + "'");
+                        result.Attached = true;
+                        result.FailureStage = null;
+                        result.ErrorCode = null;
+                        result.ErrorMessage = null;
+                        result.PreflightFindings = result.PreflightFindings ?? new JArray();
+                        result.DirectAttachRoute = "WWP_ApplyTemplate";
+                        return result;
+                    }
+                    taskError = "the task reported success but the projection onto '" + parent.Name + "' did not complete"
+                        + (string.IsNullOrEmpty(projectionFailure) ? "." : ": " + projectionFailure);
+                }
+                Logger.Info("WWP_ApplyTemplate last-resort failed: " + (taskError ?? "unknown"));
+                result.FailureStage = result.FailureStage ?? "applyTemplateTask";
+                if (taskError != null) result.LastResortDetail = taskError;
+                // The task creates its host by convention before knowing whether the
+                // projection will run, so clean up whatever it left behind.
+                RemoveOrphanHost(parent, result);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// The official IDE route — <c>PatternInstancePackageInterface</c> plus the
+        /// <c>IPatternBuildProcess</c> projection. Every failure path here removes the
+        /// host it created, so a caller can retry without inheriting an orphan.
+        /// </summary>
+        private WwpAttachResult TryOfficialAttach(KBObject parent, string preferredTemplate)
+        {
+            var result = new WwpAttachResult();
+            if (parent == null) { result.ErrorMessage = "parent KBObject is null"; return result; }
+            if (_objectService == null) { result.ErrorMessage = "ObjectService unavailable"; return result; }
+
+            // Per-stage timing for the same reason the caller times its phases: an
+            // attach that stalls for minutes looks identical to one that failed fast
+            // unless the log says which stage consumed it.
+            var stageTimer = System.Diagnostics.Stopwatch.StartNew();
+            void Stage(string name)
+            {
+                Logger.Info("[APPLY-PATTERN-ATTACH] parent='" + parent.Name + "' stage=" + name + " elapsed=" + stageTimer.ElapsedMilliseconds + "ms");
+                stageTimer.Restart();
+            }
 
             try
             {
-                var wwpAsm = AppDomain.CurrentDomain.GetAssemblies()
-                    .FirstOrDefault(a => string.Equals(a.GetName().Name, "DVelop.Patterns.WorkWithPlus", StringComparison.OrdinalIgnoreCase));
-                if (wwpAsm == null)
-                {
-                    try
-                    {
-                        var gxPath = Environment.GetEnvironmentVariable("GX_PATH") ?? @"C:\Program Files (x86)\GeneXus\GeneXus18";
-                        var wwpDllPath = Path.Combine(gxPath, "Packages", "Patterns", "WorkWithPlus", "DVelop.Patterns.WorkWithPlus.dll");
-                        if (File.Exists(wwpDllPath)) wwpAsm = Assembly.LoadFrom(wwpDllPath);
-                    }
-                    catch { }
-                }
-                if (wwpAsm == null) { errorMessage = "DVelop.Patterns.WorkWithPlus not loaded"; return false; }
-
-                // FIRST CHOICE: WWP_ApplyTemplate MSBuild task. This is the IDE's actual
-                // "Apply Template" route — has WebPanelName / TemplateName / KB inputs
-                // exactly fit for our case. Tried before the PackageInterface fallback.
-                if (parent.TypeDescriptor?.Name == "WebPanel")
-                {
-                    usedTemplate = ResolveAvailableWwpTemplate(preferredTemplate);
-                    if (string.IsNullOrEmpty(usedTemplate))
-                    {
-                        errorMessage = "No `WorkWithPlus for Web Template` found in KB.";
-                        return false;
-                    }
-
-                    var taskResult = TryRunWwpApplyTemplateTask(wwpAsm, parent, usedTemplate, out hostName, out var taskErr);
-                    if (taskResult) return true;
-                    Logger.Info("WWP_ApplyTemplate task failed: " + taskErr + " — falling back to PackageInterface");
-                    // continue to PackageInterface fallback below
-                }
-
-                var ifaceType = wwpAsm.GetType("DVelop.Patterns.WorkWithPlus.Helpers.PatternInstancePackageInterface", false);
-                if (ifaceType == null) { errorMessage = "PatternInstancePackageInterface type not found"; return false; }
-
                 var kb = _objectService.GetKbService()?.GetKB();
-                if (kb == null) { errorMessage = "No KB open"; return false; }
+                if (kb == null) { result.ErrorMessage = "No KB open"; return result; }
                 object model = kb.DesignModel;
+                string parentType = parent.TypeDescriptor?.Name ?? "";
 
                 var environment = InspectWwpEnvironment();
-                environmentContext = environment.ToJson();
+                result.EnvironmentContext = environment.ToJson();
                 if (environment.EnvironmentConfigWritable == false)
                 {
-                    errorCode = "PatternEnvironmentAccessDenied";
+                    result.FailureStage = "environment";
+                    result.ErrorCode = "PatternEnvironmentAccessDenied";
                     string identity;
                     try { identity = WindowsIdentity.GetCurrent()?.Name ?? Environment.UserName; }
                     catch { identity = Environment.UserName; }
-                    errorMessage = environment.EnvironmentConfigExists
+                    result.ErrorMessage = environment.EnvironmentConfigExists
                         ? "WorkWithPlus resolves Environment.config from " + environment.ConfigSource +
                           ". The effective path '" + environment.EnvironmentConfigPath + "' exists but identity '" + identity +
                           "' cannot open it for write. The IDE can appear to work when it runs elevated under a different token. " +
@@ -1883,67 +1954,72 @@ namespace GxMcp.Worker.Services
                         : "The WorkWithPlus environment preflight could not resolve or inspect the effective Environment.config for identity '" +
                           identity + "'. Confirm the active GeneXus installation and its UserAppDataPath before applying. Preflight error: " +
                         environment.AccessError;
-                    Logger.Warn(errorCode + ": " + errorMessage);
-                    return false;
+                    Logger.Warn(result.ErrorCode + ": " + result.ErrorMessage);
+                    return result;
                 }
 
-                var createMethod = ResolveWwpCreateCall(
-                    ifaceType,
-                    parent.TypeDescriptor?.Name,
+                var surface = WwpPackageSurface.Resolve();
+                if (surface.Assembly == null)
+                {
+                    result.FailureStage = "wwpAssembly";
+                    result.ErrorCode = "PatternAttachPreflightFailed";
+                    result.ErrorMessage = "The WorkWithPlus pattern package could not be loaded: " + surface.LoadError;
+                    return result;
+                }
+
+                // The official route is authoritative and runs first. WWP_ApplyTemplate
+                // is a last resort below, deliberately: it is documented as a dead end
+                // headlessly (docs/sdk-probe/wwp-projection-discovery.md, dead end #5 —
+                // the task ctor needs an MSBuild engine host), and when it does execute
+                // it can leave a WorkWithPlus<X> host that the official create then
+                // collides with. Running a known-fragile mutating route ahead of the
+                // verified one cost WebPanel applies their PatternInstance binding (#330).
+                result.Template = ResolveAvailableWwpTemplate(preferredTemplate);
+                var preflight = WwpAttachPreflight.Run(
+                    surface.PackageInterfaceType,
+                    surface.WorkWithPatternType,
+                    parentType,
                     model,
                     parent,
-                    preferredTemplate,
-                    out var createArgs,
-                    out var createOutIndex,
-                    out var createCandidates,
-                    out var createResolutionError);
-                var oneObjectArg = new object[] { parent };
-                var setApplyMethod = ResolveCompatibleStaticOverload(
-                    ifaceType, "SetPatternApplyOnSave", oneObjectArg, -1, typeof(bool),
-                    out var setApplyCandidates, out var setApplyResolutionError);
-                var validateSaveMethod = ResolveCompatibleStaticOverload(
-                    ifaceType, "ValidateAndSave", oneObjectArg, -1, typeof(bool),
-                    out var validateCandidates, out var validateResolutionError);
-                if (createMethod == null || setApplyMethod == null || validateSaveMethod == null)
+                    result.Template);
+                result.PreflightFindings = preflight.Findings;
+                if (!preflight.CanAttach)
                 {
-                    errorMessage = "PatternInstancePackageInterface overload resolution failed. " +
-                        "CreatePatternInstanceWithTemplate: " + (createResolutionError ?? "ok") + " Candidates: " + createCandidates + ". " +
-                        "SetPatternApplyOnSave: " + (setApplyResolutionError ?? "ok") + " Candidates: " + setApplyCandidates + ". " +
-                        "ValidateAndSave: " + (validateResolutionError ?? "ok") + " Candidates: " + validateCandidates + ".";
-                    return false;
+                    result.FailureStage = preflight.BlockedStage;
+                    result.ErrorCode = WwpAttachPreflight.BlockedCode;
+                    result.ErrorMessage = preflight.Findings
+                        .Select(f => f["detail"]?.ToString())
+                        .FirstOrDefault(d => !string.IsNullOrEmpty(d))
+                        ?? "The WorkWithPlus direct-attach preflight did not pass.";
+                    return result;
                 }
 
-                usedTemplate = ResolveAvailableWwpTemplate(preferredTemplate);
-                if (string.IsNullOrEmpty(usedTemplate))
+                var createMethod = preflight.CreateMethod;
+                var setApplyMethod = preflight.SetApplyOnSaveMethod;
+                var validateSaveMethod = preflight.ValidateAndSaveMethod;
+                string usedTemplate = result.Template;
+                string createCandidates = preflight.CreateCandidates ?? "<none>";
+
+                // A host that already exists and that we did not create cannot be
+                // adopted: the official create would fail on the name collision, and
+                // ValidateAndSave would then run against somebody else's object. Report
+                // the orphan instead of silently binding to it — the previous behaviour
+                // adopted it, which is how a failed attach turned into a WebPanel that
+                // renders but whose events never fire.
+                var preExistingHost = _objectService.FindObject("WorkWithPlus" + parent.Name);
+                if (preExistingHost != null)
                 {
-                    errorMessage = "No `WorkWithPlus for Web Template` object found in this KB and no caller hint provided. Pass settings.template explicitly.";
-                    return false;
+                    result.FailureStage = "hostConflict";
+                    result.ErrorCode = "PatternHostAlreadyExists";
+                    result.HostName = preExistingHost.Name;
+                    result.ErrorMessage = "A '" + preExistingHost.Name + "' object already exists in this KB, so CreatePatternInstanceWithTemplate cannot create the " +
+                        "pattern host and this call will not adopt an object it did not create. It is either an orphan left by a failed attach or a host whose " +
+                        "PatternInstance is not bound to '" + parent.Name + "'.";
+                    return result;
                 }
 
-                // Invoke: bool CreatePatternInstanceWithTemplate(model, parent, template, out instance)
-                // Empirically the return value is unreliable — false has been observed even
-                // when the host was created on disk (External change detected logs confirm).
-                // So we ALSO check via FindObject(WorkWithPlus<parentName>) after the call.
-                // Resolve again with the final template so the reflected arguments carry
-                // exactly the value reported to the caller. WebPanel/WebComponent use the
-                // five-parameter SettingsView.Web overload; SDPanel uses the native-mobile
-                // four-parameter overload.
-                createMethod = ResolveWwpCreateCall(
-                    ifaceType,
-                    parent.TypeDescriptor?.Name,
-                    model,
-                    parent,
-                    usedTemplate,
-                    out var args,
-                    out createOutIndex,
-                    out createCandidates,
-                    out createResolutionError);
-                if (createMethod == null)
-                {
-                    errorMessage = "CreatePatternInstanceWithTemplate overload resolution failed after template resolution: " +
-                        (createResolutionError ?? "unknown") + ". Candidates: " + createCandidates;
-                    return false;
-                }
+                object[] args = (object[])preflight.CreateArguments.Clone();
+                int createOutIndex = preflight.CreateByRefArgumentIndex;
                 object createResult;
                 bool createThrew = false;
                 string createThrowMsg = null;
@@ -1958,6 +2034,7 @@ namespace GxMcp.Worker.Services
                     createThrowMsg = inner.ToString();
                     createResult = null;
                 }
+                Stage("createInstance");
                 bool createSaid = createResult is bool b && b;
                 var hostObj = args[createOutIndex] as KBObject;
                 if (hostObj == null)
@@ -1968,15 +2045,17 @@ namespace GxMcp.Worker.Services
                 }
                 if (hostObj == null)
                 {
-                    errorMessage = createThrew
+                    result.FailureStage = "createInstance";
+                    result.ErrorCode = "PatternAttachCreateFailed";
+                    result.ErrorMessage = createThrew
                         ? "CreatePatternInstanceWithTemplate threw via " + FormatMethodSignature(createMethod) + ": " + createThrowMsg +
                           " Available overloads: " + createCandidates
                         : "CreatePatternInstanceWithTemplate returned " + (createSaid ? "true" : "false") +
                           " via " + FormatMethodSignature(createMethod) + " but host not present on disk (template='" + usedTemplate +
                           "'). Available overloads: " + createCandidates;
-                    return false;
+                    return result;
                 }
-                hostName = hostObj.Name;
+                result.HostName = hostObj.Name;
 
                 // Enable apply-on-save so future PatternInstance edits regenerate.
                 try { setApplyMethod.Invoke(null, new object[] { hostObj }); }
@@ -1988,17 +2067,25 @@ namespace GxMcp.Worker.Services
                     var saveResult = validateSaveMethod.Invoke(null, new object[] { hostObj });
                     if (saveResult is bool sb && !sb)
                     {
-                        errorMessage = "ValidateAndSave returned false";
-                        return false;
+                        result.FailureStage = "validateAndSave";
+                        result.ErrorCode = "PatternAttachValidateFailed";
+                        result.ErrorMessage = "ValidateAndSave returned false for host '" + result.HostName + "' (template='" + usedTemplate +
+                            "'). The WorkWithPlus package created the host but rejected it during validation, so the " + parentType +
+                            " was left without a bound pattern instance.";
+                        RemoveOrphanHost(parent, result);
+                        return result;
                     }
                 }
                 catch (TargetInvocationException tie)
                 {
                     var inner = tie.InnerException ?? tie;
-                    errorMessage = "ValidateAndSave threw via " + FormatMethodSignature(validateSaveMethod) + ": " + inner.ToString() +
-                        " Available overloads: " + validateCandidates;
-                    return false;
+                    result.FailureStage = "validateAndSave";
+                    result.ErrorCode = "PatternAttachValidateFailed";
+                    result.ErrorMessage = "ValidateAndSave threw via " + FormatMethodSignature(validateSaveMethod) + ": " + inner.ToString();
+                    RemoveOrphanHost(parent, result);
+                    return result;
                 }
+                Stage("validateAndSave");
 
                 // F17: Trigger the projection step that the IDE does on apply. Found via
                 // SDK probe (docs/sdk-probe/) — the lifecycle is:
@@ -2008,16 +2095,20 @@ namespace GxMcp.Worker.Services
                 //       onto the bound KBObject's WebForm.
                 //
                 // This is what the IDE calls internally. We invoke via reflection so we
-                // don't add a hard dependency. Errors don't fail the attach — the host
-                // is already saved, this just materializes the projection.
-                try
+                // don't add a hard dependency. A projection failure is NOT best-effort:
+                // an unprojected host produces exactly the symptom in issue #330 — a
+                // WebPanel that renders but whose controls never reach the server.
+                if (!TryInvokeBuildProcessUpdateParent(parent, hostObj, out var projectionFailure))
                 {
-                    TryInvokeBuildProcessUpdateParent(parent, hostObj);
+                    result.FailureStage = "projection";
+                    result.ErrorCode = "PatternAttachProjectionFailed";
+                    result.ErrorMessage = "The WorkWithPlus host was created and saved, but projecting it onto '" + parent.Name +
+                        "' failed: " + (projectionFailure ?? "unknown projection failure") +
+                        ". The host is an orphan until this is resolved; the " + parentType + " itself was not modified.";
+                    RemoveOrphanHost(parent, result);
+                    return result;
                 }
-                catch (Exception ex)
-                {
-                    Logger.Info("Package-interface attach: UpdateParentObject best-effort failed: " + ex.Message);
-                }
+                Stage("projection");
 
                 // A generated WorkWithPlus<Parent> object is not sufficient proof:
                 // the package can create the host and still fail to bind its
@@ -2031,26 +2122,164 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception ex)
                 {
-                    errorMessage = "Pattern host '" + hostName + "' was created, but post-attach PatternInstance verification threw: " + ex.ToString();
-                    return false;
+                    result.FailureStage = "attachVerification";
+                    result.ErrorCode = "PatternAttachVerifyFailed";
+                    result.ErrorMessage = "Pattern host '" + result.HostName + "' was created, but post-attach PatternInstance verification threw: " + ex;
+                    RemoveOrphanHost(parent, result);
+                    return result;
                 }
                 if (attachedInstance == null)
                 {
-                    errorMessage = "Pattern host '" + hostName + "' was created and saved via " + FormatMethodSignature(createMethod) +
+                    result.FailureStage = "attachVerification";
+                    result.ErrorCode = "PatternAttachVerifyFailed";
+                    result.ErrorMessage = "Pattern host '" + result.HostName + "' was created and saved via " + FormatMethodSignature(createMethod) +
                         ", but no WorkWithPlus PatternInstance is associated with parent '" + parent.Name +
                         "' after the call. Available overloads: " + createCandidates;
-                    return false;
+                    RemoveOrphanHost(parent, result);
+                    return result;
                 }
 
-                Logger.Info("Package-interface attach succeeded: host='" + hostName + "' parent='" + parent.Name + "' template='" + usedTemplate + "'");
-                return true;
+                Logger.Info("Package-interface attach succeeded: host='" + result.HostName + "' parent='" + parent.Name + "' template='" + usedTemplate + "'");
+                result.Attached = true;
+                return result;
             }
             catch (Exception ex)
             {
-                errorMessage = ex.ToString();
+                result.FailureStage = result.FailureStage ?? "attach";
+                result.ErrorMessage = ex.ToString();
                 Logger.Warn("TryPackageInterfaceAttach unexpected: " + ex);
-                return false;
+                return result;
             }
+        }
+
+        /// <summary>
+        /// Fail-closed cleanup for a host this attach created but could not finish
+        /// binding. Leaving it behind is not cosmetic: the next apply sees the host,
+        /// takes the reapply route, skips the engine apply and projects an empty
+        /// PatternInstance — a WebPanel that renders and does nothing.
+        /// </summary>
+        private void RemoveOrphanHost(KBObject parent, WwpAttachResult result)
+        {
+            string hostName = "WorkWithPlus" + parent?.Name;
+            if (string.IsNullOrEmpty(hostName) || result == null) return;
+            try
+            {
+                var host = _objectService?.FindObject(hostName);
+                if (host == null) return;
+                if (Compatibility.SdkDeletionAdapter.TryDeleteOrRemove(host))
+                {
+                    result.RemovedOrphanHost = hostName;
+                    Logger.Info("Attach failed at stage '" + result.FailureStage + "' — removed the orphan host '" + hostName + "' so the next apply starts clean.");
+                }
+            }
+            catch (Exception ex)
+            {
+                result.OrphanHostWarning = "A partially attached '" + hostName + "' host could not be removed (" + ex.Message +
+                    "). Delete it with genexus_delete_object before retrying, otherwise the next apply takes the reapply route and leaves the " +
+                    (parent?.TypeDescriptor?.Name ?? "target") + " with an unprojected pattern instance.";
+                Logger.Warn("Attach cleanup of '" + hostName + "' failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Turn a failed attach into an instruction the caller can act on. Every
+        /// branch is keyed by the stage that failed, because "try a different
+        /// template" is useless advice for a package that does not expose the
+        /// attachment API, and "update the package" is useless advice for a missing
+        /// template object.
+        /// </summary>
+        internal static string BuildAttachRecommendation(WwpAttachResult attach, string parentTypeName, string targetName)
+        {
+            string host = "WorkWithPlus" + targetName;
+            // Every preflight stage means the same thing to the caller: the installed
+            // package does not expose the API this GeneXus major needs. Retrying with
+            // a different template cannot help, so say that once instead of branching.
+            if (string.Equals(attach.ErrorCode, WwpAttachPreflight.BlockedCode, StringComparison.Ordinal))
+            {
+                return "The installed WorkWithPlus package does not expose the API this GeneXus major needs for " + parentTypeName +
+                    " targets (blocked at stage '" + attach.FailureStage + "'). Update the WorkWithPlus pattern package for the active GeneXus " +
+                    "installation and rerun mode=diagnose, or apply WorkWithPlus to a Transaction, which the pattern engine generates natively. " +
+                    "result.attachPreflight carries the resolution candidates that were rejected.";
+            }
+
+            switch (attach.FailureStage)
+            {
+                case "environment":
+                    return "Grant Modify permission on the effective Environment.config to the non-elevated MCP identity, then run mode=diagnose again. Do not redirect UserAppDataPath away from the value configured for the GeneXus IDE.";
+                case WwpAttachPreflight.StageTemplate:
+                    return "Import or create a 'WorkWithPlus for Web Template' object in this KB, or set settings.template to one of patternResult.availableTemplates. " +
+                        "A " + parentTypeName + " cannot receive WorkWithPlus without a template.";
+                case "hostConflict":
+                    return "'" + host + "' already exists and was not created by this call, so the attach will not adopt it. " +
+                        "Delete it with genexus_delete_object name=" + host + " confirm=true, then retry; if it is a legitimate host whose PatternInstance is already bound, use reapply=true instead.";
+                case "validateAndSave":
+                    return "The WorkWithPlus package created '" + host + "' but rejected it during validation. Try a different 'WorkWithPlus for Web Template' from patternResult.availableTemplates, " +
+                        "or update the WorkWithPlus package. " + DescribeOrphanCleanup(attach, host);
+                case "projection":
+                    return "The host was created but the pattern could not be projected onto '" + targetName + "'. A host without a projection renders but never reaches the server. " +
+                        DescribeOrphanCleanup(attach, host) +
+                        " Rerun mode=diagnose and check the worker log for the [WWP-PROJECT] line that names the failing lifecycle callback.";
+                default:
+                    return IsWwpDirectAttachParentType(parentTypeName)
+                        ? "Pass an explicit settings.template from patternResult.availableTemplates, or apply WorkWithPlus to a Transaction — the engine generates 'WW<Trn>' as a wired WWP screen."
+                        : "Apply WorkWithPlus to a Transaction to generate the WWP family.";
+            }
+        }
+
+        private static string DescribeOrphanCleanup(WwpAttachResult attach, string host)
+        {
+            if (!string.IsNullOrEmpty(attach.OrphanHostWarning)) return attach.OrphanHostWarning;
+            if (!string.IsNullOrEmpty(attach.RemovedOrphanHost))
+                return "The orphan host '" + attach.RemovedOrphanHost + "' was removed, so a retry starts clean.";
+            return "The orphan host '" + host + "' could not be removed automatically; delete it with genexus_delete_object confirm=true before retrying.";
+        }
+
+        /// <summary>
+        /// Next step for a failed attach, keyed by the stage that failed. Offering
+        /// "retry with a different template" for a package that never exposed the
+        /// attachment API is how issue #330 burned a day of blind retries.
+        /// </summary>
+        internal static JArray BuildAttachNextSteps(string failureStage, string targetName, string patternKey)
+        {
+            var steps = new JArray();
+            switch (failureStage)
+            {
+                case "environment":
+                    steps.Add(McpResponse.NextStep(
+                        tool: "genexus_apply_pattern",
+                        args: new JObject { ["name"] = targetName, ["pattern"] = patternKey, ["mode"] = "diagnose" },
+                        why: "Rerun mode=diagnose after correcting the Environment.config ACL; it now reports the exact attach stage that blocked."));
+                    break;
+                case "hostConflict":
+                    steps.Add(McpResponse.NextStep(
+                        tool: "genexus_delete_object",
+                        args: new JObject { ["name"] = "WorkWithPlus" + targetName, ["confirm"] = true },
+                        why: "The pre-existing host blocks CreatePatternInstanceWithTemplate. Delete it first if it is an orphan."));
+                    steps.Add(McpResponse.NextStep(
+                        tool: "genexus_apply_pattern",
+                        args: new JObject { ["name"] = targetName, ["pattern"] = patternKey, ["reapply"] = true },
+                        why: "If that host is legitimate and its PatternInstance is already bound, reapply instead of deleting it."));
+                    break;
+                case WwpAttachPreflight.StageTemplate:
+                    steps.Add(McpResponse.NextStep(
+                        tool: "genexus_list_objects",
+                        args: new JObject { ["typeFilter"] = "WorkWithPlus for Web Template" },
+                        why: "A WebPanel cannot receive WorkWithPlus without a template object; list the ones registered in this KB to confirm."));
+                    break;
+                default:
+                    steps.Add(McpResponse.NextStep(
+                        tool: "genexus_apply_pattern",
+                        args: new JObject { ["name"] = targetName, ["pattern"] = patternKey, ["mode"] = "diagnose" },
+                        why: "mode=diagnose runs the same preflight the attach does and names the blocking stage with its resolution candidates."));
+                    break;
+            }
+            if (failureStage != "hostConflict")
+            {
+                steps.Add(McpResponse.NextStep(
+                    tool: "genexus_apply_pattern",
+                    args: new JObject { ["name"] = targetName, ["pattern"] = patternKey, ["settings"] = new JObject { ["template"] = "<name from result.availableTemplates>" } },
+                    why: "Retry pinned to a specific 'WorkWithPlus for Web Template' once the reported stage is addressed."));
+            }            return steps;
         }
 
         // F17 / F18: delegates to the shared helper. Kept as a thin wrapper so the
@@ -2058,7 +2287,24 @@ namespace GxMcp.Worker.Services
         // lives in WwpProjectionHelper so WriteService can call it too.
         internal void TryInvokeBuildProcessUpdateParent(KBObject parent, KBObject host)
         {
-            WwpProjectionHelper.TryProjectHostOntoParent(parent, host);
+            TryInvokeBuildProcessUpdateParent(parent, host, out _);
+        }
+
+        // F17 / F18: delegates to the shared helper. The overload surfaces the
+        // concrete reason the projection could not run, which the attach path needs
+        // in order to fail closed instead of reporting a success it cannot back
+        // (issue #330). Kept as a thin wrapper so the apply_pattern → projection
+        // flow keeps its log context. The reflection lives in WwpProjectionHelper
+        // so WriteService can call it too.
+        internal bool TryInvokeBuildProcessUpdateParent(KBObject parent, KBObject host, out string failure)
+        {
+            bool ok = WwpProjectionHelper.TryProjectHostOntoParent(parent, host, out var result);
+            failure = result?.Failure;
+            if (!ok && string.IsNullOrEmpty(failure))
+            {
+                failure = "the WorkWithPlus build process did not complete its lifecycle on host '" + host?.Name + "'.";
+            }
+            return ok;
         }
 
         // Legacy implementation kept for reference; superseded by the call above.
@@ -2869,6 +3115,9 @@ namespace GxMcp.Worker.Services
                                 ? "Grant Modify to the MCP identity (or one of its groups) on the effective Environment.config. Keep UserAppDataPath aligned with the IDE, then rerun mode=diagnose before apply."
                                 : "Confirm the active GeneXus installation and GeneXus.exe.config UserAppDataPath, then rerun mode=diagnose. The complete preflight exception is included in environment.accessError.");
                         accessFinding["environment"] = environment.ToJson();
+                        // Same stage vocabulary the attach reports, so a caller that
+                        // reads a diagnose finding and an apply error correlates them.
+                        accessFinding["stage"] = "environment";
                         findings.Add(accessFinding);
                     }
                     else if (environment.EnvironmentConfigExists && environment.EnvironmentConfigWritable == true)
@@ -2910,11 +3159,75 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                // ── 9. ok — all critical checks passed ──────────────────────────
+                // ── 9. Direct-attach preflight (the route that actually runs) ────
+                // On a WebPanel/WebComponent/SDPanel the engine's ApplyPattern is a
+                // documented silent no-op, so the PatternInstancePackageInterface
+                // pipeline is the route the apply will take — and every stage of it
+                // can fail. Diagnose used to skip all of it and still answer "All
+                // pre-apply checks passed" for targets that could never apply
+                // (issue #330). Run the same resolver the attach runs so the two
+                // cannot disagree. Findings are additive: a broken Environment.config
+                // ACL does not stop the caller learning that the package is also
+                // missing the attach API, and fixing one at a time is what made this
+                // expensive to triage in the first place.
+                if (patternId == WorkWithPlusPatternId && isWebPanelKind
+                    && existingInstance == null && typeGateReject == null)
+                {
+                    try
+                    {
+                        var surface = WwpPackageSurface.Resolve();
+                        if (surface.Assembly == null)
+                        {
+                            var notLoaded = Finding("wwpPackageNotLoaded", "critical",
+                                "The WorkWithPlus pattern package could not be loaded: " + surface.LoadError +
+                                " The pattern engine reported the pattern as available, so this is a package-installation problem, not a licensing one.",
+                                "Install or update the WorkWithPlus pattern package under the active GeneXus installation's " +
+                                "Packages\\Patterns\\WorkWithPlus folder, or apply WorkWithPlus to a Transaction.");
+                            notLoaded["stage"] = "wwpAssembly";
+                            findings.Add(notLoaded);
+                        }
+                        else
+                        {
+                            var resolvedTemplate = ResolveAvailableWwpTemplate(callerTemplate);
+                            var preflight = WwpAttachPreflight.Run(
+                                surface.PackageInterfaceType,
+                                surface.WorkWithPatternType,
+                                parentType,
+                                _objectService?.GetKbService()?.GetKB()?.DesignModel,
+                                obj,
+                                resolvedTemplate);
+                            foreach (var finding in preflight.Findings) findings.Add(finding);
+                            if (preflight.CanAttach)
+                            {
+                                var attachReady = Finding("attachRouteReady", "info",
+                                    "The WorkWithPlus direct-attach route resolves for this " + parentType + " target " +
+                                    "(template '" + resolvedTemplate + "'). Applying will run CreatePatternInstanceWithTemplate → SetPatternApplyOnSave → ValidateAndSave → IPatternBuildProcess.UpdateParentObject, and will fail closed on any of those stages.",
+                                    "Call genexus_apply_pattern to proceed. A failure will report the exact stage in result.failureStage.");
+                                attachReady["stage"] = "attach";
+                                attachReady["template"] = resolvedTemplate;
+                                attachReady["createOverload"] = FormatMethodSignature(preflight.CreateMethod);
+                                findings.Add(attachReady);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // A preflight that cannot run is not a pass. Report it as
+                        // critical rather than letting the caller act on a green
+                        // diagnosis the attach will contradict.
+                        findings.Add(Finding("attachPreflightFailed", "critical",
+                            "The WorkWithPlus direct-attach preflight threw before it could complete: " + ex.GetType().Name + ": " + ex.Message,
+                            "Check the worker log for the full trace, then rerun mode=diagnose."));
+                    }
+                }
+
+                // ── 10. ok — all critical checks passed ─────────────────────────
                 if (!findings.Any(f => f["severity"]?.ToString() == "critical"))
                 {
                     findings.Add(Finding("ok", "info",
-                        "All pre-apply checks passed. The pattern should apply cleanly.",
+                        existingInstance != null
+                            ? "All pre-apply checks passed. Remember to pass reapply=true (an instance already exists)."
+                            : "All pre-apply checks passed. The pattern should apply cleanly.",
                         existingInstance != null
                             ? "Remember to pass reapply=true (an instance already exists)."
                             : "Call genexus_apply_pattern to proceed."));

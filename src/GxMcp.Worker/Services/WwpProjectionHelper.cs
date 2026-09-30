@@ -1,6 +1,4 @@
 using System;
-using System.IO;
-using System.Linq;
 using System.Reflection;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -57,30 +55,43 @@ namespace GxMcp.Worker.Services
             out ProjectionResult result)
         {
             result = new ProjectionResult();
-            if (parent == null || host == null) return false;
+            if (parent == null || host == null)
+            {
+                result.Failure = parent == null ? "parent KBObject is null" : "host KBObject is null";
+                return false;
+            }
             try
             {
-                var wwpAsm = AppDomain.CurrentDomain.GetAssemblies()
-                    .FirstOrDefault(a => string.Equals(a.GetName().Name, "DVelop.Patterns.WorkWithPlus", StringComparison.OrdinalIgnoreCase));
+                var wwpAsm = WwpPackageSurface.Resolve().Assembly;
                 if (wwpAsm == null)
                 {
-                    try
-                    {
-                        var gxPath = Environment.GetEnvironmentVariable("GX_PATH") ?? @"C:\Program Files (x86)\GeneXus\GeneXus18";
-                        var wwpDllPath = Path.Combine(gxPath, "Packages", "Patterns", "WorkWithPlus", "DVelop.Patterns.WorkWithPlus.dll");
-                        if (File.Exists(wwpDllPath)) wwpAsm = Assembly.LoadFrom(wwpDllPath);
-                    }
-                    catch { }
+                    result.Failure = WwpPackageSurface.AssemblyName + " is not loaded and was not found under GX_PATH\\Packages\\Patterns.";
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
                 }
-                if (wwpAsm == null) { Logger.Debug("[WWP-PROJECT] DVelop.Patterns.WorkWithPlus not loaded"); return false; }
 
-                var workWithPatternType = wwpAsm.GetType("DVelop.Patterns.WorkWithPlus.WorkWithPattern", false);
-                if (workWithPatternType == null) { Logger.Debug("[WWP-PROJECT] WorkWithPattern type not found"); return false; }
+                var workWithPatternType = wwpAsm.GetType(WwpPackageSurface.WorkWithPatternTypeName, false);
+                if (workWithPatternType == null)
+                {
+                    result.Failure = WwpPackageSurface.WorkWithPatternTypeName + " not found in " + wwpAsm.GetName().Name + ".";
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
+                }
 
                 object impl;
                 try { impl = Activator.CreateInstance(workWithPatternType); }
-                catch (Exception ex) { Logger.Debug("[WWP-PROJECT] ctor failed: " + ex.Message); return false; }
-                if (impl == null) return false;
+                catch (Exception ex)
+                {
+                    result.Failure = WwpPackageSurface.WorkWithPatternTypeName + " ctor failed: " + ex.GetType().Name + ": " + ex.Message;
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
+                }
+                if (impl == null)
+                {
+                    result.Failure = WwpPackageSurface.WorkWithPatternTypeName + " ctor returned null.";
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
+                }
 
                 try
                 {
@@ -92,16 +103,38 @@ namespace GxMcp.Worker.Services
 
                 var getBuildProcess = workWithPatternType.GetMethod("GetBuildProcess",
                     BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
-                if (getBuildProcess == null) { Logger.Debug("[WWP-PROJECT] GetBuildProcess() not found"); return false; }
+                if (getBuildProcess == null)
+                {
+                    result.Failure = WwpPackageSurface.WorkWithPatternTypeName + " does not expose GetBuildProcess().";
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
+                }
 
-                object buildProcess = getBuildProcess.Invoke(impl, null);
-                if (buildProcess == null) { Logger.Debug("[WWP-PROJECT] GetBuildProcess returned null"); return false; }
+                object buildProcess;
+                try { buildProcess = getBuildProcess.Invoke(impl, null); }
+                catch (TargetInvocationException tie)
+                {
+                    result.Failure = "GetBuildProcess() threw: " + (tie.InnerException?.GetType().Name) + ": " + tie.InnerException?.Message;
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
+                }
+                if (buildProcess == null)
+                {
+                    result.Failure = "GetBuildProcess() returned null.";
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
+                }
 
                 RefreshHostStateForProjection(host);
 
                 var updateParent = buildProcess.GetType().GetMethod("UpdateParentObject",
                     BindingFlags.Public | BindingFlags.Instance);
-                if (updateParent == null) { Logger.Debug("[WWP-PROJECT] UpdateParentObject() not found"); return false; }
+                if (updateParent == null)
+                {
+                    result.Failure = "IPatternBuildProcess.UpdateParentObject is missing on " + buildProcess.GetType().FullName + ".";
+                    Logger.Warn("[WWP-PROJECT] " + result.Failure);
+                    return false;
+                }
 
                 // F19: Run the FULL IPatternBuildProcess lifecycle the IDE uses, not
                 // just UpdateParentObject. Most hooks tolerate missing context (best-
