@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.9.4 - 2026-09-29
+
+
 ### Tracked issues
 
 - [#326](https://github.com/lennix1337/Genexus18MCP/issues/326) — [Bug] Redação de credenciais: under-masking por espaço no canônico e classes ausentes nos demais sítios
