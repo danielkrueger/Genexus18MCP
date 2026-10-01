@@ -43,7 +43,19 @@ namespace GxMcp.Worker.Services
                 {
                     var arr = new JArray();
                     foreach (var s in suspects)
-                        arr.Add(new JObject { ["element"] = s.Element, ["attribute"] = s.Attribute, ["reason"] = s.Reason });
+                    {
+                        var entry = new JObject
+                        {
+                            ["element"] = s.Element,
+                            ["attribute"] = s.Attribute,
+                            ["reason"] = s.Reason
+                        };
+                        // Issue #360: the actionable half. "This attribute is not in the
+                        // hint table" leaves the caller guessing; naming the attribute to
+                        // write instead is what turns a warning into a fix.
+                        if (!string.IsNullOrEmpty(s.Fix)) entry["fix"] = s.Fix;
+                        arr.Add(entry);
+                    }
                     result["preflightWarnings"] = arr;
                     result["hasWarnings"] = true;
                 }

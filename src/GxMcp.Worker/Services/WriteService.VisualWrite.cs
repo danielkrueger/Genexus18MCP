@@ -326,9 +326,22 @@ namespace GxMcp.Worker.Services
                     {
                         var arr = new JArray();
                         foreach (var s in suspects)
-                            arr.Add(new JObject { ["element"] = s.Element, ["attribute"] = s.Attribute, ["reason"] = s.Reason });
+                        {
+                            var entry = new JObject
+                            {
+                                ["element"] = s.Element,
+                                ["attribute"] = s.Attribute,
+                                ["reason"] = s.Reason
+                            };
+                            // Issue #360: name the attribute to write instead when the
+                            // diagnostic knows one. "Not in the hint table" alone left the
+                            // caller with a bare Format attribute that verified and did
+                            // nothing, which is the trap the issue reported.
+                            if (!string.IsNullOrEmpty(s.Fix)) entry["fix"] = s.Fix;
+                            arr.Add(entry);
+                        }
                         dryResp["preflightWarnings"] = arr;
-                        dryResp["warning"] = "Dry-run found " + suspects.Count + " attribute(s) outside the observed hint table; persistence is unverified. See preflightWarnings.";
+                        dryResp["warning"] = "Dry-run found " + suspects.Count + " attribute(s) that the generator will not read as written; see preflightWarnings (each entry carries a fix when one is known).";
                     }
                     if (prospectiveGotchas != null) dryResp["layoutGotchas"] = prospectiveGotchas;
                     return Models.McpResponse.Ok(target: target, code: "WriteDryRun", result: dryResp);

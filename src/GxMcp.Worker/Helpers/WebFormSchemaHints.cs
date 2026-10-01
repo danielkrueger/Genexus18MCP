@@ -12,6 +12,50 @@ namespace GxMcp.Worker.Helpers
     // unverified, never a guarantee that the SDK will sanitize the attribute.
     public static class WebFormSchemaHints
     {
+        /// <summary>
+        /// Issue #360: the attribute the IDE uses to carry a control's non-XML properties.
+        ///
+        /// <para>
+        /// The SDK's own <c>ControlDefinition.xml</c> declares <c>GxFormat</c> (display
+        /// name <c>Format</c>, a Combo Int of 0=Text / 1=HTML / 2=Raw HTML / 3=Text with
+        /// meaningful spaces) on <c>HTMLATT</c>, <c>HTMLSPAN</c> and
+        /// <c>HTMLSFLCOL</c>. But on a plain WebForm the IDE does not persist it as an
+        /// XML attribute - it writes a
+        /// <c>&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;GxFormat&lt;/Name&gt;…</c>
+        /// payload into this attribute instead, even with no pattern instance present.
+        /// The generator reads it from there, which is why a plain
+        /// <c>format="HTML"</c> on the element persists, verifies, and is then ignored.
+        /// </para>
+        ///
+        /// <para>
+        /// Not listed as "accepted" for any element: it is a legitimate attribute the SDK
+        /// emits, but it is not an authorable one, so a caller writing it directly is
+        /// asking for something the SDK will strip.
+        /// </para>
+        /// </summary>
+        internal const string CustomPropertiesAttribute = "PATTERN_ELEMENT_CUSTOM_PROPERTIES";
+
+        /// <summary>
+        /// SDK control property ids that are only reachable through
+        /// <see cref="CustomPropertiesAttribute"/> rather than as an XML attribute.
+        ///
+        /// <para>
+        /// <c>GxFormat</c> is the one confirmed by live observation in issue #360 (the
+        /// IDE-written form is quoted there and the generated <c>gx_label_ctrl(..., 0,
+        /// 2, ...)</c> confirms it reached the generator). The other two are declared on
+        /// the same control objects in <c>ControlDefinition.xml</c> and share the same
+        /// custom-property carrier, so they are named here as a warning rather than as a
+        /// claim - the diagnostic says "check", not "this is ignored".
+        /// </para>
+        /// </summary>
+        private static readonly Dictionary<string, string> _customPropertyOnlyControls =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "GxFormat", "Format" },
+            { "ControlType", "Control Type" },
+            { "ControlValues", "Control Values" },
+        };
+
         private static readonly string[] _commonCtrlAttrs =
         {
             "id", "name", "ControlName", "controlName", "AttID", "Class", "classref", "Width", "Height", "Visible", "Tooltip"
@@ -68,11 +112,40 @@ namespace GxMcp.Worker.Helpers
             foreach (var el in doc.Descendants())
             {
                 var accepted = GetAcceptedAttributes(el.Name.LocalName);
-                if (accepted == null) continue; // no hint registered → can't judge
-                var acceptedSet = new HashSet<string>(accepted, StringComparer.OrdinalIgnoreCase);
+                bool hasHint = accepted != null;
+                var acceptedSet = hasHint
+                    ? new HashSet<string>(accepted, StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // Issue #360: a bare `format`/`GxFormat` attribute is the specific trap.
+                // The SDK persists it (so the write verifies) and the generator ignores it,
+                // because the value only reaches generation through the custom-properties
+                // carrier. That is the worst possible failure: reported success, no effect.
+                // Flagged before the generic hint check, because on an element with no hint
+                // registered the generic pass says nothing and the attribute would slip
+                // through entirely.
+                if (IsCustomPropertyOnlyAttribute(el, acceptedSet))
+                {
+                    hits.Add(new SuspectAttribute
+                    {
+                        Element = el.Name.LocalName,
+                        Attribute = CustomPropertyOnlySurfaces(el),
+                        Reason = BuildCustomPropertyReason(el),
+                        Fix = CustomPropertiesAttribute + " payload (<Properties><Property>"
+                              + "<Name>GxFormat</Name><Value>Raw HTML</Value></Property></Properties>)"
+                    });
+                }
+
+                if (!hasHint) continue; // no hint registered → can't judge the rest
                 foreach (var a in el.Attributes())
                 {
                     if (acceptedSet.Contains(a.Name.LocalName)) continue;
+                    if (string.Equals(a.Name.LocalName, CustomPropertiesAttribute,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue; // the legitimate carrier; not an authoring mistake
+                    // Already reported by the specific pass above, with a fix attached.
+                    // Reporting it again as "unverified" would bury the actionable one.
+                    if (IsCustomPropertyOnlyName(a.Name.LocalName)) continue;
                     hits.Add(new SuspectAttribute
                     {
                         Element = el.Name.LocalName,
@@ -84,11 +157,114 @@ namespace GxMcp.Worker.Helpers
             return hits;
         }
 
+        /// <summary>
+        /// Whether this element carries a control property bare, when the generator only
+        /// reads that property from the custom-properties carrier.
+        ///
+        /// <para>
+        /// The element's own hint table is the deciding evidence, and it is consulted for
+        /// the property id as well as the display name. gxTextBlock lists both
+        /// <c>GxFormat</c> and <c>Format</c> because the legacy shape really does persist
+        /// the value as a plain attribute — that was observed live, and warning there
+        /// would be a false positive on a control that works. <c>textblock</c>, the modern
+        /// element, has no entry at all, so there the payload is the only representation
+        /// and the bare attribute is flagged.
+        /// </para>
+        ///
+        /// <para>
+        /// An element that already carries the carrier is never flagged: that is exactly
+        /// what the IDE writes, and a warning on correct input teaches the caller to
+        /// ignore the warning.
+        /// </para>
+        /// </summary>
+        private static bool IsCustomPropertyOnlyAttribute(XElement el, HashSet<string> acceptedSet)
+        {
+            if (HasCustomPropertiesCarrier(el)) return false;
+
+            // Identity attributes are never property surfaces. Without this the first one
+            // walked (controlName) would decide the answer and no diagnostic was produced.
+            foreach (var a in el.Attributes())
+            {
+                if (IsIdentityAttribute(a.Name.LocalName)) continue;
+                if (string.Equals(a.Name.LocalName, CustomPropertiesAttribute,
+                        StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (IsCustomPropertyOnlyName(a.Name.LocalName) && !acceptedSet.Contains(a.Name.LocalName))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool IsIdentityAttribute(string localName)
+        {
+            foreach (var identity in _commonCtrlAttrs)
+            {
+                if (string.Equals(identity, "ControlType", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(identity, localName, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Whether this attribute name is one of the custom-property-carried controls,
+        /// by property id or display name.
+        /// </summary>
+        private static bool IsCustomPropertyOnlyName(string localName)
+        {
+            if (_customPropertyOnlyControls.ContainsKey(localName)) return true;
+            return _customPropertyOnlyControls.Values.Any(v =>
+                string.Equals(v, localName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool HasCustomPropertiesCarrier(XElement el)
+        {
+            foreach (var a in el.Attributes())
+            {
+                if (string.Equals(a.Name.LocalName, CustomPropertiesAttribute,
+                        StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The attribute spelling actually present on the element, so the diagnostic names
+        /// what the caller wrote rather than a canonical form it did not.
+        /// </summary>
+        private static string CustomPropertyOnlySurfaces(XElement el)
+        {
+            foreach (var a in el.Attributes())
+            {
+                string local = a.Name.LocalName;
+                if (IsIdentityAttribute(local)) continue;
+                if (string.Equals(local, CustomPropertiesAttribute,
+                        StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (IsCustomPropertyOnlyName(local)) return local;
+            }
+            return "GxFormat";
+        }
+
+        private static string BuildCustomPropertyReason(XElement el)
+        {
+            return "Control property '" + CustomPropertyOnlySurfaces(el) + "' is carried by "
+                + CustomPropertiesAttribute + " on a WebForm, not as a bare XML attribute. "
+                + "The SDK persists this attribute and the write verifies, but the generator "
+                + "reads the property from the custom-properties payload, so a bare value has "
+                + "no effect on the generated code.";
+        }
+
         public sealed class SuspectAttribute
         {
             public string Element;
             public string Attribute;
             public string Reason;
+
+            /// <summary>
+            /// What to write instead, when the diagnostic knows one. Null when it does not.
+            /// </summary>
+            public string Fix;
         }
 
         // ── Task 4.5 (v2.3.8) — Ghost-binding diagnostics + [var:N] resolver ─────

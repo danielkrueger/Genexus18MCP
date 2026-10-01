@@ -340,13 +340,36 @@ namespace GxMcp.Worker.Helpers
             // read representation and the stored document), while ControlName is
             // author-stable. Pairing or keying by id would report phantom
             // removed+added pairs after every full-tree write.
-            return Attr(element, "ControlName") ?? Attr(element, "controlName") ?? Attr(element, "id") ?? Attr(element, "InternalName");
+            //
+            // Issue #360: Attr is case-insensitive, so "controlName" and "ControlName"
+            // are one identity rather than two spellings to enumerate here.
+            return Attr(element, "ControlName") ?? Attr(element, "id") ?? Attr(element, "InternalName");
         }
 
+        /// <summary>
+        /// An attribute's value, or null when absent.
+        ///
+        /// <para>
+        /// Issue #360. This was <c>element.Attribute(name)</c>, which XLinq resolves
+        /// case-sensitively, so it needed the explicit <c>?? Attr(el, "controlName")</c>
+        /// fallback above — the reason a WebForm written with one casing paired by the
+        /// other would look like every control was added and removed at once. One
+        /// case-insensitive read removes the need to enumerate spellings.
+        /// </para>
+        /// </summary>
         private static string Attr(XElement element, string name)
         {
+            if (element == null || string.IsNullOrEmpty(name)) return null;
+
             var attr = element.Attribute(name);
-            return attr == null ? null : attr.Value;
+            if (attr != null) return attr.Value;
+
+            foreach (var candidate in element.Attributes())
+            {
+                if (string.Equals(candidate.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))
+                    return candidate.Value;
+            }
+            return null;
         }
     }
 }

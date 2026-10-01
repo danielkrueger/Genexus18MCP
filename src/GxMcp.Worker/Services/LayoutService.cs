@@ -419,6 +419,35 @@ namespace GxMcp.Worker.Services
                         nextSteps: new JArray(LayoutGetTreeStep(target, "Shows available controls and their current property values.")),
                         target: target);
 
+                // Issue #360: a control property the SDK only carries through the
+                // custom-properties payload must not be written as a bare XML attribute.
+                // It would persist, verify, and then be ignored by the generator - a
+                // successful call with no effect, which is the trap this whole issue is.
+                if (IsCustomPropertyOnly(propertyName))
+                {
+                    return Models.McpResponse.Err(
+                        code: "ControlPropertyNeedsCustomProperties",
+                        message: "'" + propertyName + "' is not a WebForm XML attribute. On a plain "
+                            + "WebPanel the IDE stores it as a "
+                            + WebFormSchemaHints.CustomPropertiesAttribute + " payload, and the generator "
+                            + "reads it from there.",
+                        hint: "Set it by writing the "
+                            + WebFormSchemaHints.CustomPropertiesAttribute + " attribute on the control, e.g. "
+                            + "PATTERN_ELEMENT_CUSTOM_PROPERTIES=\"&lt;Properties&gt;&lt;Property&gt;"
+                            + "&lt;Name&gt;GxFormat&lt;/Name&gt;&lt;Value&gt;Raw HTML&lt;/Value&gt;"
+                            + "&lt;/Property&gt;&lt;/Properties&gt;\" for Format = Raw HTML. Valid values are "
+                            + "0=Text, 1=HTML, 2=Raw HTML, 3=Text with meaningful spaces.",
+                        nextSteps: new JArray(
+                            Models.McpResponse.NextStep("genexus_read",
+                                new JObject { ["name"] = target, ["part"] = "WebForm" },
+                                "Reads the control's current XML, including any existing "
+                                + WebFormSchemaHints.CustomPropertiesAttribute + " payload to extend."),
+                            Models.McpResponse.NextStep("genexus_io",
+                                new JObject { ["action"] = "import_part", ["name"] = target, ["part"] = "WebForm" },
+                                "Writes the edited WebForm XML, custom-properties payload included.")),
+                        target: target);
+                }
+
                 // object + context resolved together by BeginVisualRead
 
                 var setup = BeginVisualRead(target);
@@ -466,17 +495,37 @@ namespace GxMcp.Worker.Services
                     // Keep both in sync when CaptionExpression exists, but never delete Caption.
                     if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase))
                     {
-                        previous = element.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(element.Attribute("CaptionExpression")?.Value);
-                        element.SetAttributeValue("Caption", value ?? string.Empty);
-                        if (element.Attribute("CaptionExpression") != null)
+                        // Issue #360. This branch compared case-insensitively but then wrote
+                        // the hardcoded `Caption` spelling, so on a control that spells the
+                        // attribute `caption` it *added* `Caption` beside it — and the SDK
+                        // save died with "Já foi adicionado um item com a mesma chave",
+                        // naming neither the attribute nor the control.
+                        previous = Attr(element, "Caption") ?? ExtractConstantCaptionFromTokens(Attr(element, "CaptionExpression"));
+                        WriteAttributeCaseInsensitive(element, "Caption", value ?? string.Empty);
+                        if (Attr(element, "CaptionExpression") != null)
                         {
-                            element.SetAttributeValue("CaptionExpression", BuildConstantCaptionTokens(value ?? string.Empty));
+                            WriteAttributeCaseInsensitive(element, "CaptionExpression",
+                                BuildConstantCaptionTokens(value ?? string.Empty));
                         }
                     }
                     else
                     {
-                        previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
-                        element.SetAttributeValue(attrName, value ?? string.Empty);
+                        // Read through the case-insensitive Attr so a control that spells
+                        // this attribute differently reports its real previous value rather
+                        // than null, and so no-op detection can see that nothing changed.
+                        previous = Attr(element, attrName);
+
+                        // Write in place, collapsing any pre-existing differently-cased
+                        // duplicates onto one attribute.
+                        //
+                        // Setting a property on a control that carried both `caption` and
+                        // `Caption` produced "Já foi adicionado um item com a mesma chave"
+                        // — the SDK rejects an element holding two attributes that differ
+                        // only in case. Resolving the case-insensitively alone made that
+                        // reachable (it now finds the control, so it now gets as far as the
+                        // write), so the duplicates are merged here rather than left for the
+                        // SDK to reject.
+                        WriteAttributeCaseInsensitive(element, attrName, value ?? string.Empty);
                     }
                 }
 
@@ -513,12 +562,22 @@ namespace GxMcp.Worker.Services
                 }
                 else if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) || string.Equals(attrName, "CaptionExpression", StringComparison.OrdinalIgnoreCase))
                 {
-                    persistedValue = persistedElement.Attribute("Caption")?.Value
-                        ?? ExtractConstantCaptionFromTokens(persistedElement.Attribute("CaptionExpression")?.Value);
+                    // Issue #360. A caption has two homes, and which one the SDK uses
+                    // depends on the control family: HTMLATT-shaped controls (textblock,
+                    // gxTextBlock) are stored as CaptionExpression Tokens XML, while some
+                    // keep the plain attribute. Reading only the attribute reported a stale
+                    // value for a control whose caption the SDK had just rewritten as tokens
+                    // — so a correct write verified against the old string, failed, and was
+                    // rolled back. Both representations are now considered, and the one the
+                    // SDK actually used wins.
+                    persistedValue = ResolvePersistedCaption(persistedElement);
                 }
                 else
                 {
-                    persistedValue = persistedElement.Attribute(attrName)?.Value;
+                    // Issue #360: case-insensitive, or the verification below reads null
+                    // for a control that spells the attribute differently and reports a
+                    // successful write as a failed one — after rolling it back.
+                    persistedValue = Attr(persistedElement, attrName);
                 }
 
                 bool match = IsPersistedValueMatch(attrName, value, persistedValue);
@@ -546,8 +605,8 @@ namespace GxMcp.Worker.Services
                             persistedValue = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                                 ? retryElement.Value
                                 : ((string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) || string.Equals(attrName, "CaptionExpression", StringComparison.OrdinalIgnoreCase))
-                                    ? (retryElement.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(retryElement.Attribute("CaptionExpression")?.Value))
-                                    : (retryElement.Attribute(attrName)?.Value));
+                                    ? ResolvePersistedCaption(retryElement)
+                                    : Attr(retryElement, attrName));
                             match = IsPersistedValueMatch(attrName, value, persistedValue);
                         }
                     }
@@ -696,17 +755,26 @@ namespace GxMcp.Worker.Services
                         attrName = ResolveCanonicalAttributeName(element, propertyName);
                         if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase))
                         {
-                            previous = element.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(element.Attribute("CaptionExpression")?.Value);
-                            element.SetAttributeValue("Caption", value ?? string.Empty);
-                            if (element.Attribute("CaptionExpression") != null)
+                            // Issue #360: see the single-property branch — matching
+                            // case-insensitively and writing the hardcoded spelling was what
+                            // produced the duplicate-attribute SDK rejection.
+                            previous = Attr(element, "Caption") ?? ExtractConstantCaptionFromTokens(Attr(element, "CaptionExpression"));
+                            WriteAttributeCaseInsensitive(element, "Caption", value ?? string.Empty);
+                            if (Attr(element, "CaptionExpression") != null)
                             {
-                                element.SetAttributeValue("CaptionExpression", BuildConstantCaptionTokens(value ?? string.Empty));
+                                WriteAttributeCaseInsensitive(element, "CaptionExpression",
+                                    BuildConstantCaptionTokens(value ?? string.Empty));
                             }
                         }
                         else
                         {
-                            previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
-                            element.SetAttributeValue(attrName, value ?? string.Empty);
+                            // Issue #360: same case-insensitive read and duplicate-collapsing
+                            // write as the single-property path above. The two paths must not
+                            // disagree about how a control spells its attributes, or a batch
+                            // write reports a different previousValue than the single write
+                            // it is meant to mirror.
+                            previous = Attr(element, attrName);
+                            WriteAttributeCaseInsensitive(element, attrName, value ?? string.Empty);
                         }
                     }
 
@@ -763,13 +831,20 @@ namespace GxMcp.Worker.Services
                             extra: new JObject { ["rolledBack"] = rolledBack, ["control"] = controlName, ["property"] = attrName });
                     }
 
+                    // Issue #360: the same case-insensitive read and the same
+                    // caption-home resolution as the single-property path. Left as it was,
+                    // a batch set_properties on a control spelling its attributes in the
+                    // SDK's lower-case form compared the requested value against null, and
+                    // a batch Caption change compared against the stale string the SDK had
+                    // already replaced with tokens - either way a correct batch was rolled
+                    // back as a whole, which loses every property in it, not just the one
+                    // that disagreed.
                     string actual = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                         ? (persistedEl.Value ?? string.Empty)
-                        : (persistedEl.Attribute(attrName) != null
-                            ? persistedEl.Attribute(attrName).Value
-                            : (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase)
-                                ? ExtractConstantCaptionFromTokens(persistedEl.Attribute("CaptionExpression")?.Value)
-                                : string.Empty));
+                        : ((string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(attrName, "CaptionExpression", StringComparison.OrdinalIgnoreCase))
+                            ? ResolvePersistedCaption(persistedEl)
+                            : (Attr(persistedEl, attrName) ?? string.Empty));
                     if (!IsPersistedValueMatch(attrName, expected, actual))
                     {
                         bool rolledBack = false;
@@ -1253,7 +1328,14 @@ namespace GxMcp.Worker.Services
                             ["score"] = candidate.Score,
                             ["root"] = candidate.Document?.Root?.Name.LocalName,
                             ["nodes"] = candidate.Document?.Descendants().Count() ?? 0,
-                            ["controlAttrs"] = candidate.Document?.Descendants().Count(e => e.Attribute("ControlName") != null) ?? 0
+                            // Issue #360: counted through the case-sensitive overload, so a
+                            // form that spells its identity `controlName` - which is how the
+                            // SDK and the IDE both write it - reported zero controls in the
+                            // surface diagnostic. That is the same "your control is not
+                            // there" report the issue was filed about, in the one place a
+                            // caller might have gone to check whether it was true.
+                            ["controlAttrs"] = candidate.Document?.Descendants()
+                                .Count(e => Attr(e, "ControlName") != null) ?? 0
                         });
                     }
 
@@ -1381,7 +1463,17 @@ namespace GxMcp.Worker.Services
             return (searchValue ?? string.Empty).IndexOf(criteria.Query, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static XElement FindControlElement(XDocument doc, string controlName)
+        /// <summary>
+        /// Locates a layout control by name, path, or legacy id.
+        ///
+        /// <para>
+        /// Internal rather than private so the identity-casing regression is covered
+        /// behaviourally: the defect was a one-line overload choice inside
+        /// <c>Attr</c>, and a source-shape assertion over this method could not fail for
+        /// it.
+        /// </para>
+        /// </summary>
+        internal static XElement FindControlElement(XDocument doc, string controlName)
         {
             if (string.IsNullOrWhiteSpace(controlName)) return null;
 
@@ -1492,10 +1584,138 @@ namespace GxMcp.Worker.Services
             return existing != null ? existing.Name.LocalName : (requested ?? string.Empty);
         }
 
+        /// <summary>
+        /// An attribute's value, or null when absent.
+        ///
+        /// <para>
+        /// Issue #360. This was <c>element.Attribute(name)</c>, and XLinq's single-argument
+        /// <c>Attribute</c> overload is <b>case-sensitive</b> — so reading a WebForm whose
+        /// control spells its identity <c>controlName</c> (which is how the SDK and the IDE
+        /// both write it) returned null even though the attribute was right there. Every
+        /// caller then concluded the control did not exist: <c>genexus_layout
+        /// action=set_property</c> and <c>genexus_properties action=set control=...</c>
+        /// both answered <c>ControlNotFound</c> for a control <c>get_tree</c> listed, on a
+        /// plain WebPanel with no pattern instance.
+        /// </para>
+        ///
+        /// <para>
+        /// The casing a KB uses is not ours to fix — it varies by generator vintage and by
+        /// which family wrote the form — so the read is made case-insensitive instead. The
+        /// sibling helper on the typed property path, <c>WebFormSdkReflection</c>, already
+        /// had to list <c>id | ControlName | controlName | InternalName | name</c> by hand
+        /// for exactly this reason; that duplication is what made the two paths disagree
+        /// about whether a control exists.
+        /// </para>
+        /// </summary>
         private static string Attr(XElement element, string name)
         {
+            if (element == null || string.IsNullOrEmpty(name)) return null;
+
             var attr = element.Attribute(name);
-            return attr != null ? attr.Value : null;
+            if (attr != null) return attr.Value;
+
+            // Namespace-prefixed spellings (gx:ControlName) resolve on LocalName only.
+            foreach (var candidate in element.Attributes())
+            {
+                if (string.Equals(candidate.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))
+                    return candidate.Value;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The caption as the SDK actually stored it, given a control that can hold it in
+        /// either of two places.
+        ///
+        /// <para>
+        /// Issue #360. A caption is <c>CaptionExpression</c> Tokens XML on the
+        /// HTMLATT-shaped controls (textblock, gxTextBlock) and a plain attribute on
+        /// others. The write goes through the SDK, which rewrites whichever representation
+        /// that control uses — so verifying against only the attribute read the stale value
+        /// of a control whose caption had just been rewritten as tokens. A correct write
+        /// then failed verification and was rolled back, which is a worse outcome than the
+        /// original bug: the caller's change was discarded.
+        /// </para>
+        ///
+        /// <para>
+        /// So the tokens are read first. When they carry a constant, that is the SDK's
+        /// value; the plain attribute is only consulted when there is no constant token to
+        /// read, which is the case for controls that genuinely store it there.
+        /// </para>
+        /// </summary>
+        internal static string ResolvePersistedCaption(XElement element)
+        {
+            var fromTokens = ExtractConstantCaptionFromTokens(Attr(element, "CaptionExpression"));
+            if (!string.IsNullOrEmpty(fromTokens)) return fromTokens;
+            return Attr(element, "Caption");
+        }
+
+        /// <summary>
+        /// Sets an attribute, reusing whichever spelling the element already uses and
+        /// collapsing case-only duplicates onto one.
+        ///
+        /// <para>
+        /// Issue #360. An element can legitimately arrive holding both <c>caption</c> and
+        /// <c>Caption</c> — the SDK's own export uses the lower-case form, and an earlier
+        /// pass wrote the canonical one. XLinq is happy with that; the SDK is not, and the
+        /// save dies with "Já foi adicionado um item com a mesma chave" ("an item with the
+        /// same key has already been added") — a message that names neither the attribute
+        /// nor the control.
+        /// </para>
+        ///
+        /// <para>
+        /// So the duplicates are merged here: the first spelling found wins and keeps its
+        /// position in document order, the rest are removed. That is the same XML the SDK
+        /// would have accepted, arrived at without an SDK round-trip to discover the
+        /// constraint.
+        /// </para>
+        /// </summary>
+        internal static void WriteAttributeCaseInsensitive(XElement element, string attrName, string value)
+        {
+            if (element == null || string.IsNullOrEmpty(attrName)) return;
+
+            XAttribute survivor = null;
+            var duplicates = new List<XAttribute>();
+
+            foreach (var candidate in element.Attributes())
+            {
+                if (candidate.IsNamespaceDeclaration) continue;
+                if (!string.Equals(candidate.Name.LocalName, attrName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (survivor == null) survivor = candidate;
+                else duplicates.Add(candidate);
+            }
+
+            if (survivor != null) survivor.Value = value;
+            else element.SetAttributeValue(attrName, value);
+
+            foreach (var duplicate in duplicates) duplicate.Remove();
+        }
+
+        /// <summary>
+        /// Whether this property name is an SDK control property that the WebForm carries
+        /// through <see cref="WebFormSchemaHints.CustomPropertiesAttribute"/> rather than
+        /// as an XML attribute.
+        ///
+        /// <para>
+        /// Issue #360. Matched on both the property id (<c>GxFormat</c>) and its display
+        /// name (<c>Format</c>), because the two routes in the report used both spellings
+        /// and neither worked. Deliberately narrow: a rejection is worse than a redundant
+        /// hint, so this names only the properties confirmed to live in the carrier.
+        /// </para>
+        /// </summary>
+        internal static bool IsCustomPropertyOnly(string propertyName)
+        {
+            if (string.IsNullOrWhiteSpace(propertyName)) return false;
+            string normalized = propertyName.Trim();
+
+            if (string.Equals(normalized, "GxFormat", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(normalized, "Format", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(normalized, "ControlType", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(normalized, "ControlValues", StringComparison.OrdinalIgnoreCase)) return true;
+
+            return false;
         }
 
         private static bool IsTextPropertyName(string propertyName)
