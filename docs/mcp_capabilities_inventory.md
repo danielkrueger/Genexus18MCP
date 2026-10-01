@@ -148,9 +148,9 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 
 | Tool | Status | Worker path |
 | --- | --- | --- |
-| `genexus_query` | active | `Search -> Query` |
+| `genexus_query` | active | `Search -> Query`; `kbs=[...]` runs a bounded read-only federation across an explicit set of already-open KBs in one call (issue #356) — per-KB `status`/`complete`, a `coverage` summary, `cursors` continuation, and `maxConcurrency`/`maxTotalResults`/`perKbTimeoutMs` bounds; never opens a KB implicitly |
 | `genexus_list_objects` | active | `List -> Objects` |
-| `genexus_read` | active | `Read -> ExtractSource`; `targets[]` plural form routes to `Batch -> BatchRead` |
+| `genexus_read` | active | `Read -> ExtractSource`; `targets[]` plural form routes to `Batch -> BatchRead`; a single-part read also accepts `ifUnchangedSince` (issue #357), returning an opaque `contentToken`; a provably unchanged representation answers `notModified: true` with no `source`, and every other outcome returns the full body with `conditional.reason`. `ifUnchangedSince` is rejected with `ConditionalReadUnsupportedForm` on `targets[]`, `parts[]` and full-object forms |
 | `genexus_edit` | active | Full Source forwards `verifyMode`/`requireObjectSave`, verifies public-read text, and separates physical save from comparison evidence; `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or `Patch -> Apply` (mode=patch + string, and the abbreviated `patch={find,replace}` form that additionally accepts `patch.scope` / `patch.indentation`); `targets[]` plural form routes to `Batch -> MultiEdit`, `parts[]` to `Batch -> BatchEdit`, `changeSet` to `Mutation -> ChangeSet`; full persisted `source`/`content` is omitted by default across successful writes; `return_post_state` controls only the `post_state` object; `includePersistedText=true` restores full text for `genexus_edit`, `genexus_edit_and_build`, `genexus_io`, and `genexus_variable`, with omitted paths in MCP `_meta.omittedFields`; oversized `post_state.diff` is capped at 40 lines with `diffTruncated`; variable add/modify returns changed declarations and persisted count |
 | `genexus_inspect` | active | `Analyze -> GetConversionContext` |
 | `genexus_analyze` | active | `Analyze`, `Linter`, or `UI` depending on mode |

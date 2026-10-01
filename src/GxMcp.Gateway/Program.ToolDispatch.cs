@@ -219,6 +219,11 @@ namespace GxMcp.Gateway
             // Live diagnostics and progress reads must always reflect current state.
             bool isLiveTool = IsLiveToolForCache(tName, lcAction);
             var recoveryReads = new List<(string Target, string Part, RecoveryRequirement? Observed)>();
+            // Issue #357: a conditional read may omit its body. An unresolved write
+            // fence may not be reconciled by an absent body, so when one covers the
+            // part being read the token is honoured-but-overridden and a full
+            // authoritative read is forced instead.
+            bool requireAuthoritativeRead = false;
             if (string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
             {
                 _mutationRecovery.Refresh();
@@ -237,6 +242,7 @@ namespace GxMcp.Gateway
                     if (ReadCoversPart(observed.Part))
                         recoveryReads.Add((observed.Target, observed.Part, observed));
                 }
+                requireAuthoritativeRead = recoveryReads.Count > 0;
                 // A cached response cannot reconcile an uncertain persisted write.
                 isLiveTool |= !_mutationRecovery.IsHealthy || _mutationRecovery.Count > 0;
             }
@@ -284,6 +290,17 @@ namespace GxMcp.Gateway
                 ["method"] = "tools/call",
                 ["params"] = tcParams
             };
+
+            // Issue #356: a `kbs=[...]` federation is answered before the single-KB
+            // index gate below, which would otherwise judge the whole call by the
+            // session KB's index state — a question the federation answers per KB.
+            // Returns null for an ordinary single-KB query.
+            // Deliberately ahead of the semantic cache as well: a cached
+            // federation would need per-KB revision bookkeeping to invalidate
+            // correctly, and a stale multi-KB answer is more misleading than an
+            // uncached one. Each leg is still recorded in ToolLatencyStats.
+            JObject? multiKbResult = await TryDispatchMultiKbDiscoveryAsync(tName, tArgs, transportCancellation);
+            if (multiKbResult != null) return multiKbResult;
 
             // v2.6.9 perf: gateway-side fast-fail for SDK-bound tools when
             // the worker is still doing its initial BulkIndex on the STA thread.
@@ -458,6 +475,14 @@ namespace GxMcp.Gateway
             }
 
             workerCmd["client"] = "mcp";
+            if (requireAuthoritativeRead)
+            {
+                // Set on the routed command, not on tArgs: the caller's arguments
+                // must keep describing what they asked for, and no pre-routing
+                // decision (cache key, gateway-served tools, timeouts) may observe
+                // this internal fence.
+                workerCmd["_requireAuthoritativeRead"] = true;
+            }
             AttachClientRequestIdentity(workerCmd, tArgs);
             int timeoutMs = GetToolTimeoutMs(tName, tArgs);
             // Still needed by the timeout handler below (recovery hints for

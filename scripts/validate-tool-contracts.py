@@ -130,6 +130,11 @@ ALLOWED_UNDECLARED_ROUTER_PARAMETERS = frozenset(
         ("ObjectRouter.cs", "genexus_edit", "guid"),
         ("ObjectRouter.cs", "genexus_edit", "autoInjectVariables"),
         ("ObjectRouter.cs", "genexus_edit", "changes"),
+        # Issue #357 internal transport metadata (same class as `_gxmcpOwnerId`):
+        # the Gateway sets it on the routed command when a post-write recovery
+        # fence forces an authoritative read. Deliberately NOT a published schema
+        # property — a caller must not be able to request it.
+        ("ObjectRouter.cs", "genexus_read", "_requireAuthoritativeRead"),
         ("ObjectRouter.cs", "genexus_edit_and_build", "path"),
         ("ObjectRouter.cs", "genexus_edit_and_build", "entityKey"),
         ("ObjectRouter.cs", "genexus_edit_and_build", "guid"),

@@ -3481,6 +3481,13 @@
             "description": "Opaque token from prior nextCursor. Use…",
             "type": "string"
           },
+          "cursors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Per-KB continuation: map each alias in…",
+            "type": "object"
+          },
           "domainFilter": {
             "type": "string"
           },
@@ -3496,12 +3503,31 @@
             "description": "KB alias.",
             "type": "string"
           },
+          "kbs": {
+            "description": "Federated read-only discovery over an…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "limit": {
+            "type": "integer"
+          },
+          "maxConcurrency": {
+            "description": "Federation only: KBs searched in…",
+            "type": "integer"
+          },
+          "maxTotalResults": {
+            "description": "Federation only: total results across…",
             "type": "integer"
           },
           "modifiedBefore": {
             "description": "ISO-8601 UTC. Only items with…",
             "type": "string"
+          },
+          "perKbTimeoutMs": {
+            "description": "Federation only: per-KB deadline in ms…",
+            "type": "integer"
           },
           "query": {
             "type": "string"
@@ -3545,6 +3571,10 @@
           },
           "guid": {
             "description": "Persisted object GUID from…",
+            "type": "string"
+          },
+          "ifUnchangedSince": {
+            "description": "Opaque contentToken from a previous…",
             "type": "string"
           },
           "kb": {

@@ -129,6 +129,7 @@ namespace GxMcp.Worker.Services
 
         private readonly KbService _kbService;
         private readonly BuildService _buildService;
+        private readonly ConditionalReadService _conditionalRead;
         private DataInsightService _dataInsightService;
         private UIService _uiService;
         private PatternAnalysisService _patternAnalysisService;
@@ -140,6 +141,10 @@ namespace GxMcp.Worker.Services
         {
             _kbService = kbService;
             _buildService = buildService;
+            // Issue #357. Constructed here rather than injected: it owns no state
+            // beyond the KB identity accessors and would otherwise widen the
+            // constructor every other caller of ObjectService has to satisfy.
+            _conditionalRead = new ConditionalReadService(kbService, this);
         }
 
         public void SetDataInsightService(DataInsightService ds) { _dataInsightService = ds; }
@@ -3524,13 +3529,74 @@ namespace GxMcp.Worker.Services
         }
 
         public string ReadObjectSource(string target, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null)
+            string guid = null, string entityKey = null, string path = null, ConditionalReadService.Request conditional = null)
         {
             target = ResolveTargetForIdentity(target, guid, entityKey, path);
             var obj = FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
             string resolvedPart = ResolvePartName(obj, partName);
+
+            // Issue #357: the revision is observed here, BEFORE any body is read,
+            // because a token must describe the bytes it was issued with — not the
+            // bytes that exist after a concurrent edit. Everything about the
+            // conditional decision is delegated so the unconditional path below
+            // stays exactly as it was.
+            if (conditional != null)
+                return ReadObjectSourceConditional(obj, resolvedPart, offset, limit, client, minimize, conditional);
+
+            return ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
+        }
+
+        /// <summary>
+        /// A body is omitted only when unchanged can be proven. Every other branch
+        /// — token unreadable, token bound to a different KB/model/Worker/object/
+        /// part/window, revision unavailable, or an authoritative read forced by an
+        /// outstanding write fence — returns the complete body plus a
+        /// machine-readable <c>conditional.reason</c>. There is no
+        /// "probably unchanged" branch.
+        /// </summary>
+        private string ReadObjectSourceConditional(
+            KBObject obj, string resolvedPart, int? offset, int? limit,
+            string client, bool minimize, ConditionalReadService.Request conditional)
+        {
+            var observed = _conditionalRead.BuildState(
+                obj, resolvedPart, offset, limit, TryComputeRevisionStamp(obj));
+
+            string reason;
+            ConditionalReadToken.State tokenState = null;
+            if (string.IsNullOrWhiteSpace(conditional.Token))
+            {
+                reason = ConditionalReadToken.ReasonAbsent;
+            }
+            else if (conditional.RequireAuthoritativeRead)
+            {
+                reason = ConditionalReadToken.ReasonAuthoritativeRequired;
+            }
+            else if (!ConditionalReadToken.TryParse(conditional.Token, out tokenState, out _))
+            {
+                reason = ConditionalReadToken.ReasonMalformed;
+            }
+            else
+            {
+                reason = ConditionalReadToken.Compare(tokenState, observed);
+            }
+
+            if (string.Equals(reason, ConditionalReadToken.ReasonMatched, StringComparison.Ordinal))
+                return _conditionalRead.BuildNotModified(obj, tokenState);
+
+            string body = ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
+            return _conditionalRead.Decorate(body, observed, reason);
+        }
+
+        private static string TryComputeRevisionStamp(KBObject obj)
+        {
+            try { return WriteService.ComputeVersionToken(obj); }
+            catch { return null; }
+        }
+
+        private string ReadObjectSourceResolved(KBObject obj, string resolvedPart, int? offset, int? limit, string client, bool minimize)
+        {
             if (!(obj is Artech.Packages.Patterns.Objects.PatternSettings) && ShouldUseReadCache(client, minimize))
             {
                 string cacheKey = BuildReadCacheKey(obj.Guid, resolvedPart, offset, limit, client, minimize);

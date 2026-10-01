@@ -213,11 +213,21 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-24 (issues #268, #306, #308, #309, #310, #313, #314, #315, #316): 32000 → 33500 for typed WWP grid, lifecycle continuation, semantic
             //   WebForm safety, report-control, K2B/structural variable, and pagination
             //   contracts. Measured ~33055 tokens.
-            Assert.True(approxTokens < 33500, $"tool_definitions.json is ~{approxTokens} tokens; budget 33500.");
+            //   2026-09-30 (issues #356/#357): 33500 → 34000 for genexus_read's
+            //   conditional-read `ifUnchangedSince` and genexus_query's bounded
+            //   multi-KB `kbs`/`cursors`/`maxConcurrency`/`maxTotalResults`/
+            //   `perKbTimeoutMs`. Both descriptions were trimmed while being added;
+            //   what remains is the honest cost of telling a caller which KBs were
+            //   actually searched, instead of letting an unsearched KB read as a KB
+            //   with no matches. Measured ~33890 tokens.
+            Assert.True(approxTokens < 34000, $"tool_definitions.json is ~{approxTokens} tokens; budget 34000.");
         }
 
         [Theory]
-        [InlineData("all", 82000)]
+        // 82000 -> 82500 for the same issue #356/#357 additions as the token budget
+        // above (genexus_read.ifUnchangedSince; genexus_query kbs/cursors/
+        // maxConcurrency/maxTotalResults/perKbTimeoutMs). Measured 82032 bytes.
+        [InlineData("all", 82500)]
         [InlineData("core", 25000)]
         [InlineData("standard", 60000)]
         [InlineData("authoring", 60000)]

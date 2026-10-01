@@ -1753,8 +1753,12 @@ namespace GxMcp.Worker.Services
             if (action == "ExtractSource")
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
+                // Issue #357: a conditional read is requested explicitly. Leaving
+                // `conditional` null keeps the plain, unconditional read path —
+                // byte-identical to before the feature existed.
+                ConditionalReadService.Request conditional = BuildConditionalReadRequest(args);
                 string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
-                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), conditional);
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1786,6 +1790,29 @@ namespace GxMcp.Worker.Services
             if (action == "GetVariables") return _analyzeService.GetVariables(target);
             if (action == "GetAttribute") return _analyzeService.GetAttributeMetadata(target);
             return null;
+        }
+
+        /// <summary>
+        /// Issue #357 — turns the routed read arguments into a conditional-read
+        /// request, or <c>null</c> for an ordinary read.
+        /// <para>
+        /// <c>requireAuthoritativeRead</c> is internal transport metadata set by the
+        /// Gateway when an earlier write on this target/part has an unresolved
+        /// outcome. Only a body can reconcile that, so the conditional token is
+        /// honoured-but-overridden rather than silently dropped — the caller is
+        /// told why in <c>conditional.reason</c>.
+        /// </para>
+        /// </summary>
+        private static ConditionalReadService.Request BuildConditionalReadRequest(JObject args)
+        {
+            string token = args?["ifUnchangedSince"]?.ToString();
+            bool authoritative = args?["requireAuthoritativeRead"]?.ToObject<bool?>() == true;
+            if (string.IsNullOrWhiteSpace(token) && !authoritative) return null;
+            return new ConditionalReadService.Request
+            {
+                Token = token,
+                RequireAuthoritativeRead = authoritative
+            };
         }
 
         private string Handle_AtomicCreate(JObject request, string method, string action, string target, string payload, JObject args)

@@ -96,6 +96,25 @@ namespace GxMcp.Gateway.Routers
                 + "Insert_After or Append, and it must be a JSON object. No write was attempted.");
         }
 
+        /// <summary>
+        /// Issue #357: <c>ifUnchangedSince</c> is defined for exactly one shape —
+        /// a single named part, one pagination window, one object. Every other read
+        /// form (batch, multi-part, full object) has no single representation to
+        /// bind a token to, so accepting the argument and ignoring it would hand the
+        /// caller a silent no-op. Reject it, by name, before routing.
+        /// </summary>
+        private static void RejectConditionalReadForNonSinglePart(JObject? args, string readForm)
+        {
+            string? token = args?["ifUnchangedSince"]?.ToString();
+            if (string.IsNullOrWhiteSpace(token)) return;
+            throw new UsageException(
+                "ConditionalReadUnsupportedForm",
+                $"ifUnchangedSince is supported only on a single-part read with one object and one "
+                + $"pagination window; it cannot be used with {readForm}. The token returned by a "
+                + "single-part read is bound to that exact part and window, so it cannot answer for "
+                + "another form. No read was performed.");
+        }
+
         public object? ConvertToolCall(string toolName, JObject? args)
         {
             string? nameArg = args?["name"]?.ToString();
@@ -114,6 +133,7 @@ namespace GxMcp.Gateway.Routers
                         throw new UsageException("usage_error", "name and targets are mutually exclusive");
                     if (hasTargetsRead)
                     {
+                        RejectConditionalReadForNonSinglePart(args, "targets[] batch reads");
                         return new {
                             module = "Batch",
                             action = "BatchRead",
@@ -130,6 +150,7 @@ namespace GxMcp.Gateway.Routers
                     bool hasParts = partsTok is JArray partsArr && partsArr.Count > 0;
                     if (hasParts)
                     {
+                        RejectConditionalReadForNonSinglePart(args, "parts[] multi-part reads");
                         return new {
                             module = "Read",
                             action = "ExtractParts",
@@ -152,6 +173,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         // SOTA 1-roundtrip default: omitting 'part' or requesting 'all'/'full'/'summary'/'360'
                         // extracts the full object (rules, source/events, variables, structure, signatures) tailored to the type.
+                        RejectConditionalReadForNonSinglePart(args, "full-object reads");
                         return new {
                             module = "Read",
                             action = "ExtractFullObject",
@@ -172,7 +194,13 @@ namespace GxMcp.Gateway.Routers
                         type = args?["type"]?.ToString(),
                         guid = args?["guid"]?.ToString(),
                         entityKey = args?["entityKey"]?.ToString(),
-                        path = args?["path"]?.ToString()
+                        path = args?["path"]?.ToString(),
+                        // Issue #357: an opaque token bound to one exact part representation.
+                        // Omitted entirely when absent, so the unconditional route is unchanged.
+                        ifUnchangedSince = args?["ifUnchangedSince"]?.ToString(),
+                        // Internal transport metadata (see Program.ToolDispatch). Never a
+                        // public argument; the Gateway sets it when a write fence applies.
+                        requireAuthoritativeRead = args?["_requireAuthoritativeRead"]?.ToObject<bool?>() ?? false
                     };
                 }
 
