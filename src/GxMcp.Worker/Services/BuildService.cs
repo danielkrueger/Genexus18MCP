@@ -1963,14 +1963,8 @@ namespace GxMcp.Worker.Services
                             bool fullDeploy = false, bool compileCheckCallersRequested = true, int compileCheckCallerCap = 0,
                             bool queueLifecycle = true)
         {
-            if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(target))
-            {
-                return McpResponse.Err(
-                    code: "BuildAllTargetNotAllowed",
-                    message: "action=build_all is global and cannot accept target; omit target. Use action=build for directed builds.",
-                    extra: new JObject { ["action"] = "build_all", ["target"] = target });
-            }
+            string globalRejection = RejectGlobalActionWithTarget(action, target);
+            if (globalRejection != null) return globalRejection;
 
             // issue #37 item 4: fast-fail reorg on a DBA-managed datastore
             // (Reorganize Server tables = No). GeneXus never applies the delta there,
@@ -2312,6 +2306,56 @@ namespace GxMcp.Worker.Services
                     }
                 } : null
             });
+        }
+
+        /// <summary>
+        /// Rejects a whole-KB action that was also given a target, or null when the
+        /// combination is fine.
+        ///
+        /// <para>
+        /// Issue #359. Both whole-KB actions reach their branch in the plan builder before
+        /// <c>targets</c> is read, so a target sent with one is discarded rather than
+        /// refused - the caller asked for an object and got the entire Knowledge Base, with
+        /// nothing in the response saying so. <c>BuildAll</c> already refused this;
+        /// <c>RebuildAll</c> did not, and <c>action=rebuild target=&lt;objeto&gt;</c> was
+        /// routed straight into it.
+        /// </para>
+        ///
+        /// <para>
+        /// A predicate rather than inline string tests so it can be exercised directly. An
+        /// earlier version asserted on the presence of the error-code string in this file,
+        /// which stayed green when the guard's condition was short-circuited to
+        /// <c>false</c> - the guard was then present in source and absent in behaviour.
+        /// </para>
+        /// </summary>
+        internal static string RejectGlobalActionWithTarget(string action, string target)
+        {
+            if (string.IsNullOrWhiteSpace(target)) return null;
+
+            if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpResponse.Err(
+                    code: "BuildAllTargetNotAllowed",
+                    message: "action=build_all is global and cannot accept target; omit target. Use action=build for directed builds.",
+                    extra: new JObject { ["action"] = "build_all", ["target"] = target });
+            }
+
+            if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpResponse.Err(
+                    code: "RebuildAllTargetNotAllowed",
+                    message: "RebuildAll is global and cannot honour a target. The target would be silently "
+                        + "discarded and the whole Knowledge Base rebuilt. Use action=rebuild (targeted, "
+                        + "forced) for one object, or RebuildAll with no target to force the entire KB.",
+                    extra: new JObject
+                    {
+                        ["action"] = "rebuild",
+                        ["target"] = target,
+                        ["requestedWorkerAction"] = action
+                    });
+            }
+
+            return null;
         }
 
         private static List<string> ParseTargets(string target)

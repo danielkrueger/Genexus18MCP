@@ -1049,6 +1049,37 @@ namespace GxMcp.Worker.Services
                 ["generatedObjects"] = new JArray(generated),
                 ["errors"] = new JArray(result?.Errors ?? Enumerable.Empty<string>())
             };
+
+            // Issue #359: say which expected family members were not observed.
+            //
+            // The reporter's ask was "generate the objects, or fail instead of
+            // reporting PatternApplied". Failing hard is the wrong half of that
+            // alternative here, and the reason is in the SDK comment above this
+            // lookup: the generator registers new objects asynchronously after Invoke
+            // returns, so a member missing at this instant may be seconds from
+            // existing. Turning that race into a hard failure would reject applies
+            // that succeed.
+            //
+            // What is not acceptable is a bare success that silently omits part of its
+            // own result, because that reads identically whether the family was
+            // generated, still pending, or never generated - and the first two are the
+            // common cases while the third is the one worth surfacing. So the names go
+            // in the response and the caller decides; nothing here is a verdict.
+            var missingFamily = BuildMissingWwpFamily(obj?.Name, generated);
+            if (missingFamily.Count > 0)
+            {
+                patternResult["expectedFamilyObjects"] =
+                    new JArray(WwpFamilyNaming.ExpectedFamilyNames(obj?.Name));
+                patternResult["familyMissing"] = new JArray(missingFamily);
+                patternResult["familyComplete"] = false;
+                patternResult["familyNote"] =
+                    "The PatternInstance was attached, but these generated objects were not "
+                    + "visible when the apply returned. WorkWithPlus registers them "
+                    + "asynchronously, so this can mean 'still being generated' rather than "
+                    + "'not generated'. Re-check with genexus_query on the name; if it is still "
+                    + "absent after genexus_lifecycle action=index, the generator did not run and "
+                    + "the IDE's Apply Pattern is the working route.";
+            }
             JArray patternWarnings = null;
             if (patternValidationIssues != null)
             {
@@ -2888,6 +2919,50 @@ namespace GxMcp.Worker.Services
         // selection panel, `View<X>` detail, `ExportWW<X>`/`ExportReportWW<X>` exports,
         // `Prompt<X>` prompt. WebPanel targets don't generate siblings — they get the
         // host attached directly.
+        /// <summary>
+        /// Expected family members that were not among <paramref name="generated"/>.
+        ///
+        /// <para>
+        /// Compares by name rather than by count: a caller that got four of the expected
+        /// objects plus an unrelated one from the adapter must not read as complete, and
+        /// a caller that got the right four under a different case must not read as
+        /// incomplete.
+        /// </para>
+        /// </summary>
+        private static List<string> BuildMissingWwpFamily(string baseName, List<string> generated)
+        {
+            var missing = new List<string>();
+            if (string.IsNullOrEmpty(baseName) || generated == null) return missing;
+
+            var present = new HashSet<string>(generated, StringComparer.OrdinalIgnoreCase);
+            foreach (var expected in WwpFamilyNaming.ExpectedFamilyNames(baseName))
+            {
+                if (!present.Contains(expected)) missing.Add(expected);
+            }
+            return missing;
+        }
+
+        /// <summary>
+        /// The generated WorkWithPlus family for <paramref name="parent"/>, by name.
+        ///
+        /// <para>
+        /// Issue #359. This used to probe a hand-written <em>prefix</em> list -
+        /// <c>WW&lt;Trn&gt;</c>, <c>View&lt;Trn&gt;</c>, <c>ExportWW&lt;Trn&gt;</c> - and
+        /// WorkWithPlus generates a <em>suffix</em> family: <c>&lt;Trn&gt;WW</c>,
+        /// <c>&lt;Trn&gt;WWDS</c>, <c>&lt;Trn&gt;WWExport</c>,
+        /// <c>&lt;Trn&gt;WWGetFilterData</c>. Every family probe therefore missed, and
+        /// because this same list drives the search-index registration just below, the
+        /// generated objects were neither reported nor indexed: the apply returned
+        /// <c>generatedObjects: ["WorkWithPlus&lt;Trn&gt;"]</c> and the four siblings
+        /// read back as <c>ObjectNotFound</c> until something else reindexed the KB.
+        /// </para>
+        ///
+        /// <para>
+        /// The apply had in fact worked. Only the report - and the index - were wrong,
+        /// which is why the failure looked like a generation gap and survived a reapply
+        /// and a targeted build.
+        /// </para>
+        /// </summary>
         private List<string> LookupWwpFamilyByConvention(KBObject parent)
         {
             var found = new List<string>();
@@ -2895,22 +2970,15 @@ namespace GxMcp.Worker.Services
             string baseName = parent.Name;
             if (string.IsNullOrEmpty(baseName)) return found;
 
-            string[] candidates = new[]
-            {
-                "WorkWithPlus" + baseName,
-                "WW" + baseName,
-                "View" + baseName,
-                "ExportWW" + baseName,
-                "ExportReportWW" + baseName,
-                "Prompt" + baseName
-            };
-
-            foreach (var name in candidates)
+            // Host first, then the suffix family, then the legacy prefix shapes. See
+            // WwpFamilyNaming for the observed object names behind this order.
+            foreach (var name in WwpFamilyNaming.FamilyCandidates(baseName))
             {
                 try
                 {
                     var o = _objectService.FindObject(name);
-                    if (o != null && !string.IsNullOrEmpty(o.Name))
+                    if (o != null && !string.IsNullOrEmpty(o.Name)
+                        && !found.Contains(o.Name, StringComparer.OrdinalIgnoreCase))
                     {
                         found.Add(o.Name);
                     }

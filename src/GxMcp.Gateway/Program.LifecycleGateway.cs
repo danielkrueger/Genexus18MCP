@@ -191,9 +191,22 @@ namespace GxMcp.Gateway
                 bool specify = action == "specify";
                 bool compileCheck = action == "build"
                     && string.Equals(args?["mode"]?.ToString(), "compile_check", StringComparison.OrdinalIgnoreCase);
+                // Issue #359: `rebuild` with a target used to be mapped to the Worker's
+                // "RebuildAll", and the Worker's buildAll branch builds the whole KB and
+                // never reads `targets`. So `action=rebuild target=X` silently ran a
+                // KB-wide Rebuild All and echoed `Action: RebuildAll` back - the caller
+                // asked for one object and paid for the entire Knowledge Base, with
+                // nothing in the response saying so.
+                //
+                // The Worker's plan builder already emits `SpecifyOneOnly` +
+                // `ForceRebuild=true` for a targeted "Rebuild"; it was simply never asked
+                // to. Targetless `rebuild` stays RebuildAll, which is what the tool
+                // description promises.
+                bool rebuildHasTarget = rebuild
+                    && !string.IsNullOrWhiteSpace(args?["target"]?.ToString());
                 workerAction = specify ? "Specify"
                     : compileCheck ? "CompileCheck"
-                    : rebuild ? "RebuildAll"
+                    : rebuild ? (rebuildHasTarget ? "Rebuild" : "RebuildAll")
                     : buildAll ? "BuildAll"
                     : "Build";
             }

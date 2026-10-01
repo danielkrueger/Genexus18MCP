@@ -310,7 +310,7 @@ namespace GxMcp.Worker.Services
                     foreach (var t in ns.OrderBy(x => x["fullName"]?.ToString()))
                     {
                         string fn = t["fullName"]?.ToString() ?? "";
-                        string shortName = fn.Substring((ns.Key + ".").Length);
+                        string shortName = ShortName(fn, ns.Key);
                         int mc = ((JArray)t["methods"]).Count;
                         int pc = ((JArray)t["properties"]).Count;
                         sb.AppendLine("- `" + shortName + "` — " + mc + " methods, " + pc + " props");
@@ -357,6 +357,37 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrEmpty(fullName)) return "(global)";
             int i = fullName.LastIndexOf('.');
             return i > 0 ? fullName.Substring(0, i) : "(global)";
+        }
+
+        /// <summary>
+        /// The type name without its namespace prefix.
+        ///
+        /// <para>
+        /// This used to be an unconditional
+        /// <c>fn.Substring((ns.Key + ".").Length)</c>, which threw
+        /// <c>ArgumentOutOfRangeException: startIndex cannot be greater than the length
+        /// of the string</c> for every type in the global namespace: those report
+        /// <c>(global)</c> as their namespace, so the code stripped 8 characters
+        /// ("(global)" plus a dot) off a name that may be shorter than that - and even
+        /// when it was not, it produced a mangled name rather than the whole one.
+        /// </para>
+        ///
+        /// <para>
+        /// That made <c>genexus_sdk_probe mode=surface</c> fail outright with
+        /// <c>SdkProbeError</c>, which is the tool whose entire purpose is to make SDK
+        /// investigations like this one cheap. The prefix is now stripped only when it is
+        /// actually there.
+        /// </para>
+        /// </summary>
+        private static string ShortName(string fullName, string ns)
+        {
+            if (string.IsNullOrEmpty(fullName)) return "";
+            if (string.IsNullOrEmpty(ns) || ns == "(global)") return fullName;
+
+            string prefix = ns + ".";
+            return fullName.StartsWith(prefix, StringComparison.Ordinal)
+                ? fullName.Substring(prefix.Length)
+                : fullName;
         }
 
         private static void TryPreloadSdkAssemblies(ProbeResult result)

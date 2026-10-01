@@ -163,22 +163,24 @@ namespace GxMcp.Worker.Services
 
                 var resolved = ResolveWWPInstance(obj);
 
-                // Fallback for generated WW family (WW<Trn>, View<Trn>, etc.) whose host
-                // is `WorkWithPlus<TrnBaseName>` rather than `WorkWithPlus<obj.Name>`.
-                if (resolved == null && !string.IsNullOrEmpty(obj.Name))
+                // Fallback for a generated WW family member whose host is
+                // `WorkWithPlus<TrnBaseName>` rather than `WorkWithPlus<obj.Name>`.
+                //
+                // Issue #349/#359: this used to strip a hard-coded prefix list
+                // ("WW", "View", "ViewWW", "Prompt"). WorkWithPlus generates a
+                // SUFFIX family - TbandadWW, TbandadWWDS, TbandadWWExport,
+                // TbandadWWGetFilterData - so `StartsWith("WW")` was never true and
+                // the shadow warning silently never fired on a real generated object:
+                // the one object class where warning the author that the IDE will
+                // overwrite their edits matters most. Both conventions are now tried.
+                if (resolved == null && !string.IsNullOrEmpty(obj.Name)
+                    && WwpFamilyNaming.TryGetBaseName(obj.Name, out string familyBaseName))
                 {
-                    string[] candidatePrefixes = { "WW", "View", "ViewWW", "Prompt" };
-                    foreach (var pre in candidatePrefixes)
+                    var host = _objectService.FindObject(WwpFamilyNaming.HostName(familyBaseName));
+                    if (host != null
+                        && string.Equals(host.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (!obj.Name.StartsWith(pre, StringComparison.Ordinal)) continue;
-                        string baseName = obj.Name.Substring(pre.Length);
-                        if (string.IsNullOrEmpty(baseName)) continue;
-                        var host = _objectService.FindObject("WorkWithPlus" + baseName);
-                        if (host != null && string.Equals(host.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
-                        {
-                            resolved = host;
-                            break;
-                        }
+                        resolved = host;
                     }
                 }
                 if (resolved == null) return null;

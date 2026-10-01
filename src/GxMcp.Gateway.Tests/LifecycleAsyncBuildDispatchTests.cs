@@ -6,16 +6,50 @@ namespace GxMcp.Gateway.Tests
 {
     public class LifecycleAsyncBuildDispatchTests
     {
+        /// <summary>
+        /// Issue #359. This used to assert <c>RebuildAll</c> for
+        /// <c>rebuild target=Customer</c> — encoding the defect as the expectation.
+        /// The Worker's whole-KB branch emits <c>&lt;BuildAll/&gt;</c> without reading
+        /// <c>targets</c>, so a targeted rebuild silently rebuilt the entire Knowledge
+        /// Base and answered <c>Action: RebuildAll</c>.
+        /// </summary>
         [Fact]
-        public void BuildCommandFactory_UsesRebuildAllForRebuild()
+        public void BuildCommandFactory_UsesTargetedRebuild_WhenRebuildHasATarget()
         {
             var command = Program.BuildAsyncLifecycleCommand(
                 "rebuild",
                 new JObject { ["target"] = "Customer" },
                 "job-2");
 
-            Assert.Equal("RebuildAll", command["action"]!.ToString());
+            Assert.Equal("Rebuild", command["action"]!.ToString());
+            Assert.Equal("Customer", command["target"]!.ToString());
             Assert.Equal("job-2", command["cancelToken"]!.ToString());
+        }
+
+        [Fact]
+        public void BuildCommandFactory_UsesRebuildAllForTargetlessRebuild()
+        {
+            // The documented whole-KB path, and what the reporter relied on when they did
+            // not name a target.
+            var command = Program.BuildAsyncLifecycleCommand(
+                "rebuild",
+                new JObject(),
+                "job-2b");
+
+            Assert.Equal("RebuildAll", command["action"]!.ToString());
+        }
+
+        [Fact]
+        public void BuildCommandFactory_TreatsAWhitespaceTargetAsAbsent()
+        {
+            // Otherwise "  " would take the whole-KB branch while looking like a targeted
+            // request, which is the original surprise in a different spelling.
+            var command = Program.BuildAsyncLifecycleCommand(
+                "rebuild",
+                new JObject { ["target"] = "   " },
+                "job-2c");
+
+            Assert.Equal("RebuildAll", command["action"]!.ToString());
         }
 
         [Fact]

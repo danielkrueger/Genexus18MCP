@@ -64,7 +64,11 @@ namespace GxMcp.Worker.Tests
         }
 
         [Theory]
-        [InlineData("<textBlock name='A' caption='Alpha'/>", "")]
+        // Issue #349 removed the first case from this list: removing one leaf layout
+        // element from a container is now a permitted structural edit, covered by
+        // PatternStructuralLayoutEditTests.Removing_A_TextBlock_Is_Permitted. The two
+        // cases still here are the ones that remain refused: adding a container-valued
+        // child, and reordering siblings that carries no structural change of its own.
         [InlineData("</table>", "<table name='New'/></table>")]
         [InlineData("<textBlock name='A' caption='Alpha'/><textBlock name='B' caption='Beta'/>", "<textBlock name='B' caption='Beta'/><textBlock name='A' caption='Alpha'/>")]
         public void StructuralEditsAreRejected(string from, string to)
