@@ -469,7 +469,12 @@ namespace GxMcp.Gateway
         // Records end-to-end tool latency (from just before the worker send to the response)
         // into ToolLatencyStats and emits one [TOOL-LATENCY] log line. Cold-start is already
         // awaited before CreatedAtUtc is stamped, so this measures real tool cost, not boot.
-        private static void RecordToolLatency(
+        // internal, not private: the bug this mapping had was invisible to the suite
+        // precisely because every test fed phase numbers straight into
+        // ToolLatencyStats.Record, so nothing ever checked which phase was mapped to
+        // which field. Reaching this method is how a test can assert that a Worker's
+        // reported queue delay surfaces as queue delay - see QueuePhaseMappingTests.
+        internal static void RecordToolLatency(
             string toolName,
             DateTime createdAtUtc,
             DateTime requestStartedAtUtc,
@@ -483,31 +488,43 @@ namespace GxMcp.Gateway
             try
             {
                 double ms = (DateTime.UtcNow - createdAtUtc).TotalMilliseconds;
-                long queueWaitMs = Math.Max(0, (long)(createdAtUtc - requestStartedAtUtc).TotalMilliseconds);
-                string resultClass;
-                if (resultClassOverride != null)
-                    resultClass = resultClassOverride;
-                else
-                    resultClass = response?["error"] != null ? "error" : "success";
                 JObject? telemetry = response?["result"]?["_meta"]?["telemetry"] as JObject
                     ?? response?["_meta"]?["telemetry"] as JObject;
                 long sdkMs = telemetry?["sdkMs"]?.ToObject<long?>() ?? 0;
                 long workerTransformMs = telemetry?["transformMs"]?.ToObject<long?>() ?? 0;
                 long serializeMs = telemetry?["serializeMs"]?.ToObject<long?>() ?? 0;
+                // The Worker's own queue measurement, which is what "queue" was always
+                // assumed to mean. Null when the response carried no telemetry at all,
+                // which is not the same as a Worker that never queued - see
+                // ToolLatencyStats.Record. This was previously never read: sdkMs,
+                // transformMs and serializeMs all came from the same object and were.
+                long? workerQueueWaitMs = telemetry?["queueWaitMs"]?.ToObject<long?>();
+                // And the Gateway's own pre-send interval, which is a different phase:
+                // admission, Worker acquisition and cold-start waiting. It used to be
+                // reported AS the queue, so a Worker that had no queue delay at all read
+                // as 7000 ms of queue while a cold start read as queue time too. Kept,
+                // but named for what it measures.
+                long admissionMs = Math.Max(0, (long)(createdAtUtc - requestStartedAtUtc).TotalMilliseconds);
+                string resultClass;
+                if (resultClassOverride != null)
+                    resultClass = resultClassOverride;
+                else
+                    resultClass = response?["error"] != null ? "error" : "success";
                 ToolLatencyStats.Record(
                     toolName,
                     ms,
                     resultClass,
-                    queueWaitMs,
+                    workerQueueWaitMs,
                     Math.Max(0, responseBytes),
                     startupMs,
                     sdkMs,
                     Math.Max(workerTransformMs, transformMs),
                     serializeMs,
-                    cacheOutcome);
-                // PERF: per-request instrumentation line — gated so high-throughput
+                    cacheOutcome,
+                    admissionMs);
+                // PERF: per-request instrumentation line - gated so high-throughput
                 // pipelines can drop the DateTime formatting + lock + disk write per call.
-                if (_verboseRequestLogs) Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms} queueWaitMs={queueWaitMs} startupMs={startupMs} sdkMs={sdkMs} transformMs={Math.Max(workerTransformMs, transformMs)} serializeMs={serializeMs} result={resultClass} cache={cacheOutcome ?? "unknown"} responseBytes={responseBytes}");
+                if (_verboseRequestLogs) Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms} queueWaitMs={workerQueueWaitMs?.ToString() ?? "unreported"} admissionMs={admissionMs} startupMs={startupMs} sdkMs={sdkMs} transformMs={Math.Max(workerTransformMs, transformMs)} serializeMs={serializeMs} result={resultClass} cache={cacheOutcome ?? "unknown"} responseBytes={responseBytes}");
             }
             catch { /* instrumentation must never break the call */ }
         }

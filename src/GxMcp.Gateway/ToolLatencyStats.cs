@@ -25,6 +25,8 @@ namespace GxMcp.Gateway
             public long LastMs;
             public string? LastAtUtc;
             public long QueueWaitTotalMs;
+            public long QueueWaitSamples;
+            public long AdmissionTotalMs;
             public long StartupTotalMs;
             public long SdkTotalMs;
             public long TransformTotalMs;
@@ -45,17 +47,33 @@ namespace GxMcp.Gateway
         private static readonly Counter<long> ToolCalls = Meter.CreateCounter<long>("genexus_mcp_tool_calls");
         private static readonly Histogram<double> ToolDuration = Meter.CreateHistogram<double>("genexus_mcp_tool_duration_ms", "ms");
 
+        /// <param name="queueWaitMs">
+        /// The delay the Worker itself measured between accepting the command and
+        /// dispatching it, or <c>null</c> when the Worker reported no queue figure at
+        /// all. The distinction is load-bearing and is why this is nullable: a Worker
+        /// that never queued reports 0, and a response that never reached telemetry
+        /// reporting reports nothing. Averaging those together reported an idle queue
+        /// for calls whose queue time was simply never observed. Samples without a
+        /// figure are excluded from both the total and the denominator.
+        /// </param>
+        /// <param name="admissionMs">
+        /// Gateway-side time before the request was handed to a Worker - admission,
+        /// Worker acquisition and cold-start waiting. This is a different phase from the
+        /// Worker's queue and used to be folded into it, so a cold start presented as
+        /// queue delay. Reported separately; see <c>avgAdmissionMs</c>.
+        /// </param>
         public static void Record(
             string? tool,
             double ms,
             string? resultClass = null,
-            long queueWaitMs = 0,
+            long? queueWaitMs = null,
             long responseBytes = 0,
             long startupMs = 0,
             long sdkMs = 0,
             long transformMs = 0,
             long serializeMs = 0,
-            string? cacheOutcome = null)
+            string? cacheOutcome = null,
+            long admissionMs = 0)
         {
             if (string.IsNullOrEmpty(tool)) tool = "unknown";
             // Ignore internal/heartbeat noise so the aggregate reflects real tool calls.
@@ -95,7 +113,9 @@ namespace GxMcp.Gateway
                 if (m > a.MaxMs) a.MaxMs = m;
                 a.LastMs = m;
                 a.LastAtUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-                a.QueueWaitTotalMs += Math.Max(0, queueWaitMs);
+                a.QueueWaitTotalMs += Math.Max(0, queueWaitMs ?? 0);
+                if (queueWaitMs.HasValue) a.QueueWaitSamples++;
+                a.AdmissionTotalMs += Math.Max(0, admissionMs);
                 a.StartupTotalMs += Math.Max(0, startupMs);
                 a.SdkTotalMs += Math.Max(0, sdkMs);
                 a.TransformTotalMs += Math.Max(0, transformMs);
@@ -124,11 +144,14 @@ namespace GxMcp.Gateway
             long grandTransform = 0;
             long grandSerialize = 0;
             long grandResponseBytes = 0;
+            long grandQueueWaitSamples = 0;
+            long grandAdmission = 0;
 
             var ranked = snapshot
                 .Select(kv =>
                 {
                     long count, total, max, last, queueWait, startup, sdk, transform, serialize, responseBytes, p50, p95;
+                    long queueWaitSamples, admission;
                     string? lastAt;
                     Dictionary<string, long> resultClasses;
                     Dictionary<string, long> cacheOutcomes;
@@ -139,11 +162,12 @@ namespace GxMcp.Gateway
                         lastAt = a.LastAtUtc; queueWait = a.QueueWaitTotalMs; startup = a.StartupTotalMs;
                         sdk = a.SdkTotalMs; transform = a.TransformTotalMs; serialize = a.SerializeTotalMs;
                         responseBytes = a.ResponseBytesTotal;
+                        queueWaitSamples = a.QueueWaitSamples; admission = a.AdmissionTotalMs;
                         p50 = Percentile(a.Samples, 0.50); p95 = Percentile(a.Samples, 0.95);
                         resultClasses = new Dictionary<string, long>(a.ResultClasses, StringComparer.OrdinalIgnoreCase);
                         cacheOutcomes = new Dictionary<string, long>(a.CacheOutcomes, StringComparer.OrdinalIgnoreCase);
                     }
-                    return (tool: kv.Key, count, total, max, last, lastAt, queueWait, startup, sdk, transform, serialize, responseBytes, p50, p95, resultClasses, cacheOutcomes);
+                    return (tool: kv.Key, count, total, max, last, lastAt, queueWait, startup, sdk, transform, serialize, responseBytes, p50, p95, queueWaitSamples, admission, resultClasses, cacheOutcomes);
                 })
                 .OrderByDescending(x => x.total)
                 .ToList();
@@ -158,6 +182,8 @@ namespace GxMcp.Gateway
                 grandTransform += x.transform;
                 grandSerialize += x.serialize;
                 grandResponseBytes += x.responseBytes;
+                grandQueueWaitSamples += x.queueWaitSamples;
+                grandAdmission += x.admission;
             }
 
             foreach (var x in ranked.Take(Math.Max(0, topN)))
@@ -172,7 +198,12 @@ namespace GxMcp.Gateway
                     ["totalMs"] = x.total,
                     ["p50Ms"] = x.p50,
                     ["p95Ms"] = x.p95,
-                    ["avgQueueWaitMs"] = x.count > 0 ? (long)Math.Round((double)x.queueWait / x.count) : 0,
+                    // Averaged over the calls that actually reported a queue figure, not
+                    // over every call: dividing by count reported an idle queue whenever
+                    // the figure was missing.
+                    ["avgQueueWaitMs"] = x.queueWaitSamples > 0 ? (long)Math.Round((double)x.queueWait / x.queueWaitSamples) : 0,
+                    ["queueWaitSamples"] = x.queueWaitSamples,
+                    ["avgAdmissionMs"] = x.count > 0 ? (long)Math.Round((double)x.admission / x.count) : 0,
                     ["avgStartupMs"] = x.count > 0 ? (long)Math.Round((double)x.startup / x.count) : 0,
                     ["avgSdkMs"] = x.count > 0 ? (long)Math.Round((double)x.sdk / x.count) : 0,
                     ["avgTransformMs"] = x.count > 0 ? (long)Math.Round((double)x.transform / x.count) : 0,
@@ -186,7 +217,9 @@ namespace GxMcp.Gateway
 
             result["totalCalls"] = grandCount;
             result["totalMs"] = grandTotal;
-            result["avgQueueWaitMs"] = grandCount > 0 ? (long)Math.Round((double)grandQueueWait / grandCount) : 0;
+            result["avgQueueWaitMs"] = grandQueueWaitSamples > 0 ? (long)Math.Round((double)grandQueueWait / grandQueueWaitSamples) : 0;
+            result["queueWaitSamples"] = grandQueueWaitSamples;
+            result["avgAdmissionMs"] = grandCount > 0 ? (long)Math.Round((double)grandAdmission / grandCount) : 0;
             result["avgStartupMs"] = grandCount > 0 ? (long)Math.Round((double)grandStartup / grandCount) : 0;
             result["avgSdkMs"] = grandCount > 0 ? (long)Math.Round((double)grandSdk / grandCount) : 0;
             result["avgTransformMs"] = grandCount > 0 ? (long)Math.Round((double)grandTransform / grandCount) : 0;
