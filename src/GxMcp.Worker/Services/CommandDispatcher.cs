@@ -580,6 +580,32 @@ namespace GxMcp.Worker.Services
                 if (method == "build" && (action == "Status" || action == "Result"))
                     return true;
 
+                // issue #342: ReadLogs is the diagnostic route an agent reaches for when
+                // something has already gone wrong - a blocked SDK lane being the usual
+                // reason. It read the log file and returned, touching no KBObject, no COM
+                // object and no SDK type, yet it was dispatched through the very lane that
+                // might be blocked, so the one request that could explain the blockage
+                // waited behind the blockage. It is pure file I/O plus in-process
+                // filtering, so it belongs on the parallel path with the other
+                // diagnostic reads above.
+                //
+                // This is the audit the issue asks for, stated explicitly: ReadLogs
+                // reaches only Logger.LogDirectory, the log file itself,
+                // CommandDispatcher.EscapeJsonString and SourceSearchService.RegexMatchTimeout.
+                // None of those is SDK-owned. Anything that later makes ReadLogs consult
+                // the KB must remove this whitelist entry in the same change - a stale
+                // whitelist here would be a COM access violation, not a slowdown.
+                if (method == "object" && action == "ReadLogs")
+                    return true;
+
+                // issue #342: the SDK-lane liveness probe must answer *while* the SDK lane
+                // is blocked - that is the only moment it has anything to report. Routing
+                // it through the STA would make it wait behind the blockage it exists to
+                // detect, and the gateway would read the timeout as "unknown" forever.
+                // Reads volatile fields and a lock-guarded counter; touches no SDK object.
+                if (method == "system" && action == "GetSdkBusyStatus")
+                    return true;
+
                 
                 // Any operation interacting with GeneXus SDK (COM objects) MUST run in the STA thread to prevent corruption
                 return false;
@@ -872,6 +898,7 @@ namespace GxMcp.Worker.Services
             return new Dictionary<string, CommandHandler>(StringComparer.OrdinalIgnoreCase)
             {
                 ["ping"] = Handle_Ping,
+                ["system"] = Handle_System,
                 ["control"] = Handle_Control,
                 ["kb"] = Handle_Kb,
                 ["batch"] = Handle_Batch,
@@ -977,6 +1004,44 @@ namespace GxMcp.Worker.Services
         private string Handle_Ping(JObject request, string method, string action, string target, string payload, JObject args)
         {
             return Models.McpResponse.Ok(code: "Pong", result: new JObject { ["message"] = "pong" });
+        }
+
+        /// <summary>
+        /// Reports the state of the SDK lane. Issue #342: <c>Ping</c> answers on the
+        /// transport/MTA path, so a Worker whose SDK lane is deadlocked still replies
+        /// and the gateway concluded "Healthy". This action is the second, independent
+        /// probe: it is serviced by the SDK path, so a wedged lane shows up as a timeout
+        /// rather than a reply.
+        ///
+        /// <para>
+        /// It reports <c>active</c> and <c>elapsedMs</c> alongside
+        /// <c>sawProgress</c>/<c>lastProgressMs</c>, because "busy" alone cannot tell a
+        /// slow build from a deadlocked call - and treating every busy lane as a fault
+        /// recycles legitimate long operations. The progress tick is written by
+        /// <see cref="GxMcp.Worker.Helpers.ProgressEmitter"/>, the single point every
+        /// progress emission passes through.
+        /// </para>
+        ///
+        /// <para>
+        /// Pure in-memory reads of volatile fields and a lock-guarded counter: no SDK
+        /// object is touched, which is what lets this action answer even while the SDK
+        /// lane is blocked. Whitelisted for the parallel path in
+        /// <see cref="IsThreadSafe(JObject)"/> for the same reason.
+        /// </para>
+        /// </summary>
+        private string Handle_System(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (!string.Equals(action, "GetSdkBusyStatus", StringComparison.OrdinalIgnoreCase))
+            {
+                return Models.McpResponse.Err(
+                    code: "UnknownSystemAction",
+                    message: "Unsupported system action '" + action + "'.",
+                    hint: "The only system action is GetSdkBusyStatus.");
+            }
+
+            return Models.McpResponse.Ok(
+                code: "SdkBusyStatus",
+                result: Program.GetSdkBusyStatus());
         }
 
         private string Handle_Control(JObject request, string method, string action, string target, string payload, JObject args)

@@ -94,6 +94,14 @@ namespace GxMcp.Worker.Helpers
             string token = ProgressContext.CurrentToken;
             if (string.IsNullOrWhiteSpace(token)) return;
 
+            // Issue #342: every progress emission is evidence that the operation running
+            // on the SDK lane is still moving. Recording it here - the single choke point
+            // all progress reporting passes through - is what lets the gateway tell a
+            // slow-but-progressing build from a wedged SDK call. Without such a signal
+            // the only honest thing a health check could say about a busy lane is
+            // "busy", and treating that as a fault recycles legitimate long operations.
+            Program.NoteSdkProgress();
+
             // Build params dict explicitly so we can omit optional fields
             // when they're null (keeps the wire payload small for clients
             // that don't render stage/elapsedMs).

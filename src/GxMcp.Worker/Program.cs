@@ -115,6 +115,25 @@ namespace GxMcp.Worker
         private static volatile string _sdkBusyOperationId; // gateway operationId from _meta.progressToken
         private static readonly int _busyRejectThresholdMs = ResolveBusyRejectThresholdMs();
 
+        // Issue #342: last time the in-flight SDK operation reported movement. Written
+        // from ProgressEmitter, which every progress emission passes through, so it is
+        // a genuine liveness signal rather than a guess derived from elapsed time.
+        // Reset when a command starts, so a new operation cannot inherit the previous
+        // one's last tick and look alive while it is already wedged.
+        private static long _sdkLastProgressTicks;
+
+        /// <summary>
+        /// Records that the SDK operation currently running has made progress.
+        /// Called from <see cref="GxMcp.Worker.Helpers.ProgressEmitter"/>; deliberately
+        /// does nothing when no command is in flight, so a stray emission cannot make a
+        /// later, wedged command look healthy.
+        /// </summary>
+        internal static void NoteSdkProgress()
+        {
+            if (_sdkBusy != 1) return;
+            Interlocked.Exchange(ref _sdkLastProgressTicks, DateTime.UtcNow.Ticks);
+        }
+
         internal static JObject GetSdkBusyStatus(DateTime? nowUtc = null)
         {
             bool active = _sdkBusy == 1;
@@ -138,6 +157,19 @@ namespace GxMcp.Worker
             {
                 var since = new DateTime(sinceTicks, DateTimeKind.Utc);
                 status["elapsedMs"] = Math.Max(0L, (long)((nowUtc ?? DateTime.UtcNow) - since).TotalMilliseconds);
+            }
+
+            // Issue #342: report liveness alongside busyness. "Active" alone cannot tell a
+            // long build from a deadlocked call, and a health check that cannot tell them
+            // apart must not call either of them healthy or unhealthy.
+            long progressTicks = Interlocked.Read(ref _sdkLastProgressTicks);
+            bool sawProgress = active && progressTicks > 0;
+            status["sawProgress"] = sawProgress;
+            status["lastProgressMs"] = 0;
+            if (sawProgress)
+            {
+                var last = new DateTime(progressTicks, DateTimeKind.Utc);
+                status["lastProgressMs"] = Math.Max(0L, (long)((nowUtc ?? DateTime.UtcNow) - last).TotalMilliseconds);
             }
             return status;
         }
@@ -750,6 +782,7 @@ namespace GxMcp.Worker
                 }
 
                 Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
+                Interlocked.Exchange(ref _sdkLastProgressTicks, 0);
                 _sdkBusyOp = DescribeCommand(item.Obj, item.RawLine);
                 _sdkBusyOperationId = ExtractOperationId(item.Obj, item.RawLine);
                 _sdkBusy = 1;
@@ -764,6 +797,7 @@ namespace GxMcp.Worker
             while (SdkCommandQueue.TryTake(out SdkCommandItem legacyItem))
             {
                 Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
+                Interlocked.Exchange(ref _sdkLastProgressTicks, 0);
                 _sdkBusyOp = DescribeCommand(legacyItem.Obj, legacyItem.RawLine);
                 _sdkBusyOperationId = ExtractOperationId(legacyItem.Obj, legacyItem.RawLine);
                 _sdkBusy = 1;

@@ -691,14 +691,25 @@ namespace GxMcp.Worker.Services
                     return "{\"status\":\"Error\", \"error\":\"Log file not found at " + CommandDispatcher.EscapeJsonString(logPath) + "\"}";
                 }
 
-                // Stream-read tail
-                var allLines = new List<string>();
-                using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (var sr = new StreamReader(fs))
-                {
-                    string ln;
-                    while ((ln = sr.ReadLine()) != null) allLines.Add(ln);
-                }
+                // Issue #342: bounded tail read.
+                //
+                // This used to open the log, read every line into a List, filter that
+                // list, and only then take the last N - so asking for the last ten
+                // lines of a large log allocated the whole log, on the diagnostic route
+                // that runs precisely when something has gone wrong and memory is least
+                // welcome. LogTailReader retains at most the requested window plus the
+                // context the crash search needs, and still counts the whole file so
+                // `totalLines` keeps meaning what it always meant.
+                //
+                // The honest consequence is that a filter can no longer reach lines
+                // before the retained window. That is surfaced in the response rather
+                // than hidden, because a caller asking "since yesterday" and receiving
+                // only the tail must be able to tell that it got a tail.
+                int retainContext = 0;
+                if (string.Equals(sinceMode, "crash", StringComparison.OrdinalIgnoreCase))
+                    retainContext = LogTailReader.MaxRetainedLines - lines; // search the whole window
+                var tailRead = GxMcp.Worker.Helpers.LogTailReader.Read(logPath, lines, retainContext);
+                var allLines = tailRead.Lines;
 
                 IEnumerable<string> filtered = allLines;
 
@@ -802,8 +813,29 @@ namespace GxMcp.Worker.Services
                     result["crashLineIndex"] = crashIndex;
                     if (crashIndex < 0)
                     {
-                        result["hint"] = "No ERROR/CRITICAL markers found in the log — worker has not crashed (or the log has rotated).";
+                        // Issue #342: "not in the window we read" and "not in the log" are
+                        // different answers. With a bounded read the first is now possible,
+                        // and claiming the second would assert the worker did not crash
+                        // when the marker may simply be further back than the window.
+                        result["hint"] = tailRead.Truncated
+                            ? "No ERROR/CRITICAL marker in the last " + tailRead.Lines.Count
+                              + " lines of a " + tailRead.TotalLines + "-line log. The marker may be older than the retained window; raise `lines` or grep for it directly."
+                            : "No ERROR/CRITICAL markers found in the log — worker has not crashed (or the log has rotated).";
                     }
+                }
+
+                // Issue #342: state the read's bounds. Every filter above ran over the
+                // retained window only, so a caller must be able to tell a complete
+                // answer from a tail.
+                result["retainedLines"] = tailRead.Lines.Count;
+                result["truncatedFromStart"] = tailRead.TruncatedFromStart;
+                result["bounded"] = true;
+                if (tailRead.Truncated)
+                {
+                    result["hint"] = (result["hint"]?.ToString() ?? string.Empty)
+                        + " Read the last " + tailRead.Lines.Count + " of " + tailRead.TotalLines
+                        + " lines; filters above applied only to those. Raise `lines` (max "
+                        + LogTailReader.MaxRetainedLines + ") to widen the window.";
                 }
                 return McpResponse.Ok(code: "LogsRead", result: result);
             }

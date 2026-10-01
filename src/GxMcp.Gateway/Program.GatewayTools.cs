@@ -701,10 +701,25 @@ namespace GxMcp.Gateway
                     payload = new JObject();
 
                     // 1. Diagnose current state.
+                    //
+                    // Issue #342. This used to probe Ping, call the result
+                    // "responsive", and report an unqualified "Healthy" when every
+                    // Worker replied. But Ping answers on the transport/MTA path: a
+                    // Worker whose SDK lane is deadlocked still replies, because the
+                    // ping never reaches the thread that is stuck. A wedged SDK
+                    // therefore produced exactly the same "Healthy" as a genuinely
+                    // fine one, and the dimension an operator most needs was the one
+                    // nothing measured.
+                    //
+                    // Two independent probes now feed WorkerLivenessClassifier, and the
+                    // verdict is qualified with both. A busy-but-progressing SDK lane is
+                    // reported as such and deliberately NOT treated as unhealthy:
+                    // recycling a Worker for a legitimate long build costs the in-flight
+                    // work, which is a worse failure than waiting.
                     var diagnoses = new JArray();
                     foreach (var kb in openKbs)
                     {
-                        var entryState = "unknown";
+                        bool transportAlive;
                         try
                         {
                             var whoamiProbe = await SendWorkerCommandAsync(
@@ -714,26 +729,47 @@ namespace GxMcp.Gateway
                                 (_, cid) => new JObject { ["__timeout"] = true },
                                 toolName: "connection_recover_probe",
                                 trackOperation: false);
-                            entryState = whoamiProbe?["__timeout"]?.ToObject<bool>() == true ? "unresponsive" : "responsive";
+                            transportAlive = whoamiProbe?["__timeout"]?.ToObject<bool>() != true;
                         }
-                        catch { entryState = "unreachable"; }
-                        diagnoses.Add(new JObject
+                        catch { transportAlive = false; }
+
+                        JObject sdkProbe = null;
+                        try
                         {
-                            ["alias"] = kb.Alias,
-                            ["state"] = entryState
-                        });
+                            sdkProbe = await SendWorkerCommandAsync(
+                                new JObject { ["module"] = "System", ["action"] = "GetSdkBusyStatus" },
+                                5000, "recover-sdk-lane timeout",
+                                wr => wr,
+                                (_, cid) => new JObject { ["__timeout"] = true },
+                                toolName: "connection_recover_sdk_probe",
+                                trackOperation: false);
+                        }
+                        catch { sdkProbe = null; }
+
+                        diagnoses.Add(WorkerLivenessClassifier.Classify(kb.Alias, transportAlive, sdkProbe));
                     }
                     payload["diagnosis"] = diagnoses;
 
-                    var unresponsive = diagnoses.Where(d => d["state"]?.ToString() != "responsive").ToList();
+                    // Only a dead transport, or an SDK lane that has stopped making
+                    // progress, justifies recycling a Worker.
+                    var unresponsive = diagnoses.Where(d => WorkerLivenessClassifier.Recovers(d)).ToList();
                     bool anyUnhealthy = force || unresponsive.Count > 0 || knownNotOpen.Count > 0;
 
                     // 2. Recover only what's broken (or everything when force=true).
                     if (!anyUnhealthy)
                     {
-                        payload["status"] = "Healthy";
+                        // Issue #342: qualify the verdict. The unqualified "Healthy" was
+                        // reachable from a responsive ping alone, which is a claim about
+                        // the SDK that nothing had checked.
+                        bool allIdle = diagnoses.All(d =>
+                            string.Equals(d["sdk"]?.ToString(), "idle", StringComparison.OrdinalIgnoreCase));
+                        payload["status"] = allIdle ? "Healthy" : "HealthySdkBusy";
                         payload["action"] = "none";
-                        payload["detail"] = "All workers responsive; no recovery needed.";
+                        payload["transport"] = "alive";
+                        payload["sdk"] = allIdle ? "idle" : "busy";
+                        payload["detail"] = allIdle
+                            ? "All workers responsive on both the transport and the SDK lane; no recovery needed."
+                            : "Transport alive on every worker, but at least one SDK lane is busy. A busy lane is not a fault and was not recycled.";
                     }
                     else
                     {
