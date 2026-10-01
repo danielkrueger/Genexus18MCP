@@ -87,6 +87,28 @@ namespace GxMcp.Gateway.Tests
             };
             startInfo.EnvironmentVariables["GX_MCP_PORT"] = ResolveHttpPort().ToString();
             startInfo.EnvironmentVariables["GX_MCP_STDIO"] = "true";
+            // The Gateway needs a KB at STARTUP, not just after the first request, and
+            // it reads one only from GX_CONFIG_PATH - GXMCP_TEST_KB is deliberately not
+            // forwarded (see below). Without this the gateway falls back to
+            // publish/config.json, which build.ps1 writes as a neutral config with no
+            // Environment.KBPath on purpose, logs "No Knowledge Base is open", and exits
+            // during initialize - which every live test then sees as
+            // "IOException: The pipe is being closed".
+            //
+            // That failure mode is invisible while GXMCP_TEST_KB is unset, because the
+            // whole lane skips, and it was invisible again for every run that set the KB
+            // but not this: 28 tests that had never executed reported as a dead pipe
+            // rather than as a missing config. Defaulting to the repository config -
+            // the one that already declares the test KB - makes the lane work from
+            // GXMCP_TEST_KB alone. An explicit GX_CONFIG_PATH still wins.
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GX_CONFIG_PATH")))
+            {
+                string repoConfig = Path.Combine(FindRepoRoot(), "config.json");
+                if (File.Exists(repoConfig))
+                {
+                    startInfo.EnvironmentVariables["GX_CONFIG_PATH"] = repoConfig;
+                }
+            }
             // GXMCP_TEST_KB opts xUnit into live discovery, but the Gateway
             // already receives the explicit KB through GX_CONFIG_PATH. Passing
             // both makes startup warmup and the configured default race to
@@ -141,6 +163,27 @@ namespace GxMcp.Gateway.Tests
                 dir = dir.Parent;
             }
             return null;
+        }
+
+        /// <summary>
+        /// The repository root, found the same way the published Gateway is: the publish
+        /// directory sits directly under it, so the config that declares the test KB is
+        /// one level up from wherever the executable was located.
+        /// </summary>
+        private static string FindRepoRoot()
+        {
+            string? configured = Environment.GetEnvironmentVariable("GXMCP_LIVE_GATEWAY_EXE");
+            var start = !string.IsNullOrWhiteSpace(configured) && File.Exists(configured)
+                ? new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(configured))!)
+                : new DirectoryInfo(AppContext.BaseDirectory);
+
+            while (start != null)
+            {
+                if (File.Exists(Path.Combine(start.FullName, "publish", "GxMcp.Gateway.exe")))
+                    return start.FullName;
+                start = start.Parent;
+            }
+            return AppContext.BaseDirectory;
         }
 
         private static string ResolveGatewayLogPath(string executablePath)
