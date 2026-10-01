@@ -1,3 +1,4 @@
+using System;
 using Newtonsoft.Json.Linq;
 using Xunit;
 using GxMcp.Gateway;
@@ -64,6 +65,60 @@ namespace GxMcp.Gateway.Tests
             var raw = r.ToString(Newtonsoft.Json.Formatting.None);
             Assert.Contains("genexus_inspect", raw);
             Assert.Contains("CHECK PARENT TYPE", raw, System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Issue #352: the edit_pattern_instance recipe promised a
+        /// <c>childrenOrderedListReconciliation</c> report that the write path never
+        /// emits, and its steps demonstrated raw structural XML edits (Insert_After /
+        /// full-tree group insertion) that the PatternInstance structural preflight
+        /// rejects. Both promised capabilities had to go.
+        ///
+        /// These guards assert on capability, not on the exact wording, so rewording
+        /// the recipe cannot silently restore the claim.
+        /// </summary>
+        [Fact]
+        public void Get_EditPatternInstance_DoesNotPromiseAnUnemittedReconciliationReport()
+        {
+            var raw = RecipeCatalog.Get("edit_pattern_instance").ToString(Newtonsoft.Json.Formatting.None);
+
+            // No field by that name is emitted anywhere in the production write path.
+            Assert.DoesNotContain("childrenOrderedListReconciliation", raw, StringComparison.Ordinal);
+            // Nor a claim that child order is rebuilt from the XML child order.
+            Assert.DoesNotContain("rebuilds them from your XML child order", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("auto-reconciliation", raw, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Get_EditPatternInstance_DoesNotDemonstrateStructuralRawXmlEdits()
+        {
+            var r = RecipeCatalog.Get("edit_pattern_instance");
+            var steps = (JArray)r["steps"]!;
+
+            foreach (var step in steps)
+            {
+                if (!string.Equals((string)step["tool"], "genexus_edit", StringComparison.Ordinal)) continue;
+                var args = (Newtonsoft.Json.Linq.JObject)step["args"]!;
+                var operation = (string)args["operation"];
+
+                // Adding a node through the raw route is rejected as
+                // PatternStructureChangeUnsupported, so the recipe must not show it.
+                Assert.NotEqual("Insert_After", operation);
+                Assert.NotEqual("Insert_Before", operation);
+                // mode=full is only a problem when it is presented as a group insert;
+                // a property-only full rewrite stays acceptable.
+                var content = (string)args["content"];
+                Assert.False(content != null && content.Contains("isGroup", StringComparison.OrdinalIgnoreCase),
+                    "the recipe must not demonstrate inserting a <table isGroup> group through raw PatternInstance XML");
+            }
+        }
+
+        [Fact]
+        public void Get_EditPatternInstance_StatesThatSavingDoesNotRegenerateDerivedObjects()
+        {
+            var raw = RecipeCatalog.Get("edit_pattern_instance").ToString(Newtonsoft.Json.Formatting.None)
+                .ToLowerInvariant();
+            Assert.Contains("does not regenerate", raw, StringComparison.Ordinal);
         }
 
         [Fact]

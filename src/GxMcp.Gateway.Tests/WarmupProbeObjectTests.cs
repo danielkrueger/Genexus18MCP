@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using GxMcp.Gateway;
 using Newtonsoft.Json.Linq;
@@ -172,17 +173,40 @@ namespace GxMcp.Gateway.Tests
                 int warmPasses = 0;
                 var waiting = new List<int>();
 
-                await Program.RunFirstTouchWarmOnceAsync(
-                    () => { resolves++; return Task.FromResult<string?>(null); },
+                // The resolver blocks so the first pass is genuinely in flight when the
+                // second caller arrives. Without that, the retry loop (delay 0) runs to
+                // completion inside the first call and the two calls are sequential,
+                // which would test nothing about coalescing.
+                var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                Func<Task<string?>> blockingResolver = () =>
+                {
+                    Interlocked.Increment(ref resolves);
+                    return release.Task.ContinueWith(_ => (string?)null);
+                };
+
+                // maxAttempts retries then gives up quietly. A concurrent second caller
+                // for the SAME scope coalesces onto the pass already running and must
+                // not start another 40-attempt loop. A later caller for the same scope
+                // after that pass gave up is a different case: the scope was never
+                // warmed (issue #340), so it is legitimately claimable again - and that
+                // is what the index-bootstrap trigger relies on.
+                var inFlight = Program.RunFirstTouchWarmOnceAsync(
+                    Program.FirstTouchWarmScopeKey("KbProbe", "g1"),
+                    blockingResolver,
                     () => waiting.Add(1),
                     _ => { warmPasses++; return Task.CompletedTask; });
 
-                // maxAttempts retries then gives up quietly; a second caller must not start
-                // another 40-attempt loop.
-                await Program.RunFirstTouchWarmOnceAsync(
-                    () => { resolves++; return Task.FromResult<string?>(null); },
+                // Give the first call time to claim its scope, then race it.
+                while (Volatile.Read(ref resolves) == 0) await Task.Delay(5);
+
+                var coalesced = Program.RunFirstTouchWarmOnceAsync(
+                    Program.FirstTouchWarmScopeKey("KbProbe", "g1"),
+                    blockingResolver,
                     () => waiting.Add(1),
                     _ => { warmPasses++; return Task.CompletedTask; });
+
+                release.TrySetResult(true);
+                await Task.WhenAll(inFlight, coalesced).WaitAsync(TimeSpan.FromSeconds(30));
 
                 Assert.Equal(Program.WarmupProbeAttemptsForTest, resolves);
                 Assert.Equal(0, warmPasses);

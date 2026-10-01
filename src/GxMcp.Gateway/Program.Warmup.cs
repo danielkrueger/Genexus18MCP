@@ -123,6 +123,7 @@ namespace GxMcp.Gateway
                     // read/inspect/edit calls. Now that the index has been kicked (or was
                     // already warm), wait for a listable object here and warm.
                     await RunFirstTouchWarmOnceAsync(
+                        CurrentFirstTouchWarmScopeKey(),
                         ResolveWarmupProbeObjectAsync,
                         () => Log("[Warmup] Probe object not listable yet (index still building); waiting before the first-touch warm pass."));
                 }
@@ -396,7 +397,10 @@ namespace GxMcp.Gateway
                     {
                         // Warm start: the index is already listable, so the fast path runs the
                         // pass right here instead of waiting for the index-bootstrap trigger.
-                        await RunFirstTouchWarmOnceAsync(() => Task.FromResult<string?>(objectName), onWaitingForProbe: null);
+                        await RunFirstTouchWarmOnceAsync(
+                            CurrentFirstTouchWarmScopeKey(),
+                            () => Task.FromResult<string?>(objectName),
+                            onWaitingForProbe: null);
                     }
 
                     Log("[Warmup] Worker warmup finished.");
@@ -535,15 +539,107 @@ namespace GxMcp.Gateway
             return null;
         }
 
-        // Runs the first-touch warm pass exactly once per gateway. Two callers race for it:
+        // Runs the first-touch warm pass once per warm scope. Two callers race for it:
         // the fast path (index already listable right after pre-spawn) and the index-bootstrap
         // path (cold start, where List/Objects answers the IndexNotReady envelope until
-        // BulkIndex finishes). Whoever claims the flag warms; the other returns immediately.
-        private static int _firstTouchWarmClaimed;
+        // BulkIndex finishes). Whoever claims the scope warms; the other returns immediately.
+        //
+        // Issue #340: the claim used to be one static flag for the whole Gateway process,
+        // so warming one KB suppressed the equivalent warm for every later KB and for
+        // every later Worker generation. Opening a second KB, or replacing a recycled
+        // Worker's generation, then left that KB paying the first-touch cost inside the
+        // agent's turn - the exact cost this pass exists to move out of it.
+        //
+        // The claim is now keyed by the warm scope's physical identity, so each KB and
+        // each Worker generation warms once, and a concurrent second request for the
+        // same scope coalesces onto the in-flight pass instead of starting a second one.
+        // A failed claim is released, so a warm that throws does not permanently disable
+        // warming for that scope. The dictionary is only touched from the claim and
+        // release paths and is bounded by the number of distinct scopes the Gateway has
+        // warmed, which is bounded by its own Worker pool.
+        private static readonly ConcurrentDictionary<string, byte> _firstTouchWarmedScopes =
+            new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, Task> _firstTouchInFlightScopes =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The identity a warm pass is claimed against: the KB alias plus the Worker
+        /// generation, so a recycled Worker warms again while two requests for the same
+        /// live Worker coalesce.
+        /// </summary>
+        /// <remarks>
+        /// Both parts are trimmed and upper-cased so one KB spelled two ways produces
+        /// one key. The claim dictionaries already compare case-insensitively; doing it
+        /// here too means the key is a real identity rather than a spelling that only
+        /// happens to work through a particular comparer.
+        /// </remarks>
+        internal static string FirstTouchWarmScopeKey(string? kbAlias, string? workerGeneration = null) =>
+            (string.IsNullOrWhiteSpace(kbAlias) ? "(no-kb)" : kbAlias.Trim().ToUpperInvariant())
+            + "|" + (string.IsNullOrWhiteSpace(workerGeneration) ? "-" : workerGeneration.Trim().ToUpperInvariant());
+
+        /// <summary>
+        /// The scope for the currently active KB context and its Worker generation.
+        ///
+        /// <para>
+        /// The generation is part of the key on purpose. Without it, a Worker that is
+        /// recycled and respawned keeps the claim its predecessor made, so the new
+        /// process never pays - or never avoids - the first-touch cost, and which of
+        /// those two happens is invisible. Including it means each generation warms at
+        /// most once.
+        /// </para>
+        /// </summary>
+        private static string CurrentFirstTouchWarmScopeKey()
+        {
+            string? alias = null;
+            try { alias = _activeConfig?.Environment?.DefaultKb; } catch { }
+            if (string.IsNullOrWhiteSpace(alias))
+            {
+                // Fall back to whichever KB is open, so a second KB gets its own scope
+                // even when it is not the configured default.
+                try
+                {
+                    var open = _workerPool?.ListOpen();
+                    alias = open != null && open.Count > 0 ? open[0].NormalizedAlias : null;
+                }
+                catch { }
+            }
+
+            string? generation = null;
+            try
+            {
+                // A shared attachment reports a broker generation; an isolated Worker's
+                // identity is its PID. Either is enough to tell "the same live Worker"
+                // from "a Worker that replaced the previous one", which is all this key
+                // has to distinguish. When neither is available the alias alone is used,
+                // which degrades to warming that alias at most once per process.
+                var worker = alias == null ? null : _workerPool?.TryGetWorker(alias);
+                generation = worker?.WorkerGeneration?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    ?? worker?.Pid?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch { }
+            return FirstTouchWarmScopeKey(alias, generation);
+        }
 
         internal static async Task RunFirstTouchWarmOnceAsync(Func<Task<string?>> resolveProbe, Action? onWaitingForProbe, Func<string, Task>? warmPass = null)
         {
-            if (Interlocked.CompareExchange(ref _firstTouchWarmClaimed, 1, 0) != 0) return;
+            await RunFirstTouchWarmOnceAsync(FirstTouchWarmScopeKey(null), resolveProbe, onWaitingForProbe, warmPass);
+        }
+
+        internal static async Task RunFirstTouchWarmOnceAsync(string scopeKey, Func<Task<string?>> resolveProbe, Action? onWaitingForProbe, Func<string, Task>? warmPass = null)
+        {
+            // Fast path: this scope is already warm. Checked before the coalescing task
+            // so a repeated request does not allocate a TaskCompletionSource.
+            if (_firstTouchWarmedScopes.ContainsKey(scopeKey)) return;
+
+            // Coalesce: a concurrent request for the same scope awaits the pass already
+            // running rather than starting a second one against the same Worker.
+            var mine = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var existing = _firstTouchInFlightScopes.GetOrAdd(scopeKey, _ => mine.Task);
+            if (!ReferenceEquals(existing, mine.Task))
+            {
+                try { await existing.ConfigureAwait(false); } catch { /* the pass logs its own failure */ }
+                return;
+            }
 
             try
             {
@@ -559,22 +655,37 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrWhiteSpace(objectName))
                 {
                     Log("[Warmup] No listable probe object within the wait budget; first-touch warm pass skipped.");
+                    // Not a failure, but also not warm: leave the scope unclaimed so a
+                    // later request for the same scope can try again once the index is
+                    // listable. This is the cold-start ordering the pass exists for.
                     return;
                 }
 
                 await (warmPass ?? WarmFirstTouchPathsAsync)(objectName);
-                Log("[Warmup] First-touch warm pass finished.");
+                _firstTouchWarmedScopes.TryAdd(scopeKey, 0);
+                Log($"[Warmup] First-touch warm pass finished for scope '{scopeKey}'.");
             }
             catch (Exception ex)
             {
+                // Release the scope on failure: a claim left behind by a thrown pass
+                // would silently disable warming for that KB and generation.
                 Log("[Warmup] First-touch warm pass failed: " + ex.Message);
+            }
+            finally
+            {
+                _firstTouchInFlightScopes.TryRemove(scopeKey, out _);
+                mine.TrySetResult(true);
             }
         }
 
         internal static void ResetFirstTouchWarmForTest()
         {
-            Interlocked.Exchange(ref _firstTouchWarmClaimed, 0);
+            _firstTouchWarmedScopes.Clear();
+            _firstTouchInFlightScopes.Clear();
         }
+
+        /// <summary>Scopes already warmed. Diagnostics and tests only.</summary>
+        internal static int FirstTouchWarmedScopeCount => _firstTouchWarmedScopes.Count;
 
         // Pre-spawn the configured default KB's worker via the same AcquireAsync path the
         // explicit `genexus_kb action=open` uses. Fire-and-forget from initialize; errors
@@ -631,7 +742,19 @@ namespace GxMcp.Gateway
                 // touch is warmed here for exactly this reason; a search was the one left
                 // paying its cost inside the agent's turn. maxResults=1 keeps the warm
                 // reply tiny — the scan is what we are paying for, not the result set.
-                ("genexus_search_source", new JObject { ["pattern"] = probeObjectName, ["maxResults"] = 1 }),
+                // Issue #340: this supplied the probe object's NAME as a text `pattern`.
+                // maxResults=1 caps the reply, not the work: when the name does not occur
+                // in any stored source the search is a whole-catalog no-match scan, which
+                // is the same KB-wide scan the entry above exists to pay for, now twice
+                // and against a pattern that cannot match. Scoping to the probe object
+                // keeps the one scan that is actually wanted - the trigram/index
+                // materialization for a real object - and drops the no-match one.
+                ("genexus_search_source", new JObject
+                {
+                    ["pattern"] = probeObjectName,
+                    ["objectName"] = probeObjectName,
+                    ["maxResults"] = 1
+                }),
             })
             {
                 var converted = McpRouter.ConvertToolCall(new JObject

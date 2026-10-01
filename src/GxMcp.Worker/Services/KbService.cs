@@ -851,6 +851,14 @@ namespace GxMcp.Worker.Services
                     var pendingBatch = new List<SearchIndex.IndexEntry>();
                     const int checkpointInterval = 2000;
                     long readTicks = 0, flushTicks = 0;
+
+                    // Issue #337: dedup is O(1) per object through a GUID -> slot map
+                    // instead of a RemoveAll rescan of the whole accumulated list.
+                    // The helper counts the comparisons it performs; see
+                    // Helpers/LiteEntryAccumulator for the scaling argument and the
+                    // rare full-scan fallback for GUIDs that legitimately occupy two
+                    // positions after a checkpoint resume.
+                    var liteAccumulator = new GxMcp.Worker.Helpers.LiteEntryAccumulator(liteEntries);
                     // value: [0]=accumulated read ticks, [1]=object count
                     var typeBuckets = new Dictionary<string, long[]>(StringComparer.Ordinal);
 
@@ -893,8 +901,6 @@ namespace GxMcp.Worker.Services
                         if (lu != DateTime.MinValue) _indexCacheService.ObserveLastUpdate(lu);
                         if (!reusedCheckpoint)
                         {
-                            if (!string.IsNullOrEmpty(objectGuid))
-                                liteEntries.RemoveAll(e => e != null && string.Equals(e.Guid, objectGuid, StringComparison.OrdinalIgnoreCase));
                             string description = null;
                             try { description = obj.Description; } catch { }
                             DateTime ca = DateTime.MinValue;
@@ -922,7 +928,7 @@ namespace GxMcp.Worker.Services
                                 LastModifiedBy = lub,
                                 IsEnriched = false
                             };
-                            liteEntries.Add(liteEntry);
+                            liteAccumulator.Upsert(liteEntry);
                             pendingBatch.Add(liteEntry);
                         }
 
@@ -983,6 +989,9 @@ namespace GxMcp.Worker.Services
                     }
 
                     if (!IsCurrentIndexOperation(operationGeneration)) return;
+                    // Collapse the tombstones left by the O(1) dedup in a single pass,
+                    // before anything downstream can observe a null slot.
+                    liteEntries = liteAccumulator.Entries;
                     if (resumeCheckpoint != null)
                     {
                         liteEntries = liteEntries

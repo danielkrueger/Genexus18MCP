@@ -151,10 +151,18 @@ namespace GxMcp.Gateway
                 "Run `genexus_list_objects --typeFilter ThemeClass --nameFilter <Button|TextBlock|Title|...>` to discover the actual class names in this KB (they vary per design system). Common patterns: `themeClass=\"BigTitle\"`, `themeClass=\"LinkText\"`, `groupThemeClass=\"GroupTelaResp\"`, `cellThemeClass=\"TableTitleCell\"`. Buttons use `buttonClass=\"btn <ColorClass>\"` (e.g. `btn ButtonGreen`, `btn ButtonRed`).\n\n" +
                 "### \"Apply this pattern on save\" override\n" +
                 "When that checkbox is on (the default), WorkWithPlus recomputes some attributes after every save — notably `title` on top-level groups. Toggle it via `genexus_properties --action set --name WorkWithPlus<Object> --propertyName SDPlus_Editor_Apply_On_Save --value False` to keep hard overrides.\n\n" +
+                // Issue #352: both examples below were structural raw-XML edits
+                // (insert a userAction, wrap attributes in a group) presented as
+                // supported, while the preflight two paragraphs above says the same
+                // route rejects structure changes. They now name the published typed
+                // action for WorkWithPlus, and the one raw-XML example is a supported
+                // property change.
                 "### Pattern examples\n" +
-                "- Add a custom button: `{ name: 'WorkWithPlusAcao', part: 'PatternInstance', mode: 'patch', operation: 'Insert_After', context: '<existing Trn_Delete standardAction line>', content: '<userAction caption=\"Auditar\" name=\"Auditar\" buttonClass=\"btn ButtonCinza\" confirm=\"False\" />' }`\n" +
-                "- Wrap attributes in a styled group (full rewrite): `{ name: 'WorkWithPlusAcao', part: 'PatternInstance', mode: 'full', content: '<full <instance> XML with <table isGroup=\"True\" title=\"Identificação\" groupThemeClass=\"GroupTelaResp\">...>' }`\n" +
-                "- Add a Selection ordering through the typed WorkWithPlus action or an SDK pattern operation; raw PatternInstance edits do not rebuild `childrenOrderedList`.\n",
+                "- Change an existing property: `{ name: 'WorkWithPlusAcao', part: 'PatternInstance', mode: 'patch', operation: 'Replace', context: '<existing line>', content: '<same line with one supported property value changed>', dryRun: true }`\n" +
+                "- Add a custom button (structural): use `genexus_wwp { action: 'add_user_action', name: 'WorkWithPlusAcao', containerName: 'TableActions', actionName: 'Auditar', caption: 'Auditar' }`. Raw `PatternInstance` XML cannot add a node — it is rejected as `PatternStructureChangeUnsupported`.\n" +
+                "- Wrap attributes in a styled group (structural): no `genexus_wwp` action exists for inserting a `<table isGroup=\"True\">` group, and raw `PatternInstance` edits reject it. Do it in the GeneXus IDE.\n" +
+                "- Add a Selection ordering through the typed WorkWithPlus action or an SDK pattern operation. `childrenOrderedList` is SDK-owned metadata: raw PatternInstance edits do not rebuild it, and changing it by hand is rejected as `PatternMetadataChangeUnsupported`.\n" +
+                "- Saving a `PatternInstance` does not regenerate the pattern's generated objects. Apply the pattern in the GeneXus IDE for that.\n",
 
             ["genexus_analyze"] =
                 "# genexus_analyze\n\n" +

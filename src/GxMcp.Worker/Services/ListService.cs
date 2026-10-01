@@ -351,54 +351,84 @@ namespace GxMcp.Worker.Services
 
                     List<SearchIndex.IndexEntry> orderedIndexEntries;
                     int totalIndex;
+                    // True when the cursor was decoded and the source has already been
+                    // filtered past it, so there is no post-selection resume scan to do
+                    // and the page starts at the head of the selected list. In that case
+                    // startIndex already holds the absolute resume position, so
+                    // `total`/hasMore/nextCursor arithmetic is unchanged.
+                    bool resumeApplied = false;
 
-                    // PERFORMANCE: If we only need top-K items (common MCP list paging, e.g. limit=50, offset=0)
-                    // and no cursor is specified, use a single-pass bounded heap (O(N log K)) instead of sorting all N items.
-                    if (string.IsNullOrEmpty(cursor) && needed > 0 && needed <= 200)
+                    // v2.6.8: stable cursor wins over offset when both arrive. Decode
+                    // pulls (lastUpdate, guid); we select only the entries that
+                    // actually follow that tuple. Cursor is opt-in: callers that
+                    // ignore it still get offset-based paging.
+                    //
+                    // Issue #346: the resume predicate mirrors the sort tuple exactly
+                    // (LastUpdate desc, Name asc, Guid asc), so it is a *prefix filter*
+                    // on the ordered sequence, not something that needs the ordered
+                    // sequence to evaluate. The old code sorted every candidate and
+                    // then found the resume position by scanning the sorted list,
+                    // which forced the O(N log N) full-sort path for every cursor page
+                    // no matter how small the page was: walking P pages over an M-entry
+                    // catalog cost P * O(M log M). Filtering first lets the cursor path
+                    // use the same bounded heap the first page already used.
+                    var decoded = !string.IsNullOrEmpty(cursor) && sortByLastUpdate ? DecodeCursor(cursor) : null;
+                    if (decoded.HasValue)
                     {
-                        orderedIndexEntries = TopKHelper.SelectTopK(entries, needed, comparer, out totalIndex);
+                        var (cursorTs, cursorName, cursorGuid) = decoded.Value;
+                        // v2.6.8 (review C1): predicate must mirror the OrderBy
+                        // tuple — LastUpdate desc, Name asc, Guid asc — or we
+                        // silently skip items whose Name sorts after the cursor
+                        // but whose Guid sorts before it.
+                        var candidates = entries.ToList();
+                        totalIndex = candidates.Count;
+                        var remaining = candidates.Where(e =>
+                            IsAfterResumePoint(e, cursorTs, cursorName, cursorGuid)).ToList();
+                        // The reported `total` is the whole candidate set, not the
+                        // remaining tail, so recover the absolute resume position
+                        // the old FindIndex would have returned.
+                        startIndex = totalIndex - remaining.Count;
+                        resumeApplied = true;
+
+                        if (pageSize == int.MaxValue)
+                        {
+                            // Caller asked for everything that is left; ordering the
+                            // tail outright is cheaper than a heap of unbounded size.
+                            remaining.Sort(comparer);
+                            orderedIndexEntries = remaining;
+                        }
+                        else
+                        {
+                            orderedIndexEntries = TopKHelper.SelectTopK(remaining, pageSize, comparer, out _);
+                        }
                     }
                     else
                     {
-                        var candidateList = entries.ToList();
-                        totalIndex = candidateList.Count;
-                        candidateList.Sort(comparer);
-                        orderedIndexEntries = candidateList;
-                    }
-
-                    // v2.6.8: stable cursor wins over offset when both arrive. Decode
-                    // pulls (lastUpdate, guid); we scan the ordered list to the first
-                    // entry strictly older than that tuple. Cursor is opt-in: callers
-                    // that ignore it still get offset-based paging.
-                    if (!string.IsNullOrEmpty(cursor) && sortByLastUpdate)
-                    {
-                        var decoded = DecodeCursor(cursor);
-                        if (decoded.HasValue)
+                        // PERFORMANCE: If we only need top-K items (common MCP list paging, e.g. limit=50, offset=0)
+                        // and no cursor is specified, use a single-pass bounded heap (O(N log K)) instead of sorting all N items.
+                        if (string.IsNullOrEmpty(cursor) && needed > 0 && needed <= 200)
                         {
-                            var (cursorTs, cursorName, cursorGuid) = decoded.Value;
-                            // v2.6.8 (review C1): predicate must mirror the OrderBy
-                            // tuple — LastUpdate desc, Name asc, Guid asc — or we
-                            // silently skip items whose Name sorts after the cursor
-                            // but whose Guid sorts before it.
-                            int resumeAt = orderedIndexEntries.FindIndex(e =>
-                            {
-                                if (e.LastUpdate < cursorTs) return true;
-                                if (e.LastUpdate != cursorTs) return false;
-                                int byName = string.Compare(e.Name ?? string.Empty, cursorName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-                                if (byName > 0) return true;
-                                if (byName < 0) return false;
-                                return string.Compare(e.Guid ?? string.Empty, cursorGuid ?? string.Empty, StringComparison.OrdinalIgnoreCase) > 0;
-                            });
-                            if (resumeAt >= 0) startIndex = resumeAt;
-                            else startIndex = totalIndex; // exhausted
+                            orderedIndexEntries = TopKHelper.SelectTopK(entries, needed, comparer, out totalIndex);
+                        }
+                        else
+                        {
+                            var candidateList = entries.ToList();
+                            totalIndex = candidateList.Count;
+                            candidateList.Sort(comparer);
+                            orderedIndexEntries = candidateList;
                         }
                     }
 
+                    // v2.6.8 (review C1): the resume scan now happens as a filter above,
+                    // so nothing is left to seek into the ordered list.
                     bool legacyMode = IsLegacyPerfProfile();
                     int endIndex = Math.Min(totalIndex, (int)Math.Min((long)totalIndex, (long)startIndex + pageSize));
-                    for (int i = startIndex; i < endIndex; i++)
+                    int selectionPageStart = resumeApplied ? 0 : startIndex;
+                    int take = Math.Min(orderedIndexEntries.Count - selectionPageStart, endIndex - startIndex);
+                    if (take < 0) take = 0;
+                    for (int i = 0; i < take; i++)
                     {
-                        var entry = orderedIndexEntries[i];
+                        var entry = orderedIndexEntries[selectionPageStart + i];
                         array.Add(BuildItemInternal(
                             entry.Name,
                             entry.Type ?? "Unknown",
@@ -424,9 +454,9 @@ namespace GxMcp.Worker.Services
                     // from the last item of this page so callers can continue without
                     // an offset that drifts as the KB mutates.
                     SearchIndex.IndexEntry lastEmitted = null;
-                    if (sortByLastUpdate && array.Count > 0 && endIndex > startIndex)
+                    if (sortByLastUpdate && array.Count > 0 && take > 0)
                     {
-                        lastEmitted = orderedIndexEntries[endIndex - 1];
+                        lastEmitted = orderedIndexEntries[selectionPageStart + take - 1];
                     }
 
                     var paged = BuildPagedResponseInternal(array, totalIndex, startIndex, pageSize);
@@ -1177,6 +1207,36 @@ namespace GxMcp.Worker.Services
         // with empty Name (will work for non-tie pages, may misorder under ties).
         internal static string EncodeCursor(DateTime ts, string guid) =>
             EncodeCursor(ts, null, guid);
+
+        /// <summary>
+        /// Whether <paramref name="entry"/> sorts strictly after the resume tuple
+        /// (LastUpdate descending, then Name ascending, then Guid ascending) - i.e.
+        /// whether it belongs on a page that continues from that cursor.
+        ///
+        /// <para>
+        /// Issue #346. This is the exact predicate the cursor resume used to evaluate
+        /// by scanning an already fully sorted candidate list. Because it is a prefix
+        /// predicate over a total order, it can be applied to the unordered candidate
+        /// stream instead, which is what lets a cursor page use bounded top-K
+        /// selection rather than re-sorting the whole catalog. It is expressed as
+        /// "the entry is greater than the cursor" under
+        /// <see cref="LastUpdateIndexEntryComparer"/> so the two cannot drift:
+        /// <see cref="CursorPageSelectorTests"/> pins the equivalence against an
+        /// exhaustive sort, including equal-timestamp, case-differing-name and
+        /// GUID tie-break cases.
+        /// </para>
+        /// </summary>
+        internal static bool IsAfterResumePoint(
+            SearchIndex.IndexEntry entry, DateTime cursorTs, string cursorName, string cursorGuid)
+        {
+            if (entry == null) return false;
+            if (entry.LastUpdate < cursorTs) return true;
+            if (entry.LastUpdate != cursorTs) return false;
+            int byName = string.Compare(entry.Name ?? string.Empty, cursorName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (byName > 0) return true;
+            if (byName < 0) return false;
+            return string.Compare(entry.Guid ?? string.Empty, cursorGuid ?? string.Empty, StringComparison.OrdinalIgnoreCase) > 0;
+        }
 
         internal static (DateTime ts, string name, string guid)? DecodeCursor(string cursor)
         {

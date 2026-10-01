@@ -34,6 +34,108 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("a", victim!.Alias);
         }
 
+        // ── issue #333: eviction is idle-only ──────────────────────────────────
+        //
+        // The victim scan used to skip only entries with no Worker, so "oldest" was the
+        // only criterion and a Worker mid-build, mid-write or mid-index was eligible.
+        // Opening another KB at capacity could then stop the oldest Worker's process
+        // and take its in-flight command with it. These guards pin the eligibility
+        // rule; the entries are registered with a Worker present, because an entry
+        // without one was never a candidate and would make every assertion vacuous.
+
+        [Fact]
+        public void Eviction_Skips_A_Worker_With_A_Command_In_Flight()
+        {
+            var pool = new WorkerPool(CfgWithMax(2));
+            pool.RegisterForTest(new KbHandle("alpha", "C:/Alpha"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-10), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("alpha", "C:/Alpha")));
+            pool.RegisterForTest(new KbHandle("beta", "C:/Beta"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-1), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("beta", "C:/Beta")));
+
+            // Alpha is the oldest, so the pre-#333 scan chose it.
+            Assert.Equal("alpha", pool.SelectVictimForTest()!.Alias);
+
+            // A command is in flight on Alpha: it must stop being eligible, and Beta
+            // must be chosen instead even though it is more recently active.
+            pool.SetInFlightForTest("alpha", 1);
+            Assert.Equal("beta", pool.SelectEvictableVictimForTest()!.Alias);
+
+            // Command finished: Alpha is eligible again, and being the oldest it wins.
+            pool.SetInFlightForTest("alpha", 0);
+            Assert.Equal("alpha", pool.SelectEvictableVictimForTest()!.Alias);
+        }
+
+        [Fact]
+        public void Eviction_Reports_No_Victim_When_Every_Worker_Is_Busy()
+        {
+            var pool = new WorkerPool(CfgWithMax(2));
+            pool.RegisterForTest(new KbHandle("alpha", "C:/Alpha"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-10), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("alpha", "C:/Alpha")));
+            pool.RegisterForTest(new KbHandle("beta", "C:/Beta"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-1), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("beta", "C:/Beta")));
+
+            pool.SetInFlightForTest("alpha", 2);
+            pool.SetInFlightForTest("beta", 1);
+
+            // All busy: the caller reports the pool as full rather than stopping a
+            // Worker that is executing something.
+            Assert.Null(pool.SelectEvictableVictimForTest());
+        }
+
+        [Fact]
+        public void Eviction_Skips_A_Draining_Or_Reloading_Worker()
+        {
+            var pool = new WorkerPool(CfgWithMax(2));
+            pool.RegisterForTest(new KbHandle("alpha", "C:/Alpha"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-10), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("alpha", "C:/Alpha")));
+            pool.RegisterForTest(new KbHandle("beta", "C:/Beta"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-1), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("beta", "C:/Beta")));
+
+            // A planned reload is already replacing Alpha's process; stopping it would
+            // race the reload.
+            pool.SetDrainingForTest("alpha");
+            Assert.Equal("beta", pool.SelectEvictableVictimForTest()!.Alias);
+        }
+
+        [Fact]
+        public void Begin_And_Release_Command_Balance_Across_Repeated_Calls()
+        {
+            // A leaked count would make an entry permanently ineligible for eviction,
+            // so the release has to be idempotent and has to actually decrement.
+            var pool = new WorkerPool(CfgWithMax(2));
+            pool.RegisterForTest(new KbHandle("alpha", "C:/Alpha"),
+                worker: new WorkerProcess(CfgWithMax(2), new KbHandle("alpha", "C:/Alpha")));
+
+            Assert.Equal(0, pool.InFlightCommandsForTest("alpha"));
+
+            var first = pool.BeginCommand("alpha");
+            var second = pool.BeginCommand("alpha");
+            Assert.NotNull(first);
+            Assert.NotNull(second);
+            Assert.Equal(2, pool.InFlightCommandsForTest("alpha"));
+
+            first!();
+            Assert.Equal(1, pool.InFlightCommandsForTest("alpha"));
+
+            // Releasing twice must not under-count.
+            first();
+            Assert.Equal(1, pool.InFlightCommandsForTest("alpha"));
+
+            second!();
+            Assert.Equal(0, pool.InFlightCommandsForTest("alpha"));
+        }
+
+        [Fact]
+        public void Begin_Command_For_An_Unknown_Alias_Is_A_NoOp()
+        {
+            // A Worker resolved outside the pool (warmup, direct construction) has no
+            // entry to protect; that is not an error.
+            var pool = new WorkerPool(CfgWithMax(2));
+            Assert.Null(pool.BeginCommand("ghost"));
+            Assert.Null(pool.BeginCommand(null));
+            Assert.Equal(0, pool.InFlightCommandsForTest("ghost"));
+        }
+
         [Fact]
         public void IsAtCapacity_respects_MaxOpenKbs()
         {

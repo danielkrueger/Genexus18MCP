@@ -383,15 +383,22 @@ namespace GxMcp.Gateway
                             "Host object name is `WorkWithPlus<Parent>` (verify it exists; if not, apply_pattern first).",
                             "Read the current PatternInstance to find a unique anchor."
                         ),
+                        // Issue #352: this recipe promised a reconciliation report that the
+                        // write path never emits, and its "persist" step was a raw
+                        // operation=Insert_After example, which the structural preflight
+                        // rejects for PatternInstance. Both are corrected here.
                         ["steps"] = new JArray(
                             Step("genexus_read", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance" },
                                  "Find a unique line near the edit site (e.g. an existing <standardAction name='Trn_Delete'> or attribute id)."),
-                            Step("genexus_edit", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance", ["mode"] = "patch", ["context"] = "<anchor line>", ["operation"] = "Insert_After", ["content"] = "<new XML>", ["dryRun"] = true },
-                                 "ALWAYS dryRun first to see the projected diff."),
-                            Step("genexus_edit", new JObject { ["same as above without dryRun"] = true }, "Persist. Response includes childrenOrderedListReconciliation showing what the auto-reconciliation changed.")
+                            Step("genexus_edit", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance", ["mode"] = "patch", ["context"] = "<anchor line>", ["operation"] = "Replace", ["content"] = "<anchor line with one existing property value changed>", ["dryRun"] = true },
+                                 "ALWAYS dryRun first to see the projected diff. Change an existing property value; do not add or move nodes."),
+                            Step("genexus_edit", new JObject { ["same as above without dryRun"] = true },
+                                 "Persist the same property change. The response reports the persisted PatternInstance and its versionToken. It does not include a child-order reconciliation report: this build does not reconcile child order on save.")
                         ),
                         ["pitfalls"] = new JArray(
-                            "Do NOT touch `childrenOrderedList` attributes by hand — the MCP rebuilds them from your XML child order on every save.",
+                            "Do NOT touch `childrenOrderedList` attributes by hand. It is SDK-owned metadata and a change to it is rejected as PatternMetadataChangeUnsupported; the MCP does not rebuild it from your XML child order on save.",
+                            "Raw PatternInstance XML edits are limited to existing property changes. Adding or moving a node is rejected as PatternStructureChangeUnsupported — use the typed genexus_wwp action for that structure.",
+                            "Saving the instance does not regenerate the pattern's generated objects. Apply the pattern in the GeneXus IDE for that.",
                             "Avoid mode='full' unless you really intend a whole-tree rewrite; patch keeps surrounding state safe."
                         )
                     }),

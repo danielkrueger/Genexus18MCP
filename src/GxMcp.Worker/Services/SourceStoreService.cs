@@ -83,6 +83,25 @@ namespace GxMcp.Worker.Services
         private bool _isCatalogDirty;
         private volatile bool _initialized;
 
+        // Issue #338. Storage accounting.
+        //
+        // EnforceStorageBudget used to sum FileBytes across every catalog record to
+        // decide whether the budget was exceeded, so it walked the whole catalog on
+        // every single insert. Populating a KB with S stored sources cost O(S^2)
+        // accounting iterations below the budget - quadratic work whose only purpose
+        // is to read a total it already knows.
+        //
+        // _trackedBytes holds that total, and _accountingTrusted says whether it can be
+        // believed. A replace applies only the delta, eviction subtracts, and the
+        // counter stops being trusted the moment an update path could have desynced it
+        // (a failed write, a concurrent mutation). The next enforcement then rebuilds
+        // it with one pass and carries on incrementally, so the invariant is
+        // "reconcile at most once per desync", not "assume the counter is always
+        // right" and not "rescan on every insert".
+        private long _trackedBytes;
+        private bool _accountingTrusted;
+        private long _accountingScans;
+
         public SourceStoreService()
         {
             _storeDirectory = Path.Combine(RuntimePaths.StateRoot, "source-store");
@@ -103,6 +122,11 @@ namespace GxMcp.Worker.Services
                 _records.Clear();
                 _trigramIndex.Clear();
                 _initialized = false;
+                // Issue #338: clearing the catalog invalidates the incremental total.
+                // Without this the next Put would add its delta to a counter still
+                // describing the previous record set, and the total would be wrong for
+                // the rest of the instance's life.
+                MarkAccountingUntrusted();
                 Initialize();
             }
         }
@@ -386,7 +410,15 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
+                // Issue #338: apply the size delta for this record instead of making the
+                // next budget check rescan the catalog. A replacement must subtract the
+                // previous record's bytes first, or the total grows by both versions.
+                RecordSummary previous;
+                bool replaced = _records.TryGetValue(key, out previous);
+                if (replaced)
+                    ApplyAccountingDelta(-previous.FileBytes);
                 _records[key] = summary;
+                ApplyAccountingDelta(fileBytes);
                 MarkCatalogDirty();
                 EnforceStorageBudget();
                 return true;
@@ -846,6 +878,11 @@ namespace GxMcp.Worker.Services
                                 StoredAtUtc = s
                             };
                             _records[canonicalKey] = summary;
+                            // Issue #338: the catalog load rebuilt the record set, so
+                            // the incremental total describes the previous set. Force
+                            // one reconciliation pass rather than trying to patch a
+                            // counter across a bulk replace.
+                            MarkAccountingUntrusted();
                         }
                     }
 
@@ -876,8 +913,7 @@ namespace GxMcp.Worker.Services
         private void EnforceStorageBudget()
         {
             long maxBytes = Configuration.SourceStoreMaxMB * 1024L * 1024L;
-            long currentBytes = 0;
-            foreach (var r in _records.Values) currentBytes += r.FileBytes;
+            long currentBytes = CurrentStorageBytes();
 
             if (currentBytes <= maxBytes) return;
 
@@ -897,11 +933,84 @@ namespace GxMcp.Worker.Services
                         if (File.Exists(fullPath)) File.Delete(fullPath);
                         currentBytes -= rec.FileBytes;
                     }
-                    catch { }
+                    catch
+                    {
+                        // The file could not be deleted, so the bytes are still on disk
+                        // even though the catalog no longer tracks them. Record the
+                        // removal for accounting, then give up on the counter rather
+                        // than let it drift away from the catalog.
+                        ApplyAccountingDelta(-rec.FileBytes);
+                        MarkAccountingUntrusted();
+                    }
                 }
             }
             MarkCatalogDirty();
         }
+
+        /// <summary>
+        /// Total tracked storage in bytes, reconciling the incremental counter with one
+        /// catalog pass whenever it is not trusted.
+        /// </summary>
+        private long CurrentStorageBytes()
+        {
+            if (_accountingTrusted) return Interlocked.Read(ref _trackedBytes);
+
+            long total = SumRecordBytes();
+            Interlocked.Exchange(ref _trackedBytes, total);
+            Volatile.Write(ref _accountingTrusted, true);
+            return total;
+        }
+
+        /// <summary>
+        /// Applies a byte delta to the tracked total. When the counter is untrusted the
+        /// delta is dropped on purpose: the next <see cref="CurrentStorageBytes"/> pass
+        /// rebuilds the exact total, and folding one unverified delta into a rebuilt
+        /// value is how a counter drifts.
+        /// </summary>
+        private void ApplyAccountingDelta(long deltaBytes)
+        {
+            if (!_accountingTrusted) return;
+            Interlocked.Add(ref _trackedBytes, deltaBytes);
+        }
+
+        /// <summary>
+        /// Marks the incremental total as untrusted, so the next enforcement reconciles
+        /// it with a single pass. Called from any path that could have changed
+        /// <see cref="_records"/> without going through the accounting helpers.
+        /// </summary>
+        private void MarkAccountingUntrusted() => Volatile.Write(ref _accountingTrusted, false);
+
+        /// <summary>
+        /// Number of catalog records walked by <see cref="SumRecordBytes"/>. An
+        /// in-process counter alone cannot catch a full-catalog sum reintroduced at a
+        /// different call site, so this counts visits at the one place any such sum has
+        /// to go through; <c>SourceStoreBudgetAccountingTests</c> pairs it with a
+        /// source-shape guard on <see cref="EnforceStorageBudget"/>.
+        /// </summary>
+        internal long CatalogRecordVisits => Interlocked.Read(ref _accountingScans);
+
+        /// <summary>
+        /// The one place a full-catalog byte sum is allowed to happen.
+        /// </summary>
+        private long SumRecordBytes()
+        {
+            long total = 0;
+            foreach (var r in _records.Values)
+            {
+                Interlocked.Increment(ref _accountingScans);
+                total += r.FileBytes;
+            }
+            return total;
+        }
+
+        /// <summary>
+        /// Total tracked storage, reconciled on demand. Exposed so a budget assertion
+        /// can check the counter against the catalog it is supposed to describe.
+        /// </summary>
+        internal long TrackedStorageBytes() => CurrentStorageBytes();
+
+        /// <summary>Catalog records whose bytes the counter currently accounts for.</summary>
+        internal int RecordCount => _records.Count;
 
         private static string ComputeHash(string text)
         {

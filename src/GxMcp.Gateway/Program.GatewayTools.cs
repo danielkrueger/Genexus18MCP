@@ -883,7 +883,14 @@ namespace GxMcp.Gateway
                     string pathB = ResolveKbPath(kbB) ?? throw new ArgumentException($"'kbB'='{kbB}' not a declared alias and not an existing directory.");
                     if (string.Equals(System.IO.Path.GetFullPath(pathA), System.IO.Path.GetFullPath(pathB), StringComparison.OrdinalIgnoreCase))
                         throw new ArgumentException("kbA and kbB resolve to the same path.");
-                    payload = KbDiffHelper.Diff(pathA, pathB);
+                    string mode = (args?["mode"]?.ToString() ?? KbDiffHelper.ContentMode).Trim();
+                    if (!string.Equals(mode, KbDiffHelper.ContentMode, StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(mode, KbDiffHelper.MetadataMode, StringComparison.OrdinalIgnoreCase))
+                        throw new ArgumentException($"Unknown 'mode'='{mode}'. Use content|metadata.");
+                    int maxObjects = args?["maxObjects"]?.ToObject<int?>() ?? KbDiffHelper.DefaultMaxObjects;
+                    if (maxObjects <= 0)
+                        throw new ArgumentException("'maxObjects' must be greater than 0 when supplied.");
+                    payload = KbDiffHelper.Diff(pathA, pathB, mode, maxObjects);
                 }
                 catch (Exception ex)
                 {

@@ -512,6 +512,56 @@ namespace GxMcp.Worker.Services
             internal static bool GenericFirstApplySupported = true;
             internal static bool GenericReapplySupported = false;
 
+            /// <summary>
+            /// Whether a successful reapply regenerates the pattern's derived objects,
+            /// as opposed to only re-saving the instance.
+            ///
+            /// <para>
+            /// Issue #352: the diagnostic composed an <c>overrideConflict</c> finding
+            /// whose remediation said reapply "regenerates the existing pattern
+            /// instance" from a single constant, independent of what
+            /// <see cref="IsSupported"/> reports for the same pattern and route. So for
+            /// a pattern with reapply blocked, the response recommended the route it
+            /// refused, and for a hypothetical supported-reapply-but-no-regeneration
+            /// build it would still promise regeneration.
+            /// </para>
+            ///
+            /// <para>
+            /// This is false today on the evidence recorded above: the only reapply
+            /// routes measured leave the generated objects at their previous version.
+            /// WorkWithPlus is excluded because it has its own supported routes, and
+            /// this switch only governs the generic pattern engine.
+            /// </para>
+            /// </summary>
+            internal const bool ReapplyRegenerates = false;
+
+            /// <summary>
+            /// Whether a successful WorkWithPlus reapply regenerates the pattern's derived
+            /// objects. <see cref="ReapplyRegenerates"/> describes the generic engine only,
+            /// and WorkWithPlus returns early from <see cref="IsSupported"/> because it has
+            /// its own supported routes, so its regeneration claim needs its own constant.
+            ///
+            /// <para>
+            /// True on the basis that a WWP reapply runs the package's own apply route,
+            /// the same path that produces the generated objects on first apply. This is
+            /// a declared capability, not a measurement from this build: no live WWP
+            /// reapply regeneration was executed for this change, so the diagnostic
+            /// reports the intended route rather than certifying observed output.
+            /// </para>
+            /// </summary>
+            internal const bool WwpReapplyRegenerates = true;
+
+            /// <summary>
+            /// Whether a reapply of <paramref name="pattern"/> regenerates the pattern's
+            /// derived objects. The single source both the diagnose remediation and the
+            /// capability report read, so a diagnostic cannot recommend a regeneration
+            /// the capability section denies.
+            /// </summary>
+            internal static bool IsRegeneratingReapply(PatternManifest pattern) =>
+                pattern != null && pattern.IsWorkWithPlus
+                    ? WwpReapplyRegenerates
+                    : ReapplyRegenerates;
+
             internal static bool IsSupported(PatternManifest pattern, PatternRoute route, out string reason)
             {
                 reason = null;
@@ -544,7 +594,11 @@ namespace GxMcp.Worker.Services
             return McpResponse.Err(
                 code: "PatternRouteUnsupported",
                 message: reason,
-                hint: "Existing " + pattern.Name + " instances can still be read and edited with genexus_read / genexus_edit part=PatternInstance.",
+                // Issue #352: qualify the permitted edit. Reading/editing existing
+                // supported properties of the definition is available, but that is not
+                // structural authoring and it does not regenerate derived objects, so
+                // the hint must not read as a way to get the generated objects updated.
+                hint: "Read the existing instance with genexus_read part=PatternInstance. Editing existing supported properties through genexus_edit part=PatternInstance is possible; structural authoring needs the pattern's typed action, and the pattern's generated objects are not regenerated either way.",
                 nextSteps: new JArray(McpResponse.NextStep(
                     tool: "genexus_read",
                     args: new JObject { ["name"] = target, ["part"] = "PatternInstance" },
@@ -3058,28 +3112,57 @@ namespace GxMcp.Worker.Services
                 }
 
                 // ── 6. Override / existing instance conflict ─────────────────────
+                // The remediation has to name a route the same response can actually
+                // run. Issue #352: the overrideConflict finding unconditionally told the
+                // caller to "Call genexus_apply_pattern with reapply=true to
+                // regenerate the existing pattern instance", while the routeUnsupported
+                // finding emitted two lines below declared that reapply is unsupported
+                // for this pattern. For a pattern with reapply blocked, the diagnostic
+                // recommended precisely the route it refused.
                 object existingInstance = GetOwnedPatternInstance(obj, pattern);
+                var route = existingInstance != null ? PatternRoute.Reapply : PatternRoute.FirstApply;
+                bool reapplySupported = PatternRouteCapabilities.IsSupported(pattern, PatternRoute.Reapply, out _);
+                // WorkWithPlus has its own supported reapply route, which is the
+                // apply-on-save path the package runs. The generic engine switch does
+                // not describe it, so the regeneration claim has to come from the
+                // pattern rather than from that switch alone.
+                bool reapplyReconciles = PatternRouteCapabilities.IsRegeneratingReapply(pattern);
                 if (existingInstance != null)
                 {
-                    findings.Add(isWwp
-                        ? Finding("overrideConflict", "warn",
-                            $"An existing PatternInstance for '{patternKey}' was found on '{objectName}'. A first-apply will be a no-op; use reapply=true.",
-                            "Call genexus_apply_pattern with reapply=true to regenerate the existing pattern instance.")
-                        : Finding("overrideConflict", "warn",
-                            $"An existing {pattern.Name} instance was found on '{objectName}'. Applying again regenerates it through the reapply route.",
-                            "Call genexus_apply_pattern with reapply=true to regenerate the existing pattern instance."));
+                    // The remediation is the instruction; the detail is the evidence.
+                    // Both are derived from the two capability answers above, so neither
+                    // can name a route the other contradicts.
+                    string notice = $"An existing PatternInstance for '{patternKey}' was found on '{objectName}'.";
+                    string noOp = reapplyReconciles
+                        ? " A first-apply will be a no-op; use reapply=true."
+                        : " A first-apply will be a no-op. Reapply through this build does not regenerate the derived objects.";
+                    string action = reapplySupported
+                        ? (reapplyReconciles
+                            ? "Call genexus_apply_pattern with reapply=true to regenerate the existing pattern instance."
+                            : "Call genexus_apply_pattern with reapply=true to re-apply the existing instance; this does not regenerate the pattern's objects.")
+                        : "Do not repeat apply headless: reapply for this pattern is not supported by this MCP build. Apply the pattern in the GeneXus IDE to regenerate the pattern's objects, then re-read the instance with genexus_read part=PatternInstance.";
+
+                    var conflict = Finding("overrideConflict", reapplyReconciles ? "warn" : "info",
+                        notice + noOp, action);
+                    conflict["reapplyRecommended"] = reapplySupported;
+                    conflict["regeneratesDerivedObjects"] = reapplyReconciles;
+                    conflict["remediationRoute"] = reapplySupported ? "reapply" : "ide";
+                    findings.Add(conflict);
                 }
 
                 // ── 6b. Route capability (patterns other than WorkWithPlus) ──────
                 // Report the route that would actually run instead of claiming a clean
                 // apply and then failing on an unsupported path.
-                var route = existingInstance != null ? PatternRoute.Reapply : PatternRoute.FirstApply;
                 if (!PatternRouteCapabilities.IsSupported(pattern, route, out string routeReason))
                 {
+                    // Qualify the permitted edit: reading and editing existing
+                    // properties of the definition is not structural authoring and does
+                    // not regenerate the derived objects.
                     var routeFinding = Finding("routeUnsupported", "critical",
                         routeReason,
-                        "Existing " + pattern.Name + " instances can be read and edited with genexus_read / genexus_edit part=PatternInstance.");
+                        "Read the existing instance with genexus_read part=PatternInstance. Editing existing supported properties through genexus_edit part=PatternInstance is possible; structural authoring needs the pattern's typed action, and the pattern's generated objects are not regenerated either way.");
                     routeFinding["route"] = RouteName(route);
+                    routeFinding["regeneratesDerivedObjects"] = false;
                     findings.Add(routeFinding);
                 }
 

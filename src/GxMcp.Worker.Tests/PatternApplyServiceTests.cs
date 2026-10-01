@@ -368,7 +368,17 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("ok", obj["status"]?.ToString());
             var conflict = ((JArray)obj["findings"]!).First(f =>f["reason"]?.ToString() == "overrideConflict");
-            Assert.Contains("A first-apply will be a no-op", conflict["detail"]?.ToString());
+            // Issue #352: the detail previously said "A first-apply will be a no-op;
+            // use reapply=true" from a constant, independent of what the same response
+            // reported about the reapply route. WWP has its own supported reapply route
+            // that regenerates, so the remediation is still reapply here - but it is now
+            // derived from that capability instead of asserted unconditionally.
+            Assert.Contains("An existing PatternInstance for 'WorkWithPlus' was found", conflict["detail"]?.ToString());
+            Assert.Contains("A first-apply will be a no-op; use reapply=true", conflict["detail"]?.ToString());
+            Assert.Equal("reapply", conflict["remediationRoute"]?.ToString());
+            Assert.True((bool)conflict["reapplyRecommended"]);
+            Assert.True((bool)conflict["regeneratesDerivedObjects"]);
+            Assert.Contains("reapply=true to regenerate", conflict["remediation"]?.ToString());
             Assert.Null(obj["routeCapabilities"]);
         }
 

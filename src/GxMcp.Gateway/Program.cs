@@ -36,7 +36,7 @@ namespace GxMcp.Gateway
         private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(new StopwatchMonotonicClock());
         // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
         // otherwise the worker for the DefaultKb (acquiring it lazily).
-        private static async Task<WorkerProcess> GetActiveWorkerAsync()
+        private static async Task<AcquiredWorker> GetActiveWorkerAsync()
         {
             if (_workerPool == null) throw new InvalidOperationException("WorkerPool not initialised.");
             KbHandle? kb = _currentKb.Value;
@@ -47,7 +47,40 @@ namespace GxMcp.Gateway
             }
             bool legacy = string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
             bool requireOwner = _currentOperationRequiresOwner.Value;
-            return await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, requireOwner, legacy);
+            var worker = await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, requireOwner, legacy);
+
+            // issue #333: mark the Worker's pool entry as serving a command so capacity
+            // eviction cannot select it. This is the single point every tool call goes
+            // through, so registering here covers build, write and index traffic alike
+            // rather than three call sites that could drift. The releaser runs in a
+            // finally on the caller's side; see AcquiredWorker.
+            var release = _workerPool.BeginCommand(kb.Alias);
+            return new AcquiredWorker(worker, release);
+        }
+
+        /// <summary>
+        /// A resolved Worker plus the pool reservation that protects it from capacity
+        /// eviction for as long as the caller holds it (issue #333).
+        /// </summary>
+        internal sealed class AcquiredWorker
+        {
+            private readonly Action? _release;
+            private int _released;
+
+            public WorkerProcess Worker { get; }
+
+            public AcquiredWorker(WorkerProcess worker, Action? release)
+            {
+                Worker = worker;
+                _release = release;
+            }
+
+            /// <summary>Releases the eviction reservation. Idempotent, and safe in a finally.</summary>
+            public void Release()
+            {
+                if (_release == null) return;
+                if (Interlocked.Exchange(ref _released, 1) == 0) _release();
+            }
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;

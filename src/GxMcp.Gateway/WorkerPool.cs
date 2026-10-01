@@ -85,6 +85,13 @@ namespace GxMcp.Gateway
             // AcquireAsync callers that hit the fast path while Draining==true wait
             // on DrainComplete before returning the freshly-spawned replacement.
             public volatile bool Draining;
+            // issue #333: commands currently queued for or executing on this Worker.
+            // Eviction may only take an entry whose count is zero, so opening a KB at
+            // capacity cannot stop a Worker in the middle of a build, write or index
+            // pass. Incremented before admission and decremented when the command
+            // finishes, including on failure - a leaked count would make an entry
+            // permanently ineligible, so the decrement is in a finally.
+            public int InFlightCommands;
             // A failed drain remains fail-closed while the old worker is shutting down.
             public volatile bool DrainFailed;
             // issue #26 P1: true while a worker process is actively being spawned for
@@ -547,6 +554,27 @@ namespace GxMcp.Gateway
             _entries.Clear();
         }
 
+        /// <summary>
+        /// The least-recently-active entry that is safe to stop, or null when none is.
+        ///
+        /// <para>
+        /// Issue #333. The scan previously skipped only entries with no Worker, so
+        /// "oldest" was the only criterion and a Worker mid-build, mid-write or
+        /// mid-index was eligible. Opening another KB at capacity could then stop the
+        /// oldest Worker's process and take its in-flight command with it - which
+        /// contradicts the documented idle-only eviction policy and, for an isolated
+        /// Worker, is not recoverable by the caller.
+        /// </para>
+        ///
+        /// <para>
+        /// Eligibility is therefore "has a Worker, is not spawning, draining or
+        /// reloading, and has no command in flight", and the same
+        /// <see cref="_capacityLock"/> that guards the capacity decision is held
+        /// throughout, so a command cannot be admitted to the entry between the
+        /// decision and the stop. If nothing is eligible the caller reports the pool
+        /// as full rather than stopping a busy Worker.
+        /// </para>
+        /// </summary>
         private Entry? SelectVictim()
         {
             // PERFORMANCE (G-B1): linear scan for the min LastActivityUtc instead of OrderBy
@@ -558,6 +586,7 @@ namespace GxMcp.Gateway
             foreach (var e in _entries.Values)
             {
                 if (e.Worker == null) continue;
+                if (!IsEvictable(e)) continue;
                 if (e.LastActivityUtc < oldest)
                 {
                     oldest = e.LastActivityUtc;
@@ -565,6 +594,91 @@ namespace GxMcp.Gateway
                 }
             }
             return victim;
+        }
+
+        /// <summary>
+        /// Whether an entry can be stopped without losing or corrupting work. Callers
+        /// must hold <see cref="_capacityLock"/>.
+        /// </summary>
+        private static bool IsEvictable(Entry e) =>
+            e.Worker != null
+            && !e.Spawning
+            && !e.Draining
+            && !e.DrainFailed
+            && Volatile.Read(ref e.Reloading) == 0
+            && Volatile.Read(ref e.InFlightCommands) == 0;
+
+        /// <summary>
+        /// Tracks one command as in flight on a Worker's entry, so capacity eviction
+        /// (issue #333) cannot select it. Returns a releaser the caller must invoke when
+        /// the command finishes, whatever the outcome.
+        ///
+        /// <para>
+        /// The increment and the eviction check share <see cref="_capacityLock"/>, so an
+        /// entry cannot be judged idle and then have a command admitted before the
+        /// decision is acted on. A null result means the alias is not in the pool, which
+        /// is not an error here: the caller's Worker was resolved some other way and
+        /// there is no entry to protect.
+        /// </para>
+        /// </summary>
+        internal Action? BeginCommand(string? alias)
+        {
+            if (string.IsNullOrWhiteSpace(alias)) return null;
+            Entry? entry;
+            lock (_capacityLock)
+            {
+                if (!_entries.TryGetValue(alias.ToLowerInvariant(), out entry)) return null;
+                Interlocked.Increment(ref entry.InFlightCommands);
+            }
+            // The releaser is idempotent at this level rather than relying on the
+            // caller. A double release would drive the count negative, and a negative
+            // count reads as "not busy" in IsEvictable - which is exactly the condition
+            // that would let a Worker executing a command be evicted.
+            int released = 0;
+            return () =>
+            {
+                if (Interlocked.Exchange(ref released, 1) == 0) ReleaseCommand(entry);
+            };
+        }
+
+        private static void ReleaseCommand(Entry entry)
+        {
+            if (Interlocked.Decrement(ref entry.InFlightCommands) < 0)
+                Interlocked.Exchange(ref entry.InFlightCommands, 0);
+        }
+
+        /// <summary>Commands in flight on an entry. Diagnostics and tests only.</summary>
+        internal int InFlightCommandsForTest(string alias)
+        {
+            lock (_capacityLock)
+            {
+                return _entries.TryGetValue(alias.ToLowerInvariant(), out var e)
+                    ? Volatile.Read(ref e.InFlightCommands) : 0;
+            }
+        }
+
+        /// <summary>
+        /// The entry eviction would choose right now, honouring the idle-only policy.
+        /// Tests and diagnostics; the real path is <see cref="SelectVictim"/> under the
+        /// capacity lock.
+        /// </summary>
+        internal KbHandle? SelectEvictableVictimForTest()
+        {
+            lock (_capacityLock)
+            {
+                var victim = SelectVictim();
+                return victim?.Handle;
+            }
+        }
+
+        /// <summary>Marks an entry as in flight for a test. Mirrors <see cref="BeginCommand"/>.</summary>
+        internal void SetInFlightForTest(string alias, int count)
+        {
+            lock (_capacityLock)
+            {
+                if (_entries.TryGetValue(alias.ToLowerInvariant(), out var e))
+                    Volatile.Write(ref e.InFlightCommands, count);
+            }
         }
 
         private void EvictEntry(Entry entry)

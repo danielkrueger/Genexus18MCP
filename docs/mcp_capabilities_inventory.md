@@ -178,7 +178,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_generator_reference` | active | Native typed .NET generator references |
 | `genexus_data_view` | active | Native typed Transaction + Data View authoring |
 | `genexus_whoami` | active | KB context, version, health, and playbook/skills discovery |
-| `genexus_kb_diff` | active (gateway-only) | Filesystem comparison of two explicit KB aliases/paths; not KB-bound and does not dispatch to a Worker |
+| `genexus_kb_diff` | active (gateway-only) | Filesystem comparison of two explicit KB aliases/paths; not KB-bound and does not dispatch to a Worker. Change detection is SHA-256 content per object part (default `mode=content`), not timestamp/part-count metadata; `mode=metadata` restores the cheaper heuristic and is labelled as such. Identity is the on-disk `Objects/<Type>/<Name>` naming and is not module-qualified. An absent, unreadable or truncated `Objects/` tree reports `status=Incomplete` with `complete=false`; only a proven empty `Objects/` reports an empty model. `maxObjects` bounds the enumeration per side. |
 | `genexus_kb_import` | active (gateway-only) | Filesystem object copy between explicit source/target KBs; target may fall back to the active KB and must be indexed afterwards |
 | `genexus_sandbox` | active (gateway-only) | Filesystem sandbox create/remove; no SDK dispatch |
 | `genexus_worker_pool` | active (gateway-only) | Worker-pool warm-spare configuration; no KB selection or Worker tool dispatch |

@@ -220,7 +220,13 @@ namespace GxMcp.Gateway.Tests
             //   what remains is the honest cost of telling a caller which KBs were
             //   actually searched, instead of letting an unsearched KB read as a KB
             //   with no matches. Measured ~33890 tokens.
-            Assert.True(approxTokens < 34000, $"tool_definitions.json is ~{approxTokens} tokens; budget 34000.");
+            //   2026-10-01 (issue #354): 34000 → 34500 for genexus_kb_diff's
+            //   `mode`/`maxObjects` params and the inventory-authority copy. The
+            //   alternative was keeping the budget and shipping a comparator that
+            //   can report an unqualified Success over an inventory it could not
+            //   read, which is the false confidence the issue is about. Measured
+            //   ~34135 tokens; ~365 headroom.
+            Assert.True(approxTokens < 34500, $"tool_definitions.json is ~{approxTokens} tokens; budget 34500.");
         }
 
         [Theory]

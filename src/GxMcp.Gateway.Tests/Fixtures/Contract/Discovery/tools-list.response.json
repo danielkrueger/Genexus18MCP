@@ -2429,6 +2429,21 @@
           },
           "kbB": {
             "type": "string"
+          },
+          "maxObjects": {
+            "default": 50000,
+            "description": "Maximum objects enumerated per side.…",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "content",
+            "description": "content (default) compares SHA-256 over…",
+            "enum": [
+              "content",
+              "metadata"
+            ],
+            "type": "string"
           }
         },
         "required": [

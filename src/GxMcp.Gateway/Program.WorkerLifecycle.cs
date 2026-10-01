@@ -681,8 +681,15 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrWhiteSpace(effectiveSessionId))
                     effectiveSessionId = _currentSessionContext.Value?.OwnerScopeId;
                 var workerRequest = BuildWorkerRpcRequest(workerCommand, attemptRequestId, operationId, effectiveSessionId);
-                var worker = await GetActiveWorkerAsync();
-
+                // issue #333: the acquired Worker carries a pool reservation that makes
+                // this entry ineligible for capacity eviction. It is released when this
+                // attempt finishes - the finally at the end of the loop body - so a
+                // retry re-reserves against the current entry rather than holding a
+                // claim on a Worker that may since have been replaced.
+                var acquired = await GetActiveWorkerAsync();
+                var worker = acquired.Worker;
+                try
+                {
                 // Don't bill worker cold-start against the per-tool timeout. If the worker is
                 // still initializing (SDK init ~50s on a large KB), wait for its sdk_ready signal
                 // FIRST — emitting progress heartbeats so the client stays alive — and only then
@@ -829,6 +836,18 @@ namespace GxMcp.Gateway
                     return transformed;
                 }
                 break; // timeout — fall through to the timeout handling below
+                }
+                finally
+                {
+                    // issue #333: release the eviction reservation for this attempt, so
+                    // a command that is not on the wire cannot make the entry
+                    // permanently ineligible. The Worker may still be executing after a
+                    // client-side timeout; that work is not counted here, which is the
+                    // honest limit of a Gateway-side counter - the Worker keeps its own
+                    // pending-request record, and the next acquire for this KB
+                    // re-reserves.
+                    acquired.Release();
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(operationId))
