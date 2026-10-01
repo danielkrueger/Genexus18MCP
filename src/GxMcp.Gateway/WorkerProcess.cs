@@ -127,6 +127,22 @@ namespace GxMcp.Gateway
         // StopProcess capture the exit code before the Process is disposed.
         private int _lastExitCode = int.MinValue;
         private long _lastWorkingSetBytes = -1;
+
+        // Issue #335: the same figures, when the child belongs to a broker rather than to
+        // this Gateway. Kept beside _lastWorkingSetBytes rather than merged into it so a
+        // diagnostic can still say which side of the fence the number came from.
+        private int _lastSharedQueueDepth;
+        private int _lastSharedPid;
+        private string _lastSharedSdkState = "unknown";
+
+        /// <summary>Child PID last reported by the broker. Diagnostics only.</summary>
+        internal int LastSharedChildPid => Volatile.Read(ref _lastSharedPid);
+
+        /// <summary>SDK state last reported by the broker. Diagnostics only.</summary>
+        internal string LastSharedSdkState => Volatile.Read(ref _lastSharedSdkState) ?? "unknown";
+
+        /// <summary>Queue depth last reported by the broker. Diagnostics only.</summary>
+        internal int LastSharedQueueDepth => Volatile.Read(ref _lastSharedQueueDepth);
         private int _lastPid;
         private string? _startupDiagnostic;
         private string? _lastFailureDiagnostic;
@@ -271,6 +287,108 @@ namespace GxMcp.Gateway
             _writerTask = Task.Run(ProcessQueueAsync);
         }
 
+        /// <summary>
+        /// The broker's most recent report about the shared child, or null before the
+        /// first heartbeat acknowledgement. Issue #335.
+        /// </summary>
+        private JObject? _sharedSupervision;
+
+        /// <summary>Broker generation last seen, so a change is detectable without polling.</summary>
+        internal long SharedBrokerGeneration { get; private set; }
+
+        /// <summary>
+        /// Records the supervision block from a heartbeat acknowledgement.
+        ///
+        /// <para>
+        /// Issue #335. This is where a shared Worker becomes observable at all: the
+        /// Gateway cannot ask the OS about a process it does not own, so every metric and
+        /// every SDK-state answer arrives here.
+        /// </para>
+        /// </summary>
+        internal void ObserveSharedSupervision(JObject? supervision)
+        {
+            if (supervision == null) return;
+            _sharedSupervision = supervision;
+            SharedBrokerGeneration = supervision["brokerGeneration"]?.ToObject<long?>()
+                ?? SharedBrokerGeneration;
+        }
+
+        /// <summary>
+        /// Feeds the broker's reported figures into the same vitals fields the isolated
+        /// path snapshots, so the idle and heap decisions below are made from one set of
+        /// numbers rather than two code paths that can disagree.
+        /// </summary>
+        private void SnapshotSharedVitals()
+        {
+            var s = _sharedSupervision;
+            if (s == null) return;
+            // Fed into the same field the isolated path fills, so the heap-recycle
+            // decision below is made from one number regardless of who owns the child.
+            _lastWorkingSetBytes = s["workingSetBytes"]?.ToObject<long?>() ?? -1;
+            _lastSharedQueueDepth = s["queueTotal"]?.ToObject<int?>() ?? 0;
+            _lastSharedPid = s["childPid"]?.ToObject<int?>() ?? 0;
+            _lastSharedSdkState = s["sdkState"]?.ToString() ?? "unknown";
+        }
+
+        /// <summary>
+        /// Whether this Gateway may act on a recovery decision for a shared Worker.
+        ///
+        /// <para>
+        /// Issue #335. Two Gateways can watch the same shared Worker, and the reported
+        /// expectation is that one must never unilaterally recycle another client's active
+        /// child. The broker owns the child, so it owns the decision: an attachment may act
+        /// only once the broker reports an election, and the broker clears that flag when
+        /// the new child starts. Between those two points exactly one attachment sees it
+        /// true.
+        /// </para>
+        ///
+        /// <para>
+        /// A lane that is busy but progressing, or that has queued work, blocks recovery
+        /// outright - not just for this attachment, but for every attachment, because the
+        /// broker elects on the child's state and not on one client's view of it.
+        /// </para>
+        /// </summary>
+        private bool SupervisionCanRecycle()
+        {
+            var s = _sharedSupervision;
+            if (s == null)
+            {
+                // Nothing reported yet. Allowing a decision here would be deciding on no
+                // evidence at all, which is the failure this whole path exists to remove.
+                return false;
+            }
+
+            if (s["childAlive"]?.ToObject<bool?>() == false) return true;
+
+            string sdkState = s["sdkState"]?.ToString() ?? "unknown";
+            if (string.Equals(sdkState, "busy-progressing", StringComparison.Ordinal)) return false;
+            if (string.Equals(sdkState, "busy-unproven", StringComparison.Ordinal)) return false;
+            if ((s["queueTotal"]?.ToObject<int?>() ?? 0) > 0) return false;
+
+            return s["recycleElected"]?.ToObject<bool?>() == true;
+        }
+
+        /// <summary>
+        /// Starts the supervision loop, at most once.
+        ///
+        /// <para>
+        /// Issue #335. Shared startup returned before reaching the isolated path's
+        /// installation site, so this loop - which owns idle reaping, heap-pressure
+        /// recycling and wedged-command detection - never ran for a shared Worker. Both
+        /// startup paths now come through here.
+        /// </para>
+        ///
+        /// <para>
+        /// The guard is the task's own liveness rather than a boolean, so a loop that
+        /// exited on cancellation cannot be restarted against a dead token.
+        /// </para>
+        /// </summary>
+        private void EnsureHealthCheckTask()
+        {
+            if (_healthCheckTask != null && !_healthCheckTask.IsCompleted) return;
+            _healthCheckTask = Task.Run(() => RunHealthCheckAsync(_cts.Token));
+        }
+
         private async Task RunHealthCheckAsync(CancellationToken ct)
         {
             await Task.Delay(5000, ct);
@@ -278,24 +396,61 @@ namespace GxMcp.Gateway
             {
                 try
                 {
-                    if (_process != null && !_process.HasExited)
+                    // Issue #335: this gate used to be `_process != null && !_process.HasExited`,
+                    // which a shared Gateway never satisfies - it does not own the child
+                    // Process, so `_process` is always null there. The effect was that every
+                    // check below was unreachable for a shared Worker.
+                    //
+                    // Liveness is now asked of whichever side actually owns the child: the
+                    // local Process when there is one, otherwise the broker's reported
+                    // supervision record. A shared connection that is connected is alive;
+                    // if the broker has not reported yet, the first pass waits rather than
+                    // concluding "dead", because concluding that would reap a Worker that
+                    // was never supervised.
+                    bool hasVitals = _process != null && !_process.HasExited;
+                    bool sharedAlive = !hasVitals && IsSharedHostMode && _sharedConnection?.IsConnected == true;
+                    bool sharedReported = sharedAlive && _sharedSupervision != null;
+
+                    if (hasVitals || sharedAlive)
                     {
-                        SnapshotVitals();
-                        if (DateTime.UtcNow - _lastOwnershipReconcileUtc >= TimeSpan.FromMinutes(1))
+                        // A shared Worker reaps on the broker's evidence, never on its own.
+                        // `SupervisionCanRecycle` is what keeps two Gateways watching one
+                        // Worker from each deciding to kill it.
+                        bool mayRecycle = !IsSharedHostMode || SupervisionCanRecycle();
+
+                        // Ownership is this process's own, not the shared child's, so the
+                        // reconcile belongs to the isolated path only.
+                        if (hasVitals && DateTime.UtcNow - _lastOwnershipReconcileUtc >= TimeSpan.FromMinutes(1))
                         {
                             _lastOwnershipReconcileUtc = DateTime.UtcNow;
                             WorkerOwnershipRegistry.Reconcile(SpawnedExePath ?? string.Empty, Kb.Path);
                         }
-                        if (ShouldStopForIdle())
+
+                        // A shared Worker has no local vitals to snapshot; the broker's
+                        // reported working set and queue depths are recorded instead, so the
+                        // same heap and idle decisions can be made about it.
+                        if (hasVitals) SnapshotVitals();
+                        else if (sharedReported) SnapshotSharedVitals();
+
+                        string workerLabel = hasVitals
+                            ? _process!.Id.ToString()
+                            : (_sharedSupervision?["childPid"]?.ToString() ?? "shared");
+
+                        // Progressing SDK work is never a recovery target, whoever owns the
+                        // child. Recycling here destroys the operation, not just the Worker.
+                        string sdkState = _sharedSupervision?["sdkState"]?.ToString();
+                        bool sdkProgressing = string.Equals(sdkState, "busy-progressing", StringComparison.Ordinal);
+
+                        if (mayRecycle && ShouldStopForIdle() && !sdkProgressing)
                         {
-                            Program.Log($"[Gateway] worker_idle_shutdown pid={_process.Id} idleTimeoutMinutes={_workerIdleTimeout.TotalMinutes}");
+                            Program.Log($"[Gateway] worker_idle_shutdown id={workerLabel} idleTimeoutMinutes={_workerIdleTimeout.TotalMinutes}");
                             StopProcess(WorkerStopReason.IdleTimeout);
                             continue;
                         }
 
-                        if (ShouldRecycleForHeap(out long wsBytes))
+                        if (mayRecycle && ShouldRecycleForHeap(out long wsBytes) && !sdkProgressing)
                         {
-                            Program.Log($"[Gateway] worker_heap_recycle pid={_process.Id} workingSetMB={wsBytes / (1024 * 1024)} thresholdMB={_heapRecycleBytes / (1024 * 1024)} — recycling idle bloated worker (eager respawn).");
+                            Program.Log($"[Gateway] worker_heap_recycle id={workerLabel} workingSetMB={wsBytes / (1024 * 1024)} thresholdMB={_heapRecycleBytes / (1024 * 1024)} — recycling idle bloated worker (eager respawn).");
                             StopProcess(WorkerStopReason.HeapRecycle);
                             continue;
                         }
@@ -790,6 +945,14 @@ namespace GxMcp.Gateway
                     }
                     catch (Exception ex) { Program.Log("[Gateway] shared Worker response handling failed: " + ex.Message); }
                 };
+                // Issue #335: the broker is the only party that can report the child's
+                // state, so its supervision report is subscribed here and nowhere else.
+                // Absent on an older broker, which simply means no supervision data.
+                connection.SupervisionReceived += supervision =>
+                {
+                    try { ObserveSharedSupervision(supervision); }
+                    catch (Exception ex) { Program.Log("[Gateway] shared supervision report handling failed: " + ex.Message); }
+                };
                 connection.Disconnected += failure =>
                 {
                     if (_cts.IsCancellationRequested) return;
@@ -918,6 +1081,16 @@ namespace GxMcp.Gateway
                 if (IsSharedHostMode)
                 {
                     StartShared(workerPath, workerInstallationPath ?? string.Empty, workerDriver, workerMajor, legacyProvider);
+
+                    // Issue #335: shared startup used to return here, before the health
+                    // task was installed at the end of the isolated path. So a shared
+                    // Worker had no supervision at all - no vitals, no idle reap, no heap
+                    // recycle, no stall detection - which is precisely the Worker the
+                    // isolation and heap-pressure settings were written for. Installed
+                    // here as well; the loop below is now able to run without a local
+                    // Process, because in shared mode the broker reports the child's
+                    // state and a shared Gateway owns neither the process nor the SDK lane.
+                    EnsureHealthCheckTask();
                     return;
                 }
 
@@ -1155,7 +1328,7 @@ namespace GxMcp.Gateway
 
                 if (_healthCheckTask == null || _healthCheckTask.IsCompleted)
                 {
-                    _healthCheckTask = Task.Run(() => RunHealthCheckAsync(_cts.Token));
+                    EnsureHealthCheckTask();
                 }
             }
             catch (Exception ex)

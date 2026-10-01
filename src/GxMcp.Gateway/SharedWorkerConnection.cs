@@ -74,6 +74,13 @@ namespace GxMcp.Gateway
         internal event Action<Exception?>? Disconnected;
         internal event Action<string?>? WorkerRestarted;
 
+        /// <summary>
+        /// The broker's supervision report for the shared child, from heartbeat_ack.
+        /// Issue #335. Absent on an older broker, which is why the subscribe is optional
+        /// rather than assumed.
+        /// </summary>
+        internal event Action<JObject>? SupervisionReceived;
+
         internal void Connect(int timeoutMs)
         {
             if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
@@ -269,7 +276,22 @@ namespace GxMcp.Gateway
                         try { WorkerRestarted?.Invoke(LastRestartDiagnostic); } catch { }
                         continue;
                     }
-                    if (frame != null && (IsControlFrame(frame, "heartbeat_ack") || IsControlFrame(frame, "heartbeat")))
+                    if (frame != null && IsControlFrame(frame, "heartbeat_ack"))
+                    {
+                        // Issue #335: the broker's supervision block, surfaced rather than
+                        // swallowed. This acknowledgement used to be discarded, which is
+                        // precisely why a shared Worker had no vitals: the Gateway cannot
+                        // ask the OS about a process it does not own, so the only party that
+                        // can answer is the one whose report was being thrown away here.
+                        //
+                        // Extending heartbeat_ack rather than adding a frame type is what
+                        // keeps this off a protocol migration: an older broker sends no
+                        // block and the handler is simply not called.
+                        if (frame["supervision"] is JObject supervision)
+                            SupervisionReceived?.Invoke(supervision);
+                        continue;
+                    }
+                    if (frame != null && IsControlFrame(frame, "heartbeat"))
                         continue;
                     if (frame != null && IsControlFrame(frame, "host_error"))
                         throw new InvalidOperationException(frame["message"]?.ToString() ?? "Shared Worker host error.");

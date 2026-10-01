@@ -147,6 +147,14 @@ namespace GxMcp.Worker
         private DateTime _lastDetachUtc = DateTime.UtcNow;
         private long _lastBackgroundActivityTicks = DateTime.UtcNow.Ticks;
         private long _generation = 1;
+
+        // Issue #335: broker-owned recycle election and the generation each attachment
+        // observes. Recycle decisions belong here - the broker owns the child - so that
+        // two Gateways watching the same Worker cannot each decide to kill it. The
+        // election flag is cleared when the new child starts, which is what makes exactly
+        // one attachment act per sweep.
+        private long _brokerGeneration = 1;
+        private int _recycleElected;
         private bool _sdkReady;
         private string _recordPath;
         private SharedWorkerHostRegistryRecord _record;
@@ -211,6 +219,12 @@ namespace GxMcp.Worker
             var child = new Process { StartInfo = start, EnableRaisingEvents = true };
             if (!child.Start()) throw new InvalidOperationException("Could not start shared Worker child.");
             _child = child;
+            // Issue #335: a new child starts a new supervision generation and ends any
+            // outstanding recycle election. Clearing the election is what makes the sweep
+            // single-shot: without it, every attachment would keep seeing "recycle
+            // elected" and could each act on it.
+            Interlocked.Increment(ref _brokerGeneration);
+            Volatile.Write(ref _recycleElected, 0);
             var childStdin = SharedWorkerHost.CreateChildStdinWriter(child.StandardInput.BaseStream);
             _childStdin = childStdin;
             _record = new SharedWorkerHostRegistryRecord
@@ -325,7 +339,20 @@ namespace GxMcp.Worker
                         SendHostError(attachment, sessionError);
                         return;
                     }
-                    SendHostFrame(attachment, "heartbeat_ack", new JObject { ["attachmentId"] = attachment.AttachmentId, ["utc"] = DateTime.UtcNow.ToString("O") });
+                    // Issue #335: the heartbeat_ack now carries the broker's own view of the child.
+                    //
+                    // In shared mode the Gateway does not own the child Process, so it
+                    // cannot ask the OS anything: no PID, no working set, no way to tell a
+                    // progressing SDK call from a deadlocked one. That left a shared Worker
+                    // with no heap or stall supervision at all - the exact gap that made
+                    // these checks worth having for an isolated Worker.
+                    //
+                    // The broker is the only party that can answer them, so it does, here -
+                    // on a frame that already exists. Extending heartbeat_ack rather than
+                    // adding a frame type keeps this off the protocol-migration path
+                    // entirely: an older Gateway ignores the new fields, and an older
+                    // broker's ack still satisfies the newer Gateway's reader.
+                    SendHostFrame(attachment, "heartbeat_ack", BuildHeartbeatAck(attachment.AttachmentId));
                 }
                 else if (envelope.Type == "detach")
                 {
@@ -662,6 +689,154 @@ namespace GxMcp.Worker
         private void BroadcastJson(string json)
         {
             foreach (var attachment in _attachments.Values) attachment.Enqueue(json);
+        }
+
+        /// <summary>
+        /// How long a busy SDK lane may go without reporting movement before the broker
+        /// calls it stalled. Issue #335. Matches the connection-recover window so the two
+        /// paths cannot disagree about the same Worker.
+        /// </summary>
+        internal const int SdkStallAfterMs = 90_000;
+
+        /// <summary>
+        /// Classifies the SDK lane. Issue #335.
+        ///
+        /// <para>
+        /// The distinction that matters is progressing versus stalled. A lane that is busy
+        /// and still reporting movement is legitimate long work, and treating it as a
+        /// fault recycles a Worker in the middle of an operation - which destroys the
+        /// operation, not just the Worker. A lane that has gone quiet past the window has
+        /// not moved, and waiting longer only extends a dead Worker into an indefinite one.
+        /// </para>
+        ///
+        /// <para>
+        /// A busy lane with no observed progress is <c>busy-unproven</c>, not
+        /// <c>busy-stalled</c>: one sample cannot tell a healthy short call from a
+        /// deadlocked one, and guessing "stalled" would kill a Worker three seconds into
+        /// ordinary work.
+        /// </para>
+        /// </summary>
+        internal static string ClassifySdkState(bool active, bool sawProgress, long lastProgressMs)
+        {
+            if (!active) return "idle";
+            if (!sawProgress || lastProgressMs < 0) return "busy-unproven";
+            return lastProgressMs >= SdkStallAfterMs ? "busy-stalled" : "busy-progressing";
+        }
+
+        /// <summary>
+        /// Builds the heartbeat acknowledgement, including the broker's view of the child.
+        ///
+        /// <para>
+        /// Issue #335. Everything here is the broker's own observation - it owns the child
+        /// process and the SDK lane, and a shared Gateway owns neither. The SDK section is
+        /// the part that matters most: <c>progressing</c> and <c>stalled</c> are
+        /// deliberately different answers, because treating a slow-but-progressing build as
+        /// a fault recycles a Worker mid-operation and loses the work.
+        /// </para>
+        ///
+        /// <para>
+        /// Deliberately no exception can escape: a heartbeat that throws would take down
+        /// the attachment loop, and a diagnostic that cannot be gathered must degrade to
+        /// "unknown" rather than to a lost connection.
+        /// </para>
+        /// </summary>
+        private JObject BuildHeartbeatAck(string attachmentId)
+        {
+            var ack = new JObject
+            {
+                ["attachmentId"] = attachmentId,
+                ["utc"] = DateTime.UtcNow.ToString("O")
+            };
+
+            try
+            {
+                var child = _child;
+                var pid = child?.Id ?? 0;
+                long workingSet = 0, privateBytes = 0, availableBefore = 0, availableAfter = 0;
+
+                if (child != null && !child.HasExited)
+                {
+                    try
+                    {
+                        child.Refresh();
+                        workingSet = child.WorkingSet64;
+                        privateBytes = child.PrivateMemorySize64;
+                    }
+                    catch
+                    {
+                        // A process that exited between the check and the read. Reported
+                        // as zero rather than guessed; the exit itself is what matters.
+                    }
+                    try
+                    {
+                        availableBefore = GC.GetTotalMemory(false);
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                        availableAfter = GC.GetTotalMemory(false);
+                    }
+                    catch { }
+                }
+
+                // The SDK-lane section reuses the worker's own status projection rather than
+                // duplicating the busy/progress bookkeeping here - it is the same
+                // distinction the connection-recover path uses, so a shared Worker and an
+                // isolated one report "progressing" and "stalled" identically.
+                var sdk = Program.GetSdkBusyStatus();
+                bool sdkActive = sdk["active"]?.ToObject<bool?>() ?? false;
+                bool sawProgress = sdk["sawProgress"]?.ToObject<bool?>() ?? false;
+                long lastProgressMs = sdk["lastProgressMs"]?.ToObject<long?>() ?? -1;
+                var q = sdk["queueDepths"] as JObject;
+
+                ack["supervision"] = new JObject
+                {
+                    ["available"] = true,
+                    // Identity the Gateway cannot otherwise obtain.
+                    ["childPid"] = pid,
+                    ["childAlive"] = child != null && !child.HasExited,
+                    ["attachments"] = _attachments.Count,
+                    // Memory, in the same units the isolated path reports.
+                    ["workingSetBytes"] = workingSet,
+                    ["privateBytes"] = privateBytes,
+                    ["managedHeapBeforeBytes"] = availableBefore,
+                    ["managedHeapAfterBytes"] = availableAfter,
+                    // Queue and SDK activity.
+                    ["queueTotal"] = q?["total"]?.ToObject<int?>() ?? 0,
+                    ["queueP0"] = q?["p0"]?.ToObject<int?>() ?? 0,
+                    ["queueP1"] = q?["p1"]?.ToObject<int?>() ?? 0,
+                    ["queueP2"] = q?["p2"]?.ToObject<int?>() ?? 0,
+                    ["sdkBusy"] = sdkActive,
+                    ["sdkOperation"] = sdk["operation"]?.ToString(),
+                    ["sdkElapsedMs"] = sdk["elapsedMs"]?.ToObject<long?>() ?? 0,
+                    ["sdkSawProgress"] = sawProgress,
+                    // -1 means "no progress has ever been observed for this operation",
+                    // which is a different answer from 0 ("progress just now").
+                    ["sdkLastProgressMs"] = lastProgressMs,
+                    // The classification, computed where the evidence is. A Gateway
+                    // receiving this does not have to reimplement the distinction, and
+                    // cannot disagree with the broker about which child it describes.
+                    ["sdkState"] = ClassifySdkState(sdkActive, sawProgress, lastProgressMs),
+                    // Generation, so every attachment can tell it is looking at the same
+                    // child. A Gateway must never unilaterally recycle another's child;
+                    // this is the value they compare before acting.
+                    ["brokerGeneration"] = Interlocked.Read(ref _brokerGeneration),
+                    // The broker decides recycling. A Gateway may *ask*; only this flag
+                    // says the broker has already elected a victim, and only one
+                    // attachment ever sees it true for a given sweep.
+                    ["recycleElected"] = Volatile.Read(ref _recycleElected) != 0,
+                    ["capturedAtUtc"] = DateTime.UtcNow.ToString("O")
+                };
+            }
+            catch (Exception ex)
+            {
+                ack["supervision"] = new JObject
+                {
+                    ["available"] = false,
+                    ["error"] = ex.GetType().Name
+                };
+            }
+
+            return ack;
         }
 
         private void BroadcastHostError(string message)
