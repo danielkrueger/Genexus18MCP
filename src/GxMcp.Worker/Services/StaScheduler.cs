@@ -35,6 +35,38 @@ namespace GxMcp.Worker.Services
 
         private readonly object _lock = new object();
 
+        // ── Issue #341: bounded admission ───────────────────────────────────────
+        //
+        // The queues were unbounded and the wait was strict-priority: P0 was always
+        // checked before P1, and P1 before P2. Two consequences. A burst could
+        // accumulate an arbitrary number of retained requests and their payloads with
+        // nothing to stop it, and a sustained P0 stream could defer accepted P1/P2 work
+        // indefinitely - work the caller was already told had been accepted.
+        //
+        // Admission is now bounded by both count and retained payload bytes, and the
+        // refusal happens before the item is queued, so a rejected command cannot
+        // execute later. Service is still priority-first for responsiveness, but a
+        // lower-priority item that has waited past the aging window is promoted, which
+        // bounds its wait without giving up interactive latency for the common case.
+        internal const int MaxQueuedCommands = 512;
+        internal const long MaxQueuedBytes = 32L * 1024 * 1024;
+        internal static readonly TimeSpan PriorityAgingWindow = TimeSpan.FromSeconds(5);
+
+        private int _queuedCount;
+        private long _queuedBytes;
+
+        /// <summary>
+        /// Why an admission was refused, so the caller can answer with something
+        /// actionable. Null when the item was accepted.
+        /// </summary>
+        internal string LastAdmissionError { get; private set; }
+
+        /// <summary>Commands currently retained across all three queues.</summary>
+        public int QueuedCount { get { lock (_lock) return _queuedCount; } }
+
+        /// <summary>Retained payload bytes currently held across all three queues.</summary>
+        public long QueuedBytes { get { lock (_lock) return _queuedBytes; } }
+
         // Queues per priority, mapped by ClientId for fair round-robin scheduling
         private readonly Dictionary<string, Queue<ScheduledCommandItem>> _p0Queues =
             new Dictionary<string, Queue<ScheduledCommandItem>>(StringComparer.OrdinalIgnoreCase);
@@ -130,13 +162,45 @@ namespace GxMcp.Worker.Services
             return string.IsNullOrEmpty(id) ? "default" : id;
         }
 
-        public void Enqueue(ScheduledCommandItem item)
+        /// <summary>
+        /// Queues <paramref name="item"/>, or refuses it and records why.
+        ///
+        /// <para>
+        /// Issue #341. The refusal is decided and applied inside the same critical
+        /// section as the enqueue, so there is no window in which a command is reported
+        /// as rejected but still ends up in a queue - which is the one outcome a caller
+        /// cannot recover from, because it would later execute work it believes was
+        /// cancelled.
+        /// </para>
+        /// </summary>
+        /// <returns>true when accepted.</returns>
+        public bool TryEnqueue(ScheduledCommandItem item)
         {
-            if (item == null) return;
+            if (item == null) return false;
             string client = string.IsNullOrEmpty(item.ClientId) ? "default" : item.ClientId;
+            long bytes = EstimateBytes(item);
 
             lock (_lock)
             {
+                if (_queuedCount >= MaxQueuedCommands)
+                {
+                    LastAdmissionError = "queue_full";
+                    return false;
+                }
+                // A single item larger than the whole budget is refused on its own
+                // merits, not because the budget is nearly spent: admitting it would
+                // evict the entire backlog for one request.
+                if (bytes > MaxQueuedBytes)
+                {
+                    LastAdmissionError = "payload_too_large";
+                    return false;
+                }
+                if (_queuedBytes + bytes > MaxQueuedBytes)
+                {
+                    LastAdmissionError = "queue_bytes_exhausted";
+                    return false;
+                }
+
                 switch (item.Priority)
                 {
                     case CommandPriority.P0_Interactive:
@@ -148,8 +212,41 @@ namespace GxMcp.Worker.Services
                     case CommandPriority.P2_Background:
                         EnqueueInternal(_p2Queues, _p2ClientOrder, client, item);
                         break;
+                    default:
+                        LastAdmissionError = "unknown_priority";
+                        return false;
                 }
+                _queuedCount++;
+                _queuedBytes += bytes;
+                LastAdmissionError = null;
+                return true;
             }
+        }
+
+        /// <summary>
+        /// Retained bytes attributed to a queued item. The raw command line is the
+        /// payload that actually occupies memory; <see cref="ScheduledCommandItem.IdJson"/>
+        /// is a subset of it.
+        /// </summary>
+        private static long EstimateBytes(ScheduledCommandItem item)
+        {
+            long bytes = 0;
+            if (item?.IdJson != null) bytes += (item.IdJson.Length + 1) * 2L; // UTF-16 chars
+            if (item?.Method != null) bytes += (item.Method.Length + 1) * 2L;
+            if (item?.Action != null) bytes += (item.Action.Length + 1) * 2L;
+            return bytes;
+        }
+
+        /// <summary>
+        /// Queues <paramref name="item"/> unconditionally. Retained for the admission
+        /// paths that have already bounded their own submission (and for tests); the
+        /// effective SDK admission path uses <see cref="TryEnqueue"/>, because this
+        /// method cannot refuse and therefore cannot report a rejection the caller would
+        /// act on.
+        /// </summary>
+        public void Enqueue(ScheduledCommandItem item)
+        {
+            TryEnqueue(item);
         }
 
         private static void EnqueueInternal(Dictionary<string, Queue<ScheduledCommandItem>> dict,
@@ -175,20 +272,73 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// Takes the next command.
+        ///
+        /// <para>
+        /// Issue #341. Strict priority is retained, because a read must not queue behind
+        /// a bulk search. What changes is that it is no longer absolute: a lower-priority
+        /// item that has waited longer than <see cref="PriorityAgingWindow"/> outranks a
+        /// freshly-arrived higher-priority one. Without that, a sustained P0 stream
+        /// deferred accepted P1/P2 work forever, and a caller told "accepted" has no
+        /// signal that will let it recover.
+        /// </para>
+        /// </summary>
         public bool TryTakeNext(out ScheduledCommandItem item)
         {
             lock (_lock)
             {
-                if (TryTakeRoundRobin(_p0Queues, _p0ClientOrder, ref _p0Cursor, out item))
-                    return true;
-                if (TryTakeRoundRobin(_p1Queues, _p1ClientOrder, ref _p1Cursor, out item))
-                    return true;
-                if (TryTakeRoundRobin(_p2Queues, _p2ClientOrder, ref _p2Cursor, out item))
-                    return true;
+                item = null;
+                if (TryTakeAged(out item)) return true;
+                if (TryTakeRoundRobin(_p0Queues, _p0ClientOrder, ref _p0Cursor, out item)) return true;
+                if (TryTakeRoundRobin(_p1Queues, _p1ClientOrder, ref _p1Cursor, out item)) return true;
+                if (TryTakeRoundRobin(_p2Queues, _p2ClientOrder, ref _p2Cursor, out item)) return true;
 
                 item = null;
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Whether any client in this priority has an item that has waited past the
+        /// aging window. Each per-client queue is FIFO, so its head is the oldest.
+        ///
+        /// <para>
+        /// A default timestamp is not treated as a long wait. It is missing data, and
+        /// reading it as "waited since the beginning of time" would promote an item
+        /// whose actual age nobody knows. Items that reach this path from the real
+        /// admission point always carry a timestamp; the guard matters for the
+        /// constructed items tests and any future caller that forgets to set one.
+        /// </para>
+        /// </summary>
+        private static bool QueueIsAged(Dictionary<string, Queue<ScheduledCommandItem>> dict, DateTime nowUtc)
+        {
+            foreach (var q in dict.Values)
+            {
+                if (q.Count == 0) continue;
+                var head = q.Peek();
+                if (head.EnqueuedAtUtc == default(DateTime)) continue;
+                if (nowUtc - head.EnqueuedAtUtc >= PriorityAgingWindow) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Takes a lower-priority item that has aged out, so a continuous higher-priority
+        /// stream cannot starve it. Aged work is taken before fresh P0 - that is the whole
+        /// point - but only once it has actually waited, so the interactive fast path is
+        /// unaffected for the common case.
+        /// </summary>
+        private bool TryTakeAged(out ScheduledCommandItem item)
+        {
+            item = null;
+            var now = DateTime.UtcNow;
+            if (QueueIsAged(_p1Queues, now)
+                && TryTakeRoundRobin(_p1Queues, _p1ClientOrder, ref _p1Cursor, out item)) return true;
+            if (QueueIsAged(_p2Queues, now)
+                && TryTakeRoundRobin(_p2Queues, _p2ClientOrder, ref _p2Cursor, out item)) return true;
+            item = null;
+            return false;
         }
 
         public bool TryTakeInteractive(out ScheduledCommandItem item)
@@ -223,7 +373,7 @@ namespace GxMcp.Worker.Services
             return expired;
         }
 
-        private static void ExpireFromQueue(Dictionary<string, Queue<ScheduledCommandItem>> dict,
+        private void ExpireFromQueue(Dictionary<string, Queue<ScheduledCommandItem>> dict,
             List<string> order, DateTime nowUtc, List<ScheduledCommandItem> expired)
         {
             foreach (var kvp in dict)
@@ -236,7 +386,11 @@ namespace GxMcp.Worker.Services
                     double ageMs = (nowUtc - item.EnqueuedAtUtc).TotalMilliseconds;
                     if (item.BusyWaitMs > 0 && ageMs > item.BusyWaitMs)
                     {
+                        // Issue #341: a timeout drop leaves the queue for good, so it
+                        // releases its admission accounting. Re-enqueued items keep
+                        // theirs, since they are still retained.
                         expired.Add(item);
+                        ReleaseAccounting(item);
                     }
                     else
                     {
@@ -246,7 +400,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private static bool TryTakeRoundRobin(Dictionary<string, Queue<ScheduledCommandItem>> dict,
+        private bool TryTakeRoundRobin(Dictionary<string, Queue<ScheduledCommandItem>> dict,
             List<string> order, ref int cursor, out ScheduledCommandItem item)
         {
             item = null;
@@ -263,10 +417,25 @@ namespace GxMcp.Worker.Services
                 if (dict.TryGetValue(client, out var q) && q.Count > 0)
                 {
                     item = q.Dequeue();
+                    // Issue #341: release the admission accounting as the item leaves
+                    // the queue. Without this the counters only ever grow, the budget
+                    // would be permanently exhausted, and the refusal would become
+                    // permanent too - which is a self-inflicted denial of service.
+                    ReleaseAccounting(item);
                     return true;
                 }
             }
             return false;
+        }
+
+        private void ReleaseAccounting(ScheduledCommandItem item)
+        {
+            if (item == null) return;
+            _queuedCount--;
+            if (_queuedCount < 0) _queuedCount = 0;
+            long bytes = EstimateBytes(item);
+            _queuedBytes -= bytes;
+            if (_queuedBytes < 0) _queuedBytes = 0;
         }
 
         public (int p0, int p1, int p2, int total) GetQueueDepths()

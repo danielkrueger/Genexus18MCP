@@ -636,7 +636,20 @@ namespace GxMcp.Worker
                 Action = action
             };
 
-            GxMcp.Worker.Services.StaScheduler.Instance.Enqueue(item);
+            // Issue #341: admission is bounded, and a refusal is returned to the caller
+            // as an actionable error BEFORE the command is queued. That ordering is the
+            // whole point: a command reported as rejected must never execute later, and
+            // a caller told "accepted" must have a bounded wait ahead of it.
+            var scheduler = GxMcp.Worker.Services.StaScheduler.Instance;
+            if (!scheduler.TryEnqueue(item))
+            {
+                string reason = scheduler.LastAdmissionError ?? "queue_full";
+                int depth0 = scheduler.QueuedCount;
+                Logger.Warn($"[STA] rejected {method}/{action} from client '{clientId}': {reason} (queued={depth0}).");
+                WriteAdmissionRejected(obj, line, reason, depth0, scheduler.QueuedBytes);
+                return false;
+            }
+
             try
             {
                 if (_bridgeForm != null && _bridgeForm.IsHandleCreated)
@@ -649,6 +662,39 @@ namespace GxMcp.Worker
         }
 
         private static bool EnqueueSdkCommand(string line) => EnqueueSdkCommand(null, line);
+
+        /// <summary>
+        /// Answers a refused command with a retryable envelope. Issue #341: the refusal
+        /// has to reach the caller as an answer, not as a dropped connection, and it has
+        /// to be honest that nothing was queued - a command that is silently dropped
+        /// leaves the caller waiting for a response that will never arrive.
+        ///
+        /// <para>
+        /// Reuses the existing <c>SendQueueBusy</c> shape and <c>SendResponse</c>
+        /// transport: a saturated admission is the same class of condition as a full
+        /// ingress queue, and a second wire format for it would be one more thing for a
+        /// client to special-case.
+        /// </para>
+        /// </summary>
+        private static void WriteAdmissionRejected(JObject obj, string line, string reason, int queued, long queuedBytes)
+        {
+            string idJson = obj?["id"]?.ToString() ?? "null";
+            string saturated = GxMcp.Worker.Models.McpResponse.Err(
+                code: "WorkerQueueSaturated",
+                message: "The Worker SDK lane is at its admission budget; this command was refused and was NOT queued.",
+                hint: "Retry once the queue drains, or cancel the running operation. A refused command never executes later.",
+                retryAfterMs: 250,
+                errorExtra: new JObject
+                {
+                    ["reason"] = reason,
+                    ["accepted"] = false,
+                    ["queuedCommands"] = queued,
+                    ["queuedBytes"] = queuedBytes,
+                    ["maxQueuedCommands"] = GxMcp.Worker.Services.StaScheduler.MaxQueuedCommands,
+                    ["maxQueuedBytes"] = GxMcp.Worker.Services.StaScheduler.MaxQueuedBytes
+                });
+            SendResponse(saturated, idJson);
+        }
 
         internal static void ProcessScheduledCommand(GxMcp.Worker.Services.ScheduledCommandItem item)
         {

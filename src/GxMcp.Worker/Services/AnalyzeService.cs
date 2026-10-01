@@ -924,6 +924,18 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// Wall-clock budget for the parallel inspect sections. Issue #334: previously
+        /// an inline literal, and the result of the bounded wait was discarded - so the
+        /// budget existed only to stop <c>inspect</c> blocking, while a section that
+        /// overran it was neither reported nor waited for.
+        /// </summary>
+        internal static readonly TimeSpan InspectSectionBudget = TimeSpan.FromSeconds(5);
+
+        /// <summary>Pairs a section name with its task, so a late one is reportable by name.</summary>
+        private static KeyValuePair<string, Task> NewSection(string section, Task task) =>
+            new KeyValuePair<string, Task>(section, task);
+
         public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard",
             string guid = null, string entityKey = null, string path = null)
         {
@@ -1100,13 +1112,18 @@ namespace GxMcp.Worker.Services
                 bool includeAll = (include == null || include.Count == 0);
                 HashSet<string> requested = includeAll ? new HashSet<string>() : new HashSet<string>(include.Select(i => i.ToString().ToLower()));
 
-                // PERFORMANCE: Parallel execution of metadata extraction
-                var tasks = new List<Task>();
+                // PERFORMANCE: Parallel execution of metadata extraction.
+                //
+                // issue #334: each entry is tracked with its section name, because the
+                // completion budget is enforced below and a task that misses it has to be
+                // reported by name. A bare List<Task> could only be reported by position,
+                // which means nothing to a caller reading the envelope.
+                var tasks = new List<KeyValuePair<string, Task>>();
 
                 // 1. Signature (Parameters)
                 if (includeAll || requested.Contains("signature"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("signature", Task.Run(() => {
                         try {
                             var (parmRule, parms) = _objectService.GetParametersInternal(obj);
                             lock (result) {
@@ -1116,13 +1133,13 @@ namespace GxMcp.Worker.Services
                                 result["parameters"] = parameters;
                             }
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 2. Variables
                 if (includeAll || requested.Contains("variables"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("variables", Task.Run(() => {
                         try {
                             var variablesOnObject = GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(obj).ToList();
                             if (variablesOnObject.Count > 0) {
@@ -1264,13 +1281,13 @@ namespace GxMcp.Worker.Services
                             }
                             catch { /* best-effort */ }
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 3. Structure (Rules/Events)
                 if (includeAll || requested.Contains("structure"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("structure", Task.Run(() => {
                         try {
                             // issue #25 follow-up (P1): cap each part source so a default
                             // inspect (no `include` filter) can't dump tens of KB of
@@ -1292,13 +1309,13 @@ namespace GxMcp.Worker.Services
                                 ? "Inspect source parts are capped at 8000 chars; use genexus_read part=Rules|Conditions|Events (paginated) for the full text."
                                 : "Lean inspect: source parts capped at 1200 chars. Pass verbose=true for the 8000-char heads, or genexus_read part=Rules|Conditions|Events for full paginated text.";
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 4. Domains & Enums
                 if (includeAll || requested.Contains("metadata") || requested.Contains("variables"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("domainsAndEnums", Task.Run(() => {
                         try {
                             var domains = new JArray();
                             var processedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1316,7 +1333,7 @@ namespace GxMcp.Worker.Services
                             }
                             if (domains.Count > 0) lock (result) result["domains"] = domains;
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 5. Callers (incoming references) — surfaces top-N callers so the agent can
@@ -1324,7 +1341,7 @@ namespace GxMcp.Worker.Services
                 // include=["callers"] or default (when no include filter is provided).
                 if (includeAll || requested.Contains("callers"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("callers", Task.Run(() => {
                         try {
                             var kb = _kbService.GetKB();
                             var callers = new JArray();
@@ -1349,11 +1366,35 @@ namespace GxMcp.Worker.Services
                                 result["callersTruncated"] = callers.Count >= maxCallers;
                             }
                         } catch {}
-                    }));
+                    })));
                 }
 
-                // Wait for all metadata tasks to complete (with timeout for safety)
-                Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5));
+                // issue #334: `Task.WaitAll(tasks, timeout)` returns a bool that was
+                // discarded. A section that missed the budget therefore left its task
+                // running against the SDK and against `result` - a live SDK object read
+                // on a thread pool thread, mutating an envelope this method had already
+                // published and could cache. The return value is now inspected, and a
+                // section that did not finish is named in the response so its absence
+                // cannot be read as "no callers" or "no variables".
+                var pending = tasks.Select(t => t.Value).ToArray();
+                if (pending.Length > 0 && !Task.WaitAll(pending, InspectSectionBudget))
+                {
+                    var unfinished = tasks.Where(t => !t.Value.IsCompleted)
+                                         .Select(t => t.Key).ToList();
+                    Logger.Warn("[Analyze] inspect section budget elapsed with "
+                        + unfinished.Count + " of " + pending.Length
+                        + " sections unfinished: " + string.Join(", ", unfinished));
+
+                    // Every writer locks `result`, so a late writer either lands before
+                    // this and counts as complete, or finds its section already listed.
+                    lock (result)
+                    {
+                        result["sectionsComplete"] = false;
+                        var incomplete = new JArray();
+                        foreach (string section in unfinished) incomplete.Add(section);
+                        result["incompleteSections"] = incomplete;
+                    }
+                }
 
                 // 5. UI Structure (Sync because it's usually fast or has its own internal logic)
                 if (_uiService != null && (includeAll || requested.Contains("structure"))) {
