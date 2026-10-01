@@ -332,12 +332,29 @@ function Get-PreflightPhaseLogPaths {
     param([AllowNull()][object]$Phase)
 
     if ($null -eq $Phase) { return '' }
+    # Two defects had to be fixed together, and fixing either alone was worse than not
+    # fixing it. The probe was PSObject.Properties['x'], which cannot see the key of an
+    # `[ordered]` phase - the shape every production call site passes - so the loop
+    # emitted nothing. And `@(...) | Where-Object {...}` is not an array literal: it is
+    # an array subexpression feeding a second pipeline stage, so when the loop emits
+    # nothing the whole pipeline collapses to $null and `.Count` on it throws under the
+    # StrictMode that release-preflight inherits from gx-version-catalog.ps1.
+    #
+    # That is why a failing preflight lost its message entirely. This function is
+    # interpolated INTO the Write-Error argument, so the throw happened inside the
+    # argument and took the whole line with it: phase name, reason, and log paths all
+    # gone, replaced by a property-not-found message pointing at the caller. The summary
+    # written a line earlier is correct and complete, so the evidence existed and the
+    # operator was simply never shown it. See issue #348.
+    #
+    # `@()` now wraps the whole pipeline, and the empty case is discarded inside the loop
+    # so nothing downstream ever has to count a pipeline result.
     $paths = @(
         foreach ($propertyName in @('stdoutPath', 'stderrPath')) {
-            $property = $Phase.PSObject.Properties[$propertyName]
-            if ($null -ne $property) { [string]$property.Value }
+            $value = Get-GxMcpReleaseFieldValue -Object $Phase -Name $propertyName
+            if (-not [string]::IsNullOrWhiteSpace([string]$value)) { [string]$value }
         }
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
     if ($paths.Count -eq 0) { return '' }
     return ($paths -join '; ')
 }
@@ -694,6 +711,9 @@ $failingPhaseHints = @(
         Format-PreflightPhaseLogHint $failedPhase
     }
 ) | Where-Object { $_ }
-$logHint = if ($failingPhaseHints.Count -gt 0) { " Phase output: $($failingPhaseHints -join '')" } else { '' }
+# Same collapse as Get-PreflightPhaseLogPaths had: an empty second pipeline stage
+# yields $null, and `.Count` on it throws under StrictMode. Unreachable today only
+# because the per-phase hint threw first - fix that and this would have been next.
+$logHint = if (@($failingPhaseHints).Count -gt 0) { " Phase output: $($failingPhaseHints -join '')" } else { '' }
 Write-Error "Preflight failed. Summary: $SummaryPath$logHint"
 exit 1

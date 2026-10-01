@@ -155,8 +155,9 @@ deliberate over-masking limit: prose after a credential on the same line with no
 following pair is masked too, because the boundary between "more secret" and
 "more sentence" is not recoverable from the text. The publication verifier
 (600-character cap), the integration preflight, and the diagnostics collector
-delegate to the same function instead of keeping local pattern copies. A phase that never ran — skipped, dry-run, reused, or with no
-executable on `PATH` — carries `null` for both. An `unavailable` phase records
+delegate to the same function instead of keeping local pattern copies. A phase that never ran - skipped, dry-run, reused, or with no
+executable on `PATH` - carries no log path at all: the keys are absent rather than
+present and `null`. An `unavailable` phase records
 its reason instead of leaving it `null`. The `Write-Error` at the end of a
 failed preflight cites the log paths, because it previously pointed only at the
 summary that held no output.

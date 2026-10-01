@@ -20,6 +20,31 @@
     return ($null -ne $Object.PSObject.Properties[$Name])
 }
 
+# Reads a field's VALUE, accepting the same two shapes as Test-GxMcpReleaseHasField
+# and in the same decision order: a dictionary is indexed by key, anything else is
+# probed through PSObject.Properties. Without this, every reader that wanted a value
+# re-derived the shape test and the ones that used PSObject.Properties alone were blind
+# to the `[ordered]` phase and status objects that production actually builds.
+#
+# Presence and value are deliberately separate contracts: a key that is ABSENT and a
+# key that is PRESENT with a null value both return $null here. Callers that care must
+# ask Test-GxMcpReleaseHasField as well.
+function Get-GxMcpReleaseFieldValue {
+    param(
+        [AllowNull()][object]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { return $null }
+        return $Object[$Name]
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
 function ConvertTo-GxMcpReleasePath {
     param(
         [AllowNull()][string]$Path,

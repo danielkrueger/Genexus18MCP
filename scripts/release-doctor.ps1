@@ -24,10 +24,7 @@ function Read-OptionalJson([string]$Path) {
 }
 
 function Get-OptionalValue([object]$Object, [string]$PropertyName) {
-    if ($null -eq $Object) { return $null }
-    $property = $Object.PSObject.Properties[$PropertyName]
-    if ($null -eq $property) { return $null }
-    return $property.Value
+    return Get-GxMcpReleaseFieldValue -Object $Object -Name $PropertyName
 }
 
 function Get-Sha256([string]$Path) {
@@ -191,8 +188,14 @@ $remoteNpmValid = $Remote -and [string]$remoteState.npmVersion -ceq $Version -an
 $remotePublicationValid = $Remote -and $remoteAssetValid -and $remoteTagCommitValid -and $remoteReleaseUrlValid -and $remoteWorkflowValid -and $remoteNpmValid
 $remoteState.publicationValid = $remotePublicationValid
 
-$failedPhase = $null
-$preflightPhases = @(Get-OptionalValue $preflight 'phases')
+# Nulls are dropped at materialisation, not after it. `@($null).Count` is 1, not 0, so a
+# summary whose `phases` key was absent entered the check below and then evaluated
+# `$_.status` on that single $null element, which throws under StrictMode - and the doctor
+# is the script docs/RELEASE.md tells an operator to run first when a preflight is
+# interrupted. Initialising to @() rather than $null fixes the other half: an empty
+# `phases: []` left the sentinel null and the `.Count` in the report threw. See issue #348.
+$failedPhase = @()
+$preflightPhases = @(Get-OptionalValue $preflight 'phases' | Where-Object { $null -ne $_ })
 if ($preflight -and $preflightPhases.Count -gt 0) {
     $failedPhase = @($preflightPhases | Where-Object { $_.status -in @('failed', 'timeout', 'running') } | Select-Object -First 1)
 }

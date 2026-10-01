@@ -357,7 +357,16 @@ try {
     }
     $resumePhases['reusable phase'].command = 'cmd.exe /c exit 7'
     $commandMismatch = Start-PreflightPhase -Name 'reusable phase' -Executable 'cmd.exe' -Arguments @('/c', 'exit', '0') -WorkingDirectory $root
-    if ($null -ne $commandMismatch.Phase.PSObject.Properties['reused']) { throw 'A phase with a different exact command must not be reused.' }
+    # Issue #348: this probe could not see the key it was testing, so the guard never
+    # fired - a phase reused on a DIFFERENT command would have passed unnoticed. The
+    # phase here is the `[ordered]` shape production uses, and `reused` is omitted
+    # entirely rather than set false (the omission a later test pins), so the assertion
+    # has to work for both shapes instead of one blind probe.
+    if ($commandMismatch.Phase -is [System.Collections.IDictionary]) {
+        if ($commandMismatch.Phase.Contains('reused')) { throw 'A phase with a different exact command must not be reused.' }
+    } elseif ($null -ne $commandMismatch.Phase.PSObject.Properties['reused']) {
+        throw 'A phase with a different exact command must not be reused.'
+    }
     $resumePhases['solution process smoke tests'] = [pscustomobject]@{ status = 'passed'; command = 'old' }
     $processReuse = Get-ReusablePreflightPhase -Name 'solution process smoke tests' -Command 'new'
     if ($null -ne $processReuse) { throw 'The process lane must execute again instead of reusing stale process evidence.' }
@@ -413,6 +422,36 @@ try {
     if ((Format-PreflightPhaseLogHint $evidencePhase) -notmatch [regex]::Escape([string]$evidencePhase.stdoutPath)) {
         throw 'The failure hint must cite the log path so triage does not need the console scrollback.'
     }
+
+    # Issue #348 regressions. The assertion above only ever received a
+    # ConvertFrom-Json PSCustomObject, while every production call site passes the
+    # `[ordered]` phase state - so the shape that ships was the shape under test never
+    # exercised, and the hint it produced threw. Three cases, all of which threw before.
+    $orderedPhaseWithLogs = [ordered]@{ name = 'ordered phase'; stdoutPath = 'ordered.stdout.log'; stderrPath = 'ordered.stderr.log' }
+    $orderedHint = Format-PreflightPhaseLogHint $orderedPhaseWithLogs
+    if ($orderedHint -notmatch 'ordered.stdout.log' -or $orderedHint -notmatch 'ordered.stderr.log') {
+        throw "The hint must cite log paths from the [ordered] shape production passes. Got: $orderedHint"
+    }
+
+    # A phase that never ran carries no keys at all (reused), and the empty pipeline that
+    # used to collapse to $null must still be countable.
+    $reusedOrderedPhase = [ordered]@{ name = 'reused phase' }
+    if (-not [string]::IsNullOrEmpty((Get-PreflightPhaseLogPaths $reusedOrderedPhase))) {
+        throw 'A reused phase has no log, so the hint must be empty.'
+    }
+
+    # Keys present but null: dry-run, skipped, and an executable that does not exist.
+    $nullPathPhase = [ordered]@{ name = 'dry-run phase'; stdoutPath = $null; stderrPath = $null }
+    if (-not [string]::IsNullOrEmpty((Get-PreflightPhaseLogPaths $nullPathPhase))) {
+        throw 'A phase whose log paths are null must produce an empty hint, not a throw.'
+    }
+
+    # The accessor itself, for both shapes, an absent key, and a null object.
+    if (-not (Test-GxMcpReleaseHasField -Object $orderedPhaseWithLogs -Name 'stdoutPath')) { throw 'The accessor must see an ordered key.' }
+    if (Test-GxMcpReleaseHasField -Object $reusedOrderedPhase -Name 'stdoutPath') { throw 'The accessor must report an absent key as absent.' }
+    if ($null -ne (Get-GxMcpReleaseFieldValue -Object $reusedOrderedPhase -Name 'stdoutPath')) { throw 'An absent key has no value.' }
+    if ((Get-GxMcpReleaseFieldValue -Object $orderedPhaseWithLogs -Name 'stdoutPath') -ne 'ordered.stdout.log') { throw 'The accessor must read an ordered value.' }
+    if ($null -ne (Get-GxMcpReleaseFieldValue -Object $null -Name 'stdoutPath')) { throw 'A null object has no value.' }
 
     # Redaction: a secret in any of the three shapes the repository recognizes
     # must not survive into the persisted log.

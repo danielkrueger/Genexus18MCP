@@ -215,6 +215,34 @@ try {
     foreach ($forbidden in @('gh release create', 'gh release upload', 'npm publish', 'git push', 'Set-Content', 'Remove-Item')) {
         if ($source -match [regex]::Escape($forbidden)) { throw "Release doctor is not read-only: $forbidden" }
     }
+
+    # Issue #348: the doctor is the script docs/RELEASE.md tells an operator to run first
+    # when a preflight is interrupted, and each of these summaries made it throw instead
+    # of reporting. An empty `phases` left a $null sentinel whose .Count the report then
+    # read; a summary with NO `phases` key produced @($null), whose Count is 1 rather than
+    # 0, so the filter ran and evaluated .status on that single null element.
+    #
+    # These deliberately run against the REAL repo root rather than $fixture. The doctor
+    # has no Set-StrictMode of its own: it inherits one by dot-sourcing
+    # gx-version-catalog.ps1, inside a try/catch, so StrictMode is armed only when that
+    # catalog resolves under -Root. Against a temp fixture it is not armed, and without
+    # it `$null.Count` quietly returns 0 instead of throwing - so the buggy code passes and
+    # the regression is invisible. That inheritance is itself part of the defect; pinning
+    # it here means a future fix that arms the doctor's own StrictMode will keep working.
+    foreach ($degenerate in @(
+        @{ label = 'empty phases';   file = 'degenerate-empty.json';  summary = [ordered]@{ status = 'failed'; phases = @() } },
+        @{ label = 'phases absent';  file = 'degenerate-absent.json'; summary = [ordered]@{ status = 'failed' } },
+        @{ label = 'phases null';    file = 'degenerate-null.json';   summary = [ordered]@{ status = 'failed'; phases = $null } }
+    )) {
+        $degeneratePath = Join-Path $temp $degenerate.file
+        $degenerate.summary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $degeneratePath -Encoding utf8
+        $degenerateRaw = @(& pwsh -NoProfile -File $doctor -Root $root -Version 3.9.4 -StatusFile "$temp\no-such-status.json" -PreflightSummaryPath $degeneratePath -Json)
+        if ($LASTEXITCODE -ne 0) { throw "Release doctor threw for $($degenerate.label): $($degenerateRaw -join ' ')" }
+        $degenerateJson = ($degenerateRaw -join "`n") | ConvertFrom-Json
+        if (-not [string]::IsNullOrWhiteSpace([string]$degenerateJson.preflight.failedPhase)) {
+            throw "Doctor invented a failed phase for $($degenerate.label)."
+        }
+    }
     Write-Host 'release-doctor: local state, artifact readiness, recovery action and read-only contracts passed' -ForegroundColor Green
 } finally {
     if ($null -ne $oldGxPath) { $env:GX_PATH = $oldGxPath } else { Remove-Item Env:GX_PATH -ErrorAction SilentlyContinue }
