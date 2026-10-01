@@ -514,6 +514,244 @@ def print_comparison(baseline, current, max_p50_regression, max_p95_regression=2
     return regressions
 
 
+# ---------------------------------------------------------------------------
+# Issue #358: the scale matrix.
+#
+# The harness drove exactly one KB through one client, so it could not express the
+# 1/3-KB by 1/2-client grid the issue asks for, and it had no way to say "this cell
+# could not run" other than by not appearing in the output. Both are addressed here
+# as pure functions so they are testable without a gateway, a KB or a GeneXus
+# installation - the native lane is optional precisely because it cannot run
+# everywhere, and a lane whose behavior is only observable when it works is a lane
+# that silently stops being checked.
+#
+# `=` separates a path from its alias rather than `:`: every Windows KB path starts
+# with a drive letter, so a colon separator would make `C:/KBs/KBTeste` ambiguous
+# with `C:/KBs/KBTeste:live`.
+# ---------------------------------------------------------------------------
+
+MATRIX_KB_COUNTS = (1, 3)
+MATRIX_CLIENT_COUNTS = (1, 2)
+
+
+def parse_kb_specs(spec, default_alias_prefix="kb"):
+    """Parse ``--kbs`` into ``[{"path", "alias"}]``.
+
+    Raises ValueError on a malformed entry rather than dropping it. A silently
+    discarded KB turns a three-KB cell into a one-KB cell that still reports as a
+    pass, which is the failure mode a scale matrix exists to prevent.
+    """
+    if spec is None:
+        return []
+    if isinstance(spec, (list, tuple)):
+        raw_entries = list(spec)
+    else:
+        raw_entries = [part for part in str(spec).split(",")]
+
+    specs = []
+    for index, raw in enumerate(raw_entries):
+        entry = raw.strip()
+        if not entry:
+            continue
+        if "=" in entry:
+            path, alias = entry.split("=", 1)
+            path, alias = path.strip(), alias.strip()
+            if not path:
+                raise ValueError(f"KB spec {entry!r} has a path-less entry")
+            if not alias:
+                raise ValueError(f"KB spec {entry!r} declares an empty alias")
+        else:
+            path, alias = entry, f"{default_alias_prefix}{index + 1}"
+        specs.append({"path": path, "alias": alias})
+
+    aliases = [s["alias"] for s in specs]
+    if len(set(a.lower() for a in aliases)) != len(aliases):
+        raise ValueError(f"KB aliases must be unique; got {aliases}")
+    # The same path twice under different aliases is the same KB declared twice. The
+    # alias check cannot see it, and left alone it lets a "3-KB" matrix measure one KB
+    # twice against a warm cache and report the result as a three-KB figure.
+    paths = [os.path.normcase(os.path.abspath(s["path"])) for s in specs]
+    if len(set(paths)) != len(paths):
+        raise ValueError(f"KB paths must be distinct; got {[s['path'] for s in specs]}")
+    return specs
+
+
+def classify_kb_availability(spec):
+    """Availability of one declared KB, decided without opening anything.
+
+    Reports ``unavailable`` rather than an error. The issue requires that missing
+    fixtures are not passes, and the only way to guarantee that is to make
+    "unavailable" a value the summarizer cannot fold into success.
+    """
+    path = (spec or {}).get("path")
+    if not path:
+        return {"state": "unavailable", "reason": "no_path"}
+    # os.path.exists rather than os.path.isdir: a path pointing at a file is not a KB,
+    # and reporting it as one would let the run proceed and fail confusingly later.
+    if not os.path.exists(path):
+        return {"state": "unavailable", "reason": "path_not_found"}
+    if not os.path.isdir(path):
+        return {"state": "unavailable", "reason": "path_not_a_directory"}
+    return {"state": "available", "reason": None}
+
+
+def apply_kb_availability(cells, kb_specs):
+    """Mark each cell unavailable when a KB it needs is missing.
+
+    Separate from :func:`matrix_cells` so the grid shape and the availability
+    decision are independently testable, and so the decision exists in one place.
+    A cell is judged on the KBs it actually needs, which is what makes a 1-KB cell
+    runnable while the 3-KB cell beside it is unavailable.
+    """
+    specs = list(kb_specs or [])
+    for cell in cells or []:
+        if cell.get("state") == "unavailable":
+            continue  # too few KBs declared; matrix_cells already recorded why
+        reasons = []
+        for index in range(cell.get("kbCount", 0)):
+            if index >= len(specs):
+                reasons.append("kb_not_declared")
+                continue
+            state = classify_kb_availability(specs[index])
+            if state["state"] != "available":
+                reasons.append(f"{specs[index]['alias']}:{state['reason']}")
+        cell["state"] = "unavailable" if reasons else "declared"
+        cell["reason"] = ",".join(reasons) or None
+    return cells
+
+
+def matrix_cells(kb_specs, kb_counts=MATRIX_KB_COUNTS,
+                 client_counts=MATRIX_CLIENT_COUNTS):
+    """Enumerate the KB-count x client-count grid.
+
+    A cell that cannot be filled - more KBs requested than declared - is emitted
+    with ``state: unavailable`` rather than omitted, so the report shows the cell
+    was considered and could not run instead of quietly narrowing the matrix.
+    """
+    cells = []
+    declared = len(kb_specs or [])
+    for kb_count in kb_counts:
+        for client_count in client_counts:
+            cell = {
+                "cellId": f"kbs{kb_count}-clients{client_count}",
+                "kbCount": kb_count,
+                "clientCount": client_count,
+                "kbs": [s["alias"] for s in (kb_specs or [])[:kb_count]],
+                "state": "ready",
+                "reason": None,
+            }
+            if declared < kb_count:
+                cell["state"] = "unavailable"
+                cell["reason"] = f"declared {declared} KB(s), cell needs {kb_count}"
+            cells.append(cell)
+    return cells
+
+
+def summarize_cells(cells):
+    """Overall outcome for a matrix run.
+
+    ``unavailable`` outranks ``fail``: a grid whose missing fixtures were reported
+    as failures would train a reader to ignore red. A cell in state ``declared``
+    was enumerated but not exercised by this run and is ignored - but if that
+    leaves nothing executed, the result is unavailable rather than an empty pass.
+    """
+    cells = [c for c in (cells or []) if c.get("state") != "declared"]
+    if not cells:
+        return {"outcome": "unavailable", "reason": "no_executed_cells",
+                "pass": 0, "fail": 0, "unavailable": 0}
+
+    pass_count = sum(1 for c in cells if c.get("state") == "pass")
+    fail_count = sum(1 for c in cells if c.get("state") == "fail")
+    unavailable_count = sum(1 for c in cells if c.get("state") == "unavailable")
+
+    if unavailable_count:
+        return {"outcome": "unavailable",
+                "reason": f"{unavailable_count} cell(s) could not run",
+                "pass": pass_count, "fail": fail_count, "unavailable": unavailable_count}
+    if fail_count:
+        return {"outcome": "fail", "reason": f"{fail_count} cell(s) failed",
+                "pass": pass_count, "fail": fail_count, "unavailable": 0}
+    return {"outcome": "pass", "reason": None,
+            "pass": pass_count, "fail": 0, "unavailable": 0}
+
+
+def _write_report(report, path):
+    """Write the JSON report, creating the directory if needed."""
+    out_dir = os.path.dirname(os.path.abspath(path))
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2)
+    print(f"\nWrote {path}")
+
+
+def _open_session(client_name):
+    """Initialize an independent MCP session. Returns (session_id, initialize_ms)."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                       "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                                  "clientInfo": {"name": f"bench-live-http/{client_name}",
+                                                 "version": "1.0"}}}).encode()
+    started = time.perf_counter()
+    response = http_post(body, None, 30)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if response.status >= 400:
+        raise RuntimeError(f"{client_name}: initialize returned HTTP {response.status}")
+    session_id = response.headers.get("MCP-Session-Id")
+    if not session_id:
+        raise RuntimeError(f"{client_name}: no MCP-Session-Id in initialize response")
+    rpc(session_id, "notifications/initialized", {}, is_notification=True)
+    return session_id, elapsed_ms
+
+
+def measure_read_under_load(session_id, load_session_id, alias, entries, samples, n):
+    """Latency of an interactive read while another session is doing background work.
+
+    The issue asks for interactive-read latency under background load, which is a
+    different question from read latency on an idle worker: it is the measurement
+    that shows whether a bulk operation makes a user-facing call slow. The load is
+    issued on a separate session so the read is genuinely queued behind other work
+    rather than behind its own predecessor.
+    """
+    if not entries:
+        return {"n": 0, "samples": [], "readSamples": [], "loadSamples": [],
+                "responseBytes": {"n": 0, "samples": []}}
+
+    read_samples, load_samples, byte_samples = [], [], []
+    for i in range(n):
+        entry = entries[i % len(entries)]
+        load_started = time.perf_counter()
+        try:
+            load_ms, load_env = rpc(load_session_id, "tools/call", {
+                "name": "genexus_search_source",
+                "arguments": {"kb": alias, "pattern": "parm", "maxResults": 5},
+            }, timeout=180)
+        except (OSError, TimeoutError):
+            load_ms = None
+        load_elapsed = (time.perf_counter() - load_started) * 1000.0
+        if load_ms is not None and operation_envelope_is_ok("search_source", load_env):
+            load_samples.append(load_elapsed)
+
+        measurement = rpc(session_id, "tools/call", {
+            "name": "genexus_read",
+            "arguments": {"kb": alias, **entry, "part": "Source", "limit": 0},
+        }, timeout=180)
+        read_ms, read_env = measurement
+        if not operation_envelope_is_ok("read", read_env):
+            continue
+        read_samples.append(read_ms)
+        response_bytes = getattr(measurement, "response_bytes", 0)
+        if isinstance(response_bytes, (int, float)) and response_bytes > 0:
+            byte_samples.append(response_bytes)
+
+    agg("read_under_load", read_samples, {"read_under_load": {}}, byte_samples)
+    return {"n": len(read_samples), "samples": [round(x, 2) for x in read_samples],
+            "p50": round(percentile(read_samples, 50), 2) if read_samples else None,
+            "p95": round(percentile(read_samples, 95), 2) if read_samples else None,
+            "loadIssued": len(load_samples),
+            "loadP50Ms": round(percentile(load_samples, 50), 2) if load_samples else None,
+            "responseBytes": {"n": len(byte_samples), "samples": byte_samples}}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kb", default="C:/KBs/KBTeste")
@@ -544,6 +782,19 @@ def main():
                     help="Cache state represented by this run (default: warm).")
     ap.add_argument("--concurrency", type=int, default=1,
                     help="Logical client concurrency represented by this run.")
+    # Issue #358: the scale matrix. --kbs declares the KB axis; --clients opens that
+    # many independent MCP sessions and, at 2 or more, measures interactive-read
+    # latency while the extra sessions issue background work.
+    ap.add_argument("--kbs", default=None,
+                    help="Comma-separated KBs as 'path=alias' (aliases are required to "
+                         "be unique). '=' rather than ':' because every Windows KB path "
+                         "starts with a drive letter. Omit for a single --kb run.")
+    ap.add_argument("--clients", type=int, default=1,
+                    help="Independent MCP sessions to open (default: 1). Values above 1 "
+                         "additionally measure interactive-read latency under background load.")
+    ap.add_argument("--matrix", action="store_true",
+                    help="Declare the full 1/3-KB by 1/2-client grid and report each cell "
+                         "as pass, fail or unavailable. Unavailable never counts as pass.")
     args = ap.parse_args()
 
     if args.iterations < 1 or args.iterations > MAX_ITERATIONS or (args.fail_on_regression and not args.compare):
@@ -559,6 +810,51 @@ def main():
                                                                   args.max_bytes_regression)):
         print("FATAL: regression thresholds must be finite and non-negative")
         return 2
+
+    # Issue #358. Parsed and validated before any KB is opened, because a malformed
+    # matrix discovered halfway through a run has already measured the wrong thing.
+    try:
+        kb_specs = parse_kb_specs(args.kbs)
+    except ValueError as ex:
+        print(f"FATAL: {ex}")
+        return 2
+
+    if args.kbs and not kb_specs:
+        print("FATAL: --kbs was given but declared no KB")
+        return 2
+    if args.clients < 1:
+        print("FATAL: --clients must be positive")
+        return 2
+    if args.kbs and not args.kb:
+        # The matrix replaces the single-KB axis; keep exactly one source of truth for
+        # which KB is open rather than letting --kb silently win over --kbs.
+        args.kb = kb_specs[0]["path"]
+        args.alias = kb_specs[0]["alias"]
+
+    # Availability is per declared KB, decided before anything is opened. A cell that
+    # needs three KBs is unavailable when fewer were declared or any is missing; the
+    # run below then exercises the one cell whose shape matches what it opened.
+    matrix = None
+    if args.matrix or args.clients > 1:
+        availability = [classify_kb_availability(s) for s in kb_specs]
+        cells = apply_kb_availability(matrix_cells(kb_specs), kb_specs)
+
+        executed = {"cellId": f"kbs1-clients{args.clients}",
+                    "kbCount": 1, "clientCount": args.clients,
+                    "kbs": [args.alias], "state": "declared", "reason": None}
+        cells.append(executed)
+
+        print("\n=== SCALE MATRIX ===")
+        print(f"  declared KBs: {len(kb_specs)}  clients this run: {args.clients}")
+        for cell in cells:
+            print(f"  {cell['cellId']:20s} {cell['state']:12s} {cell['reason'] or ''}")
+        matrix = {"cells": cells, "summary": summarize_cells(cells),
+                  "declaredKbs": [{"alias": s["alias"],
+                                   "availability": classify_kb_availability(s)}
+                                  for s in kb_specs],
+                  "executedCellId": executed["cellId"]}
+        print("  matrix outcome before measurement: "
+              + matrix["summary"]["outcome"].upper())
 
     ops = [o.strip() for o in (args.ops or "").split(",") if o.strip()] if args.ops else list(DEFAULT_OPS)
     unknown = [o for o in ops if o not in ALL_OPS]
@@ -588,6 +884,39 @@ def main():
 
     rpc(session_id, "notifications/initialized", {}, is_notification=True)
     time.sleep(1)
+
+    # Issue #358: the client axis of the matrix. Independent sessions, not a shared
+    # one - a second session is what makes the read-under-load measurement below a
+    # genuine concurrency measurement rather than a read queued behind itself. An
+    # extra session that cannot be established makes the cell unavailable, not a pass
+    # with fewer clients than declared.
+    load_sessions = []
+    client_init_ms = [el]
+    for client_index in range(1, args.clients):
+        try:
+            load_session_id, load_init_ms = _open_session(f"load{client_index}")
+        except (RuntimeError, OSError) as ex:
+            print(f"client {client_index + 1} could not be established: {ex}")
+            if matrix is not None:
+                for cell in matrix["cells"]:
+                    if cell["cellId"] == matrix["executedCellId"]:
+                        cell["state"] = "unavailable"
+                        cell["reason"] = f"client_{client_index + 1}_unavailable"
+                matrix["summary"] = summarize_cells(matrix["cells"])
+                print("  matrix outcome: " + matrix["summary"]["outcome"].upper())
+            if args.out:
+                _write_report({"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                               "label": args.name or "run", "kb": args.kb,
+                               "iterations": args.iterations, "ops": {}, "opsOrder": ops,
+                               "matrix": matrix, "unavailableReason": str(ex)},
+                              args.out)
+            return 2
+        load_sessions.append(load_session_id)
+        client_init_ms.append(load_init_ms)
+        print(f"client {client_index + 1}: initialize {load_init_ms:.0f}ms")
+    if args.clients > 1:
+        print(f"clients: {args.clients} independent sessions "
+              f"(initialize p50 {percentile(client_init_ms, 50):.0f}ms)")
 
     # Open KB
     el, inner = rpc(session_id, "tools/call", {
@@ -814,6 +1143,26 @@ def main():
         run_op("read", lambda i: {"name": "genexus_read", "arguments": {
             "kb": args.alias, **target_entries[i % len(target_entries)], "part": "Source", "limit": 0
         }})
+
+    # Issue #358: interactive-read latency under background load. Only meaningful once a
+    # second session exists to carry the load, so at --clients 1 it is declared
+    # unavailable rather than reported as a healthy zero.
+    if load_sessions:
+        print("\nmeasuring read latency under background load...", flush=True)
+        under_load = measure_read_under_load(
+            session_id, load_sessions[0], args.alias, target_entries, results, n)
+        if under_load["n"]:
+            under_load.update(attempted=n, succeeded=under_load["n"],
+                              failed=n - under_load["n"], skipped=0)
+            results["read_under_load"] = under_load
+        else:
+            results["read_under_load"] = {
+                "n": 0, "samples": [], "attempted": n, "succeeded": 0,
+                "failed": n, "skipped": 0,
+                "unavailableReason": "no_valid_read_under_load",
+                "responseBytes": {"n": 0, "samples": []}}
+    elif args.clients > 1:
+        print("read_under_load UNAVAILABLE (no load session)")
     if "edit_dryrun" in ops:
         if edit_args is None:
             print("  edit_dryrun SKIPPED (no edit target prepared)")
@@ -847,19 +1196,49 @@ def main():
             "mode": "diagnose", "dryRun": True
         }})
 
+    requested_failed = (set(results) != set(ops)
+                        or any(r["failed"] or r["skipped"] for r in results.values()))
+
+    # Issue #358: resolve the executed cell before writing, so the report on disk says
+    # what happened rather than only what was planned. read_under_load is excluded from
+    # the failure check: it is an extra measurement, not a requested op, and a fixture
+    # with no readable Source target would otherwise fail the whole run.
+    if matrix is not None:
+        under_load = results.get("read_under_load")
+        cell_failed = bool(requested_failed) or (under_load is not None
+                                                 and under_load.get("n", 0) == 0)
+        for cell in matrix["cells"]:
+            if cell["cellId"] != matrix["executedCellId"]:
+                continue
+            if cell["state"] == "unavailable":
+                continue  # already decided by availability or a failed client
+            cell["state"] = "fail" if cell_failed else "pass"
+            cell["reason"] = None if not cell_failed else "operations_failed"
+        matrix["summary"] = summarize_cells(matrix["cells"])
+        print("\n=== SCALE MATRIX (final) ===")
+        for cell in matrix["cells"]:
+            print(f"  {cell['cellId']:20s} {cell['state']:12s} {cell['reason'] or ''}")
+        print("  matrix outcome: " + matrix["summary"]["outcome"].upper())
+
     out = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "label": label, "kb": args.kb, "iterations": n, "ops": results,
            "opsOrder": ops, "population": population}
+    if matrix is not None:
+        # Issue #358: record the matrix axes alongside the population so a comparison
+        # against a prior run cannot silently pair a 1-KB baseline with a 3-KB current.
+        out["matrix"] = matrix
+        out["population"] = dict(population, kbs=len(kb_specs), clients=args.clients)
     if args.out:
-        out_dir = os.path.dirname(os.path.abspath(args.out))
-        if out_dir and not os.path.exists(out_dir):
-            os.makedirs(out_dir, exist_ok=True)
-        with open(args.out, "w", encoding="utf-8") as f:
-            json.dump(out, f, indent=2)
-        print(f"\nWrote {args.out}")
-    if set(results) != set(ops) or any(r["failed"] or r["skipped"] for r in results.values()):
+        _write_report(out, args.out)
+    if requested_failed:
         print("FATAL: requested operations failed or were skipped")
         return 1
+    # A matrix run that could not execute its declared cell is unavailable, which the
+    # harness reports as exit 2 rather than as a red failure: a missing fixture is not
+    # a regression, and conflating them is what makes a gate get ignored.
+    if matrix is not None and matrix["summary"]["outcome"] == "unavailable":
+        print("FATAL: matrix cell(s) unavailable — this run is not a pass")
+        return 2
     if args.compare:
         try:
             with open(args.compare, "r", encoding="utf-8") as f:

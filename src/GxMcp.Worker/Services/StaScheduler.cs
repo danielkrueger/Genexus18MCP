@@ -462,6 +462,18 @@ namespace GxMcp.Worker.Services
                 _p2Queues.Clear();
                 _p2ClientOrder.Clear();
                 _p2Cursor = 0;
+
+                // Issue #358. The accounting counters have to go with the items they
+                // account for. They were left populated here, so after a Clear() the
+                // queues were empty while TryEnqueue still believed there were up to
+                // MaxQueuedCommands items pending and began answering `queue_full` to
+                // fresh work. The refusal is unrecoverable from the caller's side - it
+                // has no way to drain a queue that is already empty - so a cleared
+                // scheduler stayed progressively less able to accept commands until
+                // enough takes happened to walk the phantom count back down.
+                _queuedCount = 0;
+                _queuedBytes = 0;
+                LastAdmissionError = null;
             }
         }
     }

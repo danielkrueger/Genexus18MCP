@@ -248,6 +248,68 @@ populations. Never count failed operations as fast successful samples.
 The benchmark stores successful response-byte p50/p95 alongside latency and
 never includes failed or skipped calls in either population.
 
+### Scale matrix
+
+Issue #358 adds two lanes. Neither discovers or mutates a real KB, and both require
+explicitly configured disposable fixtures.
+
+The **deterministic lane** needs no SDK and runs in the ordinary test suite:
+
+```powershell
+dotnet test src\GxMcp.Worker.Tests --filter "FullyQualifiedName~SyntheticScaleLaneTests"
+```
+
+It builds a seeded fictional catalog at 10k/50k/100k objects and drives the real
+production paths that stop scaling — source-store budget accounting, trigram-index
+residency under churn, bounded top-K page selection, source search with continuation,
+and STA admission under bulk load. Gates are on operation counts, never wall clock: a
+CI agent and a developer laptop differ by more than the regressions worth catching, so
+a fixed millisecond gate would fail on hardware and pass on a regression. Timings are
+recorded in the report for context but decide nothing.
+
+The same seed yields a byte-identical catalog on any host, which is what makes a
+recorded baseline comparable to a later run. The fixture uses an invented vocabulary
+and seed-derived GUIDs — never `Guid.NewGuid()` or `DateTime.UtcNow`, which is what
+made the earlier 40k benchmark un-gateable. Names collide across types on purpose,
+since a catalog of globally unique names never exercises the name index's
+disambiguation path.
+
+Three outcomes, never two: `pass`, `fail`, and `unavailable`. An unavailable run is
+not a pass, because the alternative is a missing fixture turning green. The same
+holds in the native lane below.
+
+The **native lane** is `scripts/bench-live-http.py`, which now carries the matrix:
+
+```powershell
+python scripts/bench-live-http.py --kbs "C:\fixtures\small=alpha,C:\fixtures\medium=beta" `
+  --matrix --clients 2 --iterations 12 --out scratchpad\matrix.json
+```
+
+`--kbs` uses `path=alias`, not `path:alias`, because every Windows KB path starts with
+a drive letter and a colon separator would be ambiguous. Aliases must be unique and
+paths must be distinct: the same KB declared twice would let a "3-KB" matrix measure
+one KB against a warm cache and report it as three. A cell needing more KBs than were
+declared is emitted as `unavailable` rather than dropped, since a missing cell is
+indistinguishable from a grid that quietly narrowed itself.
+
+`--clients N` opens N independent MCP sessions. At two or more, the harness also
+measures interactive-read latency while the extra session issues background work —
+a different question from read latency on an idle worker, and the one that shows
+whether a bulk operation makes a user-facing call slow.
+
+Matrix axes are recorded in the report's `population`, so a comparison cannot pair a
+1-KB baseline with a 3-KB current run. A cell that could not run exits 2 rather than
+1: a missing fixture is not a regression, and conflating them is what makes a gate
+get ignored. A declared-but-unexercised cell is `declared`, not `pass`.
+
+Both lanes mutation-check the three shapes the issue names — a growing-list duplicate
+scan, full-catalog budget recomputation, and starvation of a small read during bulk
+work. The budget criterion is worth a note: `CatalogRecordVisits` counts records
+walked by `SumRecordBytes`, so a total inlined directly into `EnforceStorageBudget`
+walks no counter at all and the measured criterion stays green against exactly that
+regression. The lane therefore also carries a structural guard, because a measurement
+that cannot fail for the failure it names is not evidence.
+
 Latency runs over one keep-alive connection (`http_post` in
 `scripts/bench-live-http.py`); do not reintroduce a connection per call. A
 CPython socket operation carrying a timeout waits through `select()` on Windows,
