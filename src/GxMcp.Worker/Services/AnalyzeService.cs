@@ -2498,7 +2498,17 @@ namespace GxMcp.Worker.Services
             return _objectService?.ReadObjectSource(callerName, partName);
         }
 
-        public string FindCallerSites(string targetName)
+        /// <summary>
+        /// Per-call-site detail for every recorded caller of <paramref name="targetName"/>.
+        /// </summary>
+        /// <param name="targetName">The called object.</param>
+        /// <param name="cursor">
+        /// Resume offset into the caller list, as returned by a previous truncated
+        /// response's <c>nextCursor</c>. Issue #343.
+        /// </param>
+        /// <param name="maxCallers">Caller budget for this page; the default applies when non-positive.</param>
+        /// <param name="maxSourceBytes">Source-byte budget for this page.</param>
+        public string FindCallerSites(string targetName, int cursor = 0, int maxCallers = 0, long maxSourceBytes = 0)
         {
             try
             {
@@ -2522,10 +2532,37 @@ namespace GxMcp.Worker.Services
                 var callers = new JArray();
                 const int ctx = 3;
 
-                foreach (var callerName in callerNames)
+                // Issue #343: bound the work. This loop previously walked every recorded
+                // caller, read three full source parts each and parsed all of it with no
+                // page boundary and no cancellation point, so a high-fan-in target could
+                // hold the SDK lane past a client deadline with nothing resumable behind
+                // it. The budget is charged *before* each unit of work, so the scan stops
+                // between callers and the stop point is exactly resumable.
+                //
+                // Callers are de-duplicated here because the index can list the same
+                // caller twice (an edge recorded from both modules); without this the same
+                // call site would be reported twice and a page boundary could split the
+                // duplicates across two responses.
+                var distinctCallers = callerNames
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var budget = new GxMcp.Worker.Helpers.CallerScanBudget(
+                    maxCallers: maxCallers > 0 ? maxCallers : GxMcp.Worker.Helpers.CallerScanBudget.DefaultMaxCallers,
+                    maxSourceBytes: maxSourceBytes > 0 ? maxSourceBytes : GxMcp.Worker.Helpers.CallerScanBudget.DefaultMaxSourceBytes);
+                budget.Start();
+
+                int resumeFrom = cursor > 0 ? Math.Min(cursor, distinctCallers.Count) : 0;
+                for (int callerIndex = resumeFrom; callerIndex < distinctCallers.Count; callerIndex++)
                 {
+                    if (!budget.TryBeginCaller()) break;
+
+                    var callerName = distinctCallers[callerIndex];
+
                     // Read each source part that might contain calls
                     string[] partsToCheck = { "Source", "Events", "Rules" };
+                    bool callerFullyScanned = true;
                     foreach (var partName in partsToCheck)
                     {
                         string src = null;
@@ -2557,10 +2594,26 @@ namespace GxMcp.Worker.Services
                         catch { }
                         if (string.IsNullOrEmpty(src)) continue;
 
+                        // Issue #343: bound the retained work. A source's size is only
+                        // knowable after reading it, so the charge lands here; what it
+                        // guarantees is that a source which does not fit contributes
+                        // nothing. Half a source would silently omit call sites, which is
+                        // worse than stopping: the answer would look complete and be wrong.
+                        if (!budget.TryChargeBytes(System.Text.Encoding.UTF8.GetByteCount(src)))
+                        {
+                            callerFullyScanned = false;
+                            break;
+                        }
+
                         var lines = src.Split('\n');
                         foreach (var call in SourceParser.ParseCalls(src, false))
                         {
                             if (!CallSiteMatcher.Matches(call, canonicalName, moduleQualifiedName)) continue;
+                            if (!budget.TryChargeResult())
+                            {
+                                callerFullyScanned = false;
+                                break;
+                            }
 
                             int idx = call.LineNumber - 1;
                             string lineText = idx >= 0 && idx < lines.Length ? lines[idx] : "";
@@ -2581,7 +2634,39 @@ namespace GxMcp.Worker.Services
                                 ["args"] = new JArray(call.Args.ToArray<object>())
                             });
                         }
+                        if (!callerFullyScanned) break;
                     }
+
+                    // The resume offset only advances past a caller that was fully
+                    // scanned. Advancing past a partially scanned one would skip its
+                    // remaining parts on the next page - a silent hole in the answer.
+                    if (!callerFullyScanned) break;
+                    budget.CompleteCaller();
+                }
+
+                // Issue #343: the scan's completeness, and where to resume. An incomplete
+                // scan must never be presented as a whole answer, and - critically - must
+                // not reach the "confirmed zero" path below, which would turn "I stopped
+                // looking" into "there are none".
+                bool scanComplete = budget.IsComplete && resumeFrom + budget.CallersScanned >= distinctCallers.Count;
+                int nextCursor = resumeFrom + budget.CallersScanned;
+                var scanMeta = new JObject
+                {
+                    ["complete"] = scanComplete,
+                    ["callersTotal"] = distinctCallers.Count,
+                    ["callersScanned"] = budget.CallersScanned,
+                    ["sourceBytesRead"] = budget.SourceBytesRead,
+                    ["results"] = budget.Results,
+                    ["elapsedMs"] = budget.ElapsedMs,
+                    ["maxCallers"] = budget.MaxCallers,
+                    ["maxSourceBytes"] = budget.MaxSourceBytes
+                };
+                if (!scanComplete)
+                {
+                    scanMeta["stopReason"] = budget.StopReason ?? "caller_list_exhausted";
+                    scanMeta["nextCursor"] = nextCursor;
+                    scanMeta["hint"] = "Scan stopped before covering every caller. Resume with cursor="
+                        + nextCursor + "; this result is partial and must not be read as the full set of call sites.";
                 }
 
                 // issue #25 follow-up (P0): a zero result here is dangerous — the
@@ -2592,12 +2677,32 @@ namespace GxMcp.Worker.Services
                 // cross-checking the live SDK reference graph (same source impact uses).
                 if (callers.Count == 0)
                 {
+                    // Issue #343: a truncated scan that found nothing has NOT established a
+                    // zero. Reaching the cross-check below on a partial scan would let a
+                    // budget stop masquerade as a definitive answer - and the whole point
+                    // of the guarded-zero machinery below is that a zero here is unsafe to
+                    // act on. So an incomplete scan reports its own incompleteness and
+                    // stops, leaving the cross-check for a scan that actually finished.
+                    if (!scanComplete)
+                    {
+                        return McpResponse.Ok(target: canonicalName, code: "CallerSitesPartial", result: new JObject
+                        {
+                            ["callSiteCount"] = 0,
+                            ["callers"] = callers,
+                            ["indexEdgesMissing"] = true,
+                            ["verifiedZero"] = false,
+                            ["scan"] = scanMeta,
+                            ["hint"] = "The scan stopped at its work budget before covering every caller, and found no call sites in the part it did cover. This is NOT a confirmed 'no callers'. Resume with cursor=" + nextCursor + "."
+                        });
+                    }
+
                     var sdk = TrySdkReferenceCrossCheck(canonicalName);
                     var zeroResult = new JObject
                     {
                         ["callSiteCount"] = 0,
                         ["callers"] = callers,
-                        ["indexEdgesMissing"] = true
+                        ["indexEdgesMissing"] = true,
+                        ["scan"] = scanMeta
                     };
                     if (sdk == null)
                     {
@@ -2632,11 +2737,12 @@ namespace GxMcp.Worker.Services
 
                 return McpResponse.Ok(
                     target: canonicalName,
-                    code: "CallerSitesFound",
+                    code: scanComplete ? "CallerSitesFound" : "CallerSitesPartial",
                     result: new JObject
                     {
                         ["callSiteCount"] = callers.Count,
-                        ["callers"] = callers
+                        ["callers"] = callers,
+                        ["scan"] = scanMeta
                     });
             }
             catch (Exception ex)
