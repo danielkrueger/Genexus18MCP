@@ -31,6 +31,14 @@ namespace GxMcp.Gateway
         internal const int ProtocolVersion = 1;
         internal const int MaxFrameBytes = 4 * 1024 * 1024;
 
+        /// <summary>
+        /// Absolute ceiling past which a frame is abusive rather than merely large.
+        /// Issue #347: between <see cref="MaxFrameBytes"/> and this ceiling an oversized
+        /// frame is parsed and, if well-formed, refused per request; past it we refuse to
+        /// buffer and fail closed.
+        /// </summary>
+        internal const int HardFrameCeilingBytes = 4 * MaxFrameBytes;
+
         private readonly SharedWorkerIdentity _identity;
         private readonly SharedWorkerRecord _record;
         private readonly string _clientId;
@@ -230,8 +238,28 @@ namespace GxMcp.Gateway
                 {
                     string? line = await _reader!.ReadLineAsync().ConfigureAwait(false);
                     if (line == null) break;
-                    if (Encoding.UTF8.GetByteCount(line) > MaxFrameBytes)
-                        throw new InvalidDataException("Shared Worker frame exceeded the maximum size.");
+
+                    long frameBytes = Encoding.UTF8.GetByteCount(line);
+                    if (frameBytes > MaxFrameBytes)
+                    {
+                        // Issue #347. Throwing here signalled a disconnect, which took down
+                        // every attachment on this broker - one client's legitimately large
+                        // response became everyone's outage. A frame that parses is a valid
+                        // response that does not fit the transport, so it becomes a bounded
+                        // per-request error delivered to the requester alone.
+                        //
+                        // A frame that does not parse, or that is beyond the hard ceiling,
+                        // is malformed or abusive and still disconnects: the oversized
+                        // path must not become a way past the fail-closed check.
+                        string? oversizedRefusal = SharedWorkerOversizedFrame.TryBuildRefusal(
+                            line, frameBytes, MaxFrameBytes, HardFrameCeilingBytes);
+                        if (oversizedRefusal == null)
+                            throw new InvalidDataException(
+                                "Shared Worker frame exceeded the maximum size and could not be attributed to a request.");
+
+                        LineReceived?.Invoke(oversizedRefusal);
+                        continue;
+                    }
 
                     JObject? frame = TryParseObject(line);
                     if (frame != null && IsControlFrame(frame, "worker_restarted"))

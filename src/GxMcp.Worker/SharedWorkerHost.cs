@@ -507,11 +507,65 @@ namespace GxMcp.Worker
                 string line;
                 while (!_stop.IsCancellationRequested && (line = child.StandardOutput.ReadLine()) != null)
                 {
-                    if (Encoding.UTF8.GetByteCount(line) > SharedWorkerHostProtocol.MaxFrameBytes)
+                    long frameBytes = Encoding.UTF8.GetByteCount(line);
+                    if (frameBytes > SharedWorkerHostProtocol.MaxFrameBytes)
                     {
-                        BroadcastHostError("Shared Worker child emitted an oversized frame; host stopped fail-closed.");
-                        _stop.Cancel();
-                        break;
+                        // Issue #347. This used to broadcast a host error and cancel the
+                        // broker, so one client's legitimately large read, batch or
+                        // persisted-content result took down every other attachment. A
+                        // large frame that parses is a valid response that does not fit
+                        // the transport, and the answer is a bounded per-request error -
+                        // not a shared outage.
+                        //
+                        // Malformed and abusive frames still stop the host, unchanged: the
+                        // oversized path must not become a way past the fail-closed check,
+                        // so an unparseable frame is still fatal here.
+                        var disposition = SharedWorkerHostProtocol.ClassifyOversizedFrame(
+                            line, out string oversizedRequestId, frameBytes);
+
+                        if (disposition == SharedWorkerHostProtocol.OversizedFrameDisposition.FailClosed)
+                        {
+                            BroadcastHostError(
+                                frameBytes > SharedWorkerHostProtocol.HardFrameCeilingBytes
+                                    ? "Shared Worker child emitted a frame beyond the hard ceiling (" + frameBytes
+                                      + " bytes); host stopped fail-closed."
+                                    : "Shared Worker child emitted an unparseable oversized frame; host stopped fail-closed.");
+                            _stop.Cancel();
+                            break;
+                        }
+
+                        if (disposition == SharedWorkerHostProtocol.OversizedFrameDisposition.RejectRequest)
+                        {
+                            var refusal = SharedWorkerHostProtocol.BuildOversizedResponse(
+                                oversizedRequestId, frameBytes, SharedWorkerHostProtocol.MaxFrameBytes);
+                            // Route it exactly as a normal response would be routed, to the
+                            // attachment that owns the request, and nowhere else.
+                            if (_routes.TryRemove(oversizedRequestId, out SharedWorkerRequestRoute oversizedRoute))
+                            {
+                                if (!string.IsNullOrWhiteSpace(oversizedRoute.ChildProgressToken))
+                                    _progressOwners.TryRemove(oversizedRoute.ChildProgressToken, out _);
+                                var clientFrame = new JObject
+                                {
+                                    ["jsonrpc"] = "2.0",
+                                    ["id"] = oversizedRoute.ClientRequestId ?? JValue.CreateNull(),
+                                    ["error"] = refusal["error"]
+                                };
+                                SendJson(_attachments, oversizedRoute.AttachmentId, clientFrame.ToString(Formatting.None));
+                            }
+                            else
+                            {
+                                // No live route: the request already completed, timed out or
+                                // detached. Log it rather than guessing an owner.
+                                HostLog("dropped oversized response for unrouted request id=" + oversizedRequestId);
+                            }
+                        }
+                        else
+                        {
+                            HostLog("dropped oversized child notification (" + frameBytes + " bytes); no requester to answer");
+                        }
+
+                        // The host keeps serving every other attachment.
+                        continue;
                     }
                     JObject frame;
                     try { frame = GxMcp.Common.JsonIngress.ParseObject(line); }

@@ -38,6 +38,126 @@ namespace GxMcp.Worker
     {
         internal const int ProtocolVersion = 1;
         internal const int MaxFrameBytes = 4 * 1024 * 1024;
+
+        /// <summary>
+        /// Absolute ceiling beyond which a frame is treated as abusive rather than
+        /// merely large. Issue #347.
+        ///
+        /// <para>
+        /// Between <see cref="MaxFrameBytes"/> and this ceiling a frame is parsed and,
+        /// if it is well-formed, answered with a per-request error - a valid large read
+        /// must not be able to affect other attachments. Above the ceiling we stop
+        /// fail-closed instead: past a point the frame is no longer a plausible response,
+        /// and refusing to buffer it is the point of having a ceiling at all.
+        /// </para>
+        /// </summary>
+        internal const int HardFrameCeilingBytes = 4 * MaxFrameBytes;
+
+        /// <summary>
+        /// What the host should do with a child frame that exceeds
+        /// <see cref="MaxFrameBytes"/>.
+        /// </summary>
+        internal enum OversizedFrameDisposition
+        {
+            /// <summary>
+            /// The frame is well-formed JSON-RPC carrying a request id. The requester
+            /// gets a bounded structured error and the host keeps serving everyone else.
+            /// </summary>
+            RejectRequest,
+
+            /// <summary>
+            /// The frame is well-formed but has no request id, so there is nobody to
+            /// answer. It is dropped with a log; the host survives, because a valid
+            /// notification that is too large is not evidence of a broken transport.
+            /// </summary>
+            DropNotification,
+
+            /// <summary>
+            /// The frame is malformed, or beyond the hard ceiling. This is the
+            /// fail-closed case and it is unchanged from before: corrupt or compromised
+            /// transport data still stops the host.
+            /// </summary>
+            FailClosed,
+        }
+
+        /// <summary>
+        /// Decides what to do with an oversized child frame, and recovers the request id
+        /// when the frame is answerable.
+        ///
+        /// <para>
+        /// Issue #347. The host used to treat every frame over <see cref="MaxFrameBytes"/>
+        /// as fatal, so a legitimate large <c>read</c>, batch or persisted-content result
+        /// cancelled the broker and took down every attachment - one client's big
+        /// response became every client's outage. The distinction this makes is not about
+        /// size: a large frame that parses is a valid response that does not fit the
+        /// transport, and the right answer is a bounded per-request error. A frame that
+        /// does not parse, or that is past the hard ceiling, is malformed or abusive and
+        /// still stops the host.
+        /// </para>
+        /// </summary>
+        /// <param name="line">The raw frame text, already read from the child.</param>
+        /// <param name="correlationId">
+        /// The frame's JSON-RPC id when the frame is answerable, otherwise null.
+        /// </param>
+        /// <param name="byteCount">UTF-8 byte length, computed by the caller.</param>
+        internal static OversizedFrameDisposition ClassifyOversizedFrame(string line, out string correlationId, long byteCount)
+        {
+            correlationId = null;
+            if (line == null) return OversizedFrameDisposition.FailClosed;
+            if (byteCount > HardFrameCeilingBytes) return OversizedFrameDisposition.FailClosed;
+
+            JObject frame;
+            try { frame = GxMcp.Common.JsonIngress.ParseObject(line); }
+            catch
+            {
+                // Malformed stays malformed. The oversized path must not become a way to
+                // smuggle unparseable data past the fail-closed check.
+                return OversizedFrameDisposition.FailClosed;
+            }
+            if (frame == null) return OversizedFrameDisposition.FailClosed;
+
+            var id = frame["id"];
+            if (id == null || id.Type == JTokenType.Null)
+                return OversizedFrameDisposition.DropNotification;
+
+            correlationId = id.ToString();
+            return string.IsNullOrEmpty(correlationId)
+                ? OversizedFrameDisposition.FailClosed
+                : OversizedFrameDisposition.RejectRequest;
+        }
+
+        /// <summary>
+        /// The bounded error sent to the requester whose response did not fit. It is
+        /// deliberately small and structured: the point is that the caller learns its own
+        /// result was refused and can page or request an artifact, not that it receives a
+        /// truncated payload that looks complete.
+        /// </summary>
+        internal static JObject BuildOversizedResponse(string correlationId, long byteCount, long limitBytes)
+        {
+            return new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = correlationId,
+                ["error"] = new JObject
+                {
+                    ["code"] = "WorkerResponseTooLarge",
+                    ["message"] = "This response is " + byteCount + " bytes, over the shared-transport limit of " + limitBytes
+                        + " bytes, so it was refused rather than truncated. Other clients are unaffected.",
+                    ["data"] = new JObject
+                    {
+                        ["responseBytes"] = byteCount,
+                        ["maxFrameBytes"] = limitBytes,
+                        // Explicit, because the alternative failure is a caller reading a
+                        // truncated payload as the whole result.
+                        ["complete"] = false,
+                        ["truncated"] = false,
+                        ["retryable"] = true,
+                        ["hint"] = "Narrow the request (smaller page/limit), or write the full result to a KB-scoped artifact and read it in pieces. Do NOT treat this as an empty result."
+                    }
+                }
+            };
+        }
+
         private const string PipePrefix = "GxMcpShared_";
 
         private static readonly HashSet<string> HostFrameTypes = new HashSet<string>(StringComparer.Ordinal)
