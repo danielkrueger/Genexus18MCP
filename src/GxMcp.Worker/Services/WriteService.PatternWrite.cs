@@ -11,6 +11,18 @@ namespace GxMcp.Worker.Services
     // — see plans/007-decompose-writeservice.md.
     public partial class WriteService
     {
+        /// <summary>
+        /// Normalizes a pattern payload to the line endings the SDK stores, so the
+        /// structural preflight compares like with like. Issue #350: the plan used to
+        /// receive whatever the caller had, which meant a patch preview and a full
+        /// write could be comparing the same edit in different encodings.
+        /// </summary>
+        internal static string ToSdkPatternLineEndings(string xml)
+        {
+            if (string.IsNullOrEmpty(xml)) return xml;
+            return xml.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+        }
+
         private string WritePatternPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false, bool strictVerify = true, bool allowGridStructure = false)
         {
             string currentXml;
@@ -38,7 +50,14 @@ namespace GxMcp.Worker.Services
             string normalizedInput;
             if (string.Equals(partName, "PatternInstance", StringComparison.OrdinalIgnoreCase))
             {
-                var plan = PatternXmlEditPlan.Create(currentXml, xml, allowGridStructure);
+                // Issue #350: normalize here rather than relying on each caller to have
+                // done it. The patch route handed the plan ToSdkLineEndings(content)
+                // while a full write handed it the raw decoded content, so the same
+                // logical edit could compare CRLF against LF and report a difference
+                // that the SDK would never see - or miss one it would. Normalizing at
+                // the single point where the plan is built makes "the preview matches
+                // the write" true for both routes.
+                var plan = PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure);
                 if (plan.ErrorCode != null)
                     return CreateWriteError("Pattern edit rejected", target, partName,
                         plan.Error + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",

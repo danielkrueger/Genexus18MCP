@@ -482,7 +482,27 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(code: "WwpActionFailed", message: ex.Message, target: target);
+                // issue #332: this used to surface `ex.Message` verbatim, so a
+                // NullReferenceException reached the caller as "Object reference not set
+                // to an instance of an object" with no indication of what to do instead.
+                // The underlying defect is fixed at its source (see
+                // PatternAnalysisService.FindPatternPart) and every resolution failure
+                // above already returns a typed error naming the host to use. What
+                // remains is an unexpected failure, and it must name the stage that
+                // produced it rather than repeat a framework message.
+                string stage = (string)args?["action"] ?? "(none)";
+                GxMcp.Worker.Helpers.Logger.Error($"[WWP] action='{stage}' target='{target}' failed: {ex.GetType().Name}: {ex.Message}");
+                return McpResponse.Err(
+                    code: "WwpActionFailed",
+                    message: $"The WorkWithPlus '{stage}' request for '{target}' failed unexpectedly ({ex.GetType().Name}).",
+                    hint: "Re-read the instance with genexus_read part=PatternInstance to confirm its identity and state, then retry naming the WorkWithPlus instance object directly (for example 'WorkWithPlus<Panel>') rather than its parent.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["operation"] = stage,
+                        ["exceptionType"] = ex.GetType().FullName,
+                        ["detail"] = ex.Message
+                    });
             }
         }
 

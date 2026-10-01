@@ -20,7 +20,11 @@ namespace GxMcp.Worker.Tests
             string writeSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(servicesDir, "WriteService.VisualWrite.cs"))
                 + System.IO.File.ReadAllText(System.IO.Path.Combine(servicesDir, "WriteService.PatternWrite.cs"));
 
-            Assert.Contains("PatternXmlEditPlan.Create(currentXml, xml, allowGridStructure)", writeSrc);
+            // Issue #350: the plan now receives the SDK-normalized payload, so a
+            // patch preview and a full write compare the same document rather than
+            // the same edit in two encodings. The ordering assertions below are
+            // unchanged: the preflight still runs before the snapshot and the save.
+            Assert.Contains("PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure)", writeSrc);
             Assert.Contains("normalizedInput = plan.Xml;", writeSrc);
             Assert.DoesNotContain("PatternChildOrderReconciler.Reconcile", writeSrc);
             Assert.DoesNotContain("AttachReconcileReport", writeSrc);

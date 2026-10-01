@@ -638,16 +638,34 @@ namespace GxMcp.Worker.Services
         {
             if (instanceObj == null || string.IsNullOrWhiteSpace(partName)) return null;
 
-            return instanceObj.Parts.Cast<KBObjectPart>().FirstOrDefault(p =>
+            // issue #332: this walked `instanceObj.Parts` and dereferenced `p.Name`
+            // unguarded. A WebPanel carries many parts, and the SDK does not promise a
+            // non-null Name on all of them, so resolving a parent that owns a pattern
+            // instance could throw a NullReferenceException from inside a predicate
+            // that only meant to compare strings. Every comparison below is now
+            // null-safe; a null name simply fails to match, which is the correct
+            // answer rather than an exception.
+            KBObjectPart[] parts;
+            try { parts = instanceObj.Parts.Cast<KBObjectPart>().ToArray(); }
+            catch (Exception)
             {
+                // A part collection that cannot be enumerated is "no part found", not
+                // a crash: every caller treats null as absent and then produces a
+                // typed, actionable error.
+                return null;
+            }
+
+            return parts.FirstOrDefault(p =>
+            {
+                if (p == null) return false;
                 if (string.Equals(partName, "PatternInstance", StringComparison.OrdinalIgnoreCase))
                 {
-                    return p.Name.Equals("PatternInstance", StringComparison.OrdinalIgnoreCase) ||
+                    return string.Equals(p.Name, "PatternInstance", StringComparison.OrdinalIgnoreCase) ||
                            p.GetType().Name.Contains("PatternInstance") ||
-                           p.Type.Equals(PatternInstancePartGuid);
+                           p.Type == PatternInstancePartGuid;
                 }
 
-                return p.Name.Equals(partName, StringComparison.OrdinalIgnoreCase) ||
+                return string.Equals(p.Name, partName, StringComparison.OrdinalIgnoreCase) ||
                        p.GetType().Name.IndexOf(partName, StringComparison.OrdinalIgnoreCase) >= 0 ||
                        string.Equals(p.TypeDescriptor?.Name, partName, StringComparison.OrdinalIgnoreCase);
             });

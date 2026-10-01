@@ -272,6 +272,49 @@ namespace GxMcp.Gateway
             BroadcastResourcesListChanged("worker_restarted");
         }
 
+        /// <summary>
+        /// Invalidates cached reads for the KB a resource-updated notification names,
+        /// and returns the revision a subsequent read must be told about.
+        ///
+        /// <para>
+        /// Issue #336. The notification is evidence that the object changed outside this
+        /// Gateway's own write path, so the KB's cached reads are stale. Advancing here
+        /// rather than in the broadcast means: an entry cached before the change is
+        /// unusable afterwards; the broadcast carries the post-invalidation number, so a
+        /// subscriber comparing it against the one it last saw learns something moved
+        /// (before, it received the unchanged value and learned nothing); and a read
+        /// already in flight captured the old revision and cannot refill a new generation
+        /// with content fetched under the old one.
+        /// </para>
+        ///
+        /// <para>
+        /// The object name is invalidated by target as well, so derived entries -
+        /// listings, analyses - that do not name the mutated object in their arguments
+        /// cannot survive it. An unknown or blank alias falls back to the empty scope,
+        /// the store's whole-KB invalidation, because a change we cannot attribute to a
+        /// KB is not safe to attribute to a narrower one.
+        /// </para>
+        /// </summary>
+        internal static long InvalidateCacheScopeForResourceUpdate(string? kbAlias, string? objectName)
+        {
+            string scope = string.IsNullOrWhiteSpace(kbAlias) ? string.Empty : kbAlias!.Trim();
+            long revision = _semanticCache.InvalidateScope(scope, out int removed);
+
+            if (!string.IsNullOrWhiteSpace(scope) && !string.IsNullOrWhiteSpace(objectName))
+            {
+                // InvalidateScope already cleared this KB's direct reads. This pass
+                // exists for the derived entries that survive a scoped clear.
+                int derived = _semanticCache.RemoveByTarget(scope, objectName!);
+                Log($"[Gateway] resource-updated '{objectName}' invalidated KB scope '{scope}': {removed} direct + {derived} derived entries, revision -> {revision}.");
+            }
+            else
+            {
+                Log($"[Gateway] resource-updated '{objectName}' invalidated scope '{scope}': {removed} entries, revision -> {revision}.");
+            }
+
+            return revision;
+        }
+
         internal static JObject RewriteProgressTokenForClient(JObject workerEnvelope, JToken clientProgressToken)
         {
             if (workerEnvelope == null) throw new ArgumentNullException(nameof(workerEnvelope));
@@ -368,13 +411,27 @@ namespace GxMcp.Gateway
                         var p = val["params"];
                         string name = p?["name"]?.ToString() ?? "unknown";
                         Log($"[Gateway] Notification from Worker: Resource {name} updated externally.");
+
+                        // Issue #336: this handler read the KB's current revision and
+                        // broadcast it without ever advancing it. The notification says
+                        // the object changed - through another client, or through the IDE
+                        // - so the KB's cached reads were stale, yet they stayed eligible
+                        // and the broadcast carried the pre-change revision, which told
+                        // subscribers nothing had moved. Invalidate and advance the
+                        // affected scope FIRST, then broadcast the revision it produced,
+                        // so a subsequent read cannot be served from the old entry and a
+                        // subscriber comparing revisions learns something changed.
+                        //
+                        // Scope is per-KB on purpose: wiping the whole store would also
+                        // discard unrelated KBs, which is both a performance regression
+                        // and a way for one KB's edit to hide another's cached state.
+                        long updatedRevision = InvalidateCacheScopeForResourceUpdate(workerAlias, name);
+
                         BroadcastResourceUpdated(
                             $"genexus://objects/{name}",
                             "external_kb_change",
                             workerAlias,
-                            string.IsNullOrWhiteSpace(workerAlias)
-                                ? (long?)null
-                                : _semanticCache.GetRevision(workerAlias!));
+                            string.IsNullOrWhiteSpace(workerAlias) ? (long?)null : updatedRevision);
                     }
                     else if (method == "notifications/progress" || method == "notifications/message")
                     {

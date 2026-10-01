@@ -538,11 +538,78 @@ namespace GxMcp.Worker.Services
                 // unchanged. Preserve its exact bytes instead of normalizing again.
                 if (noContentChange) updatedSource = workSource;
 
-                // Reject K2BTools designer-owned/protected changes at the patch
-                // boundary, before dry-run reporting or either Events/visual save
-                // path can be reached. This complements the canonical writer
-                // guard and keeps requireObjectSave from bypassing it.
-                KBObject patchObject = _objectService.FindObject(target, typeFilter);
+                // Resolved once: both the K2B designer guard and the PatternInstance
+                // structural preflight below need it, and resolving twice would let
+                // them disagree about which object is being written.
+                KBObject patchObjectForTarget = _objectService.FindObject(target, typeFilter);
+                Helpers.PatternXmlEditPlan patchPlanEvidence = null;
+
+                // Issue #350: a PatternInstance patch dry run reported Applied for
+                // payloads the write path's structural preflight refuses. The patch
+                // branch returned its dry-run envelope before reaching the plan, so
+                // `mode=patch` previewed success for an edit that `mode=full` on the
+                // same bytes rejects as PatternStructureChangeUnsupported - the agent
+                // got a green preview and a red save for one logical change.
+                //
+                // Run the same preflight the write path uses, on the same current XML
+                // and the same ToSdkLineEndings normalization the write would produce,
+                // so the preview cannot approve something the write will refuse. Only
+                // PatternInstance is gated: PatternVirtual keeps its structural
+                // authoring contract, and the grid/WebComponent exceptions the plan
+                // already encodes are unchanged.
+                if (string.Equals(partName, "PatternInstance", StringComparison.OrdinalIgnoreCase)
+                    && _patternAnalysisService != null
+                    && patchObjectForTarget != null)
+                {
+                    string patternCurrentXml;
+                    try
+                    {
+                        patternCurrentXml = _patternAnalysisService.ReadPatternPartXml(
+                            patchObjectForTarget, partName, null, out _, out _, out JObject patternDiagnostic);
+                        if (patternDiagnostic != null)
+                            return AttachTimings(
+                                Models.McpResponse.Err(
+                                    code: patternDiagnostic["code"]?.ToString() ?? "PatternInstanceResolutionFailed",
+                                    message: patternDiagnostic["message"]?.ToString() ?? "The PatternInstance could not be resolved for this target.",
+                                    target: target),
+                                readMs, patchMs, 0, sourceFromCache);
+                    }
+                    catch (Exception ex)
+                    {
+                        return AttachTimings(
+                            Models.McpResponse.Err(
+                                code: "PatternReadFailed",
+                                message: "Pattern precheck failed: " + ex.Message,
+                                target: target),
+                            readMs, patchMs, 0, sourceFromCache);
+                    }
+
+                    var patchPlan = Helpers.PatternXmlEditPlan.Create(
+                        patternCurrentXml, WriteService.ToSdkPatternLineEndings(updatedSource),
+                        allowGridStructure: false);
+                    if (patchPlan.ErrorCode != null)
+                        return AttachTimings(
+                            Models.McpResponse.Err(
+                                code: patchPlan.ErrorCode,
+                                message: "Pattern edit rejected: " + patchPlan.Error
+                                    + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",
+                                hint: "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes.",
+                                target: target,
+                                extra: new JObject
+                                {
+                                    ["part"] = partName,
+                                    ["operation"] = normalizedOperation,
+                                    ["matchCount"] = matchCount,
+                                    ["saved"] = false,
+                                    ["persisted"] = false,
+                                    ["verified"] = false,
+                                    ["structuralPreflight"] = "PatternXmlEditPlan"
+                                }),
+                            readMs, patchMs, 0, sourceFromCache);
+                    patchPlanEvidence = patchPlan;
+                }
+
+                KBObject patchObject = patchObjectForTarget;
                 if (patchObject != null
                     && K2bWebPanelDesignerService.TryBuildEditRejection(
                         patchObject, partName, updatedSource, out string k2bDesignerRejection))
@@ -660,6 +727,15 @@ namespace GxMcp.Worker.Services
                             dryRunBody["matchedCount"] = matchCount;
                         }
                         dryRunBody["implicitOperations"] = new JArray();
+                        // Issue #350: say which preflight ran. Without this the preview
+                        // is indistinguishable from a textual-only check, which is the
+                        // ambiguity that let a structural payload read as Approved.
+                        if (patchPlanEvidence != null)
+                        {
+                            dryRunBody["structuralPreflight"] = "PatternXmlEditPlan";
+                            dryRunBody["structuralChanges"] = patchPlanEvidence.Changes;
+                            dryRunBody["metadataPreserved"] = true;
+                        }
                         if (scopeEvidence != null) dryRunBody["scope"] = scopeEvidence;
                         if (indentationEvidence != null) dryRunBody["indentation"] = indentationEvidence;
                         if (!string.IsNullOrWhiteSpace(snapshotVersion)) dryRunBody["versionToken"] = snapshotVersion;
