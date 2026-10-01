@@ -105,6 +105,33 @@ namespace GxMcp.Worker.Services
         // Test observability: per-shard write counter so a shard-isolation test can assert
         // that dirtying one entry only rewrites that entry's shard file.
         private readonly ConcurrentDictionary<int, long> _shardWriteCounts = new ConcurrentDictionary<int, long>();
+
+        // Issue #345: publication I/O accounting, kept apart from SDK timings so the
+        // cost of a publication can be read directly rather than inferred. `_shardReuseBytes`
+        // is what the new generation inherited instead of copying; `_shardLinkCounts` is
+        // how many of those were hard-linked rather than copied, so a filesystem without
+        // link support is visible as a fallback instead of a silent regression.
+        private readonly ConcurrentDictionary<int, long> _shardReuseBytes = new ConcurrentDictionary<int, long>();
+        private readonly ConcurrentDictionary<int, long> _shardLinkCounts = new ConcurrentDictionary<int, long>();
+        private readonly ConcurrentDictionary<int, long> _shardHashCarryForward = new ConcurrentDictionary<int, long>();
+
+        /// <summary>Total bytes a publication inherited rather than re-serialized. Observability.</summary>
+        internal long ShardReuseBytes => _shardReuseBytes.Values.Sum();
+
+        /// <summary>Publications whose manifest carried hashes forward instead of recomputing them.</summary>
+        internal long ShardHashCarryForwardCount => _shardHashCarryForward.Values.Sum();
+
+        /// <summary>Shards hard-linked rather than copied in the most recent publications.</summary>
+        internal long ShardLinkedCount => _shardLinkCounts.Values.Sum();
+
+        private int _lastPublicationShardsWritten;
+        private int _lastPublicationShardsReused;
+
+        /// <summary>Shards re-serialized by the most recent publication.</summary>
+        internal int LastPublicationShardsWritten => System.Threading.Volatile.Read(ref _lastPublicationShardsWritten);
+
+        /// <summary>Shards inherited from the previous generation by the most recent publication.</summary>
+        internal int LastPublicationShardsReused => System.Threading.Volatile.Read(ref _lastPublicationShardsReused);
         // Mutations observed while the lite walk builds its replacement list.
         private readonly ConcurrentDictionary<string, byte> _liteWalkMutations = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, byte> _liteWalkRemovals = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
@@ -2403,11 +2430,23 @@ namespace GxMcp.Worker.Services
                     Directory.CreateDirectory(tempSlot);
                     var sourceDir = currentSlot ?? _certifiedSlotPath;
                     if (sourceDir == null && File.Exists(_shardManifestPath)) sourceDir = _shardDirPath;
-                var buckets = new Dictionary<int, Dictionary<string, SearchIndex.IndexEntry>>();
-                foreach (var id in Enumerable.Range(0, ShardCount))
-                    buckets[id] = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
+                // Issue #345: only dirty shards are serialized, so only dirty shards are
+                // bucketed. This used to build a dictionary per shard over the whole
+                // snapshot and then discard every clean one - so a one-object change
+                // paid O(total objects) in dictionary inserts and allocations before
+                // writing a single byte. The entry -> shard mapping is the same work
+                // either way; what is removed is the per-shard bucketing of content
+                // that is never read.
+                var dirtySet = new HashSet<int>(idsToWrite);
+                var buckets = new Dictionary<int, Dictionary<string, SearchIndex.IndexEntry>>(dirtySet.Count);
                 foreach (var kv in snapshot.Objects)
-                    buckets[ShardOf(kv.Key)][kv.Key] = kv.Value;
+                {
+                    int shardId = ShardOf(kv.Key);
+                    if (!dirtySet.Contains(shardId)) continue;
+                    if (!buckets.TryGetValue(shardId, out var bucket))
+                        buckets[shardId] = bucket = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
+                    bucket[kv.Key] = kv.Value;
+                }
 
                 var settings = new Newtonsoft.Json.JsonSerializerSettings {
                     NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore,
@@ -2415,24 +2454,64 @@ namespace GxMcp.Worker.Services
                     Formatting = Newtonsoft.Json.Formatting.None
                 };
                 var serializer = Newtonsoft.Json.JsonSerializer.Create(settings);
+                long reusedBytes = 0;
+                int linkedShards = 0;
+                int copiedShards = 0;
                 foreach (int id in Enumerable.Range(0, ShardCount))
                 {
                     string destination = Path.Combine(tempSlot, string.Format("shard_{0:00}.json.gz", id));
                     string previous = sourceDir == null ? null : Path.Combine(sourceDir, string.Format("shard_{0:00}.json.gz", id));
-                    if (!idsToWrite.Contains(id) && previous != null && File.Exists(previous))
+                    if (!dirtySet.Contains(id) && previous != null && File.Exists(previous))
                     {
-                        File.Copy(previous, destination);
-                        continue;
+                        // Issue #345: reuse the previous generation's bytes instead of
+                        // copying them. A hard link records the reference in the
+                        // filesystem, so an unchanged shard costs no data copy and no
+                        // extra disk - which is the "immutable shard reference" the
+                        // design discussion asks for, expressed without changing the
+                        // on-disk format at all.
+                        //
+                        // Safe because a shard is never modified in place: it is always
+                        // written with File.Create into a fresh temp directory, so the
+                        // two generations share an inode but only ever read it. The
+                        // generation sweep below deletes one link per shard and the
+                        // survivor keeps the data alive.
+                        //
+                        // Any failure - cross-volume, filesystem without links, a
+                        // sharing violation - falls back to a copy, so this can only
+                        // ever be slower than before, never incorrect.
+                        if (TryLinkOrCopy(previous, destination, out long bytes, out bool linked))
+                        {
+                            reusedBytes += bytes;
+                            if (linked) linkedShards++; else copiedShards++;
+                            _shardReuseBytes.AddOrUpdate(id, bytes, (k, v) => v + bytes);
+                            _shardLinkCounts.AddOrUpdate(id, linked ? 1 : 0, (k, v) => v + (linked ? 1 : 0));
+                            continue;
+                        }
                     }
+                    if (!buckets.TryGetValue(id, out var bucket))
+                        bucket = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
                     using (var fs = File.Create(destination))
                     using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
                     using (var writer = new StreamWriter(gz, new UTF8Encoding(false)))
                     using (var jsonWriter = new Newtonsoft.Json.JsonTextWriter(writer))
-                        serializer.Serialize(jsonWriter, buckets[id]);
-                    if (idsToWrite.Contains(id)) _shardWriteCounts.AddOrUpdate(id, 1, (k, v) => v + 1);
+                        serializer.Serialize(jsonWriter, bucket);
+                    if (dirtySet.Contains(id)) _shardWriteCounts.AddOrUpdate(id, 1, (k, v) => v + 1);
                 }
 
-                WriteShardManifestAt(tempSlot, snapshot.Objects.Count);
+                // Issue #345: reuse the previous generation's manifest hashes for the
+                // shards that were reused. Their bytes are identical - that is the
+                // premise of the reuse - so re-reading and SHA-256-ing every shard to
+                // rediscover a known value was the largest remaining cost, and it grew
+                // with total index size on every publication.
+                WriteShardManifestAt(tempSlot, snapshot.Objects.Count,
+                    sourceDir, dirtySet);
+                System.Threading.Volatile.Write(ref _lastPublicationShardsWritten, dirtySet.Count);
+                System.Threading.Volatile.Write(ref _lastPublicationShardsReused, linkedShards + copiedShards);
+                if (reusedBytes > 0 || linkedShards > 0 || copiedShards > 0)
+                {
+                    Logger.Info($"[SNAPSHOT] generation {nextGeneration}: wrote {dirtySet.Count}/{ShardCount} shards, "
+                        + $"reused {reusedBytes} bytes ({linkedShards} linked, {copiedShards} copied).");
+                }
                 // The previous sidecar is a conservative lower bound for every new
                 // generation: the body contains the mutation, while GetKeys(previousHwm)
                 // will replay anything observed after that baseline on the next open.
@@ -2473,17 +2552,152 @@ namespace GxMcp.Worker.Services
             internal StaleSnapshotPublicationException(string message) : base(message) { }
         }
 
-        private void WriteShardManifestAt(string directory, int objectCount)
+        /// <summary>
+        /// Creates a hard link. Returns false rather than throwing for the ordinary
+        /// "this volume/filesystem cannot do that" case, so the caller can copy instead;
+        /// genuine faults still surface as exceptions.
+        /// </summary>
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
+
+        private static bool CreateHardLinkNative(string destination, string source)
         {
+            // The platform can decline a link for reasons that have nothing to do with
+            // whether links are supported here - a momentarily locked source, an indexer
+            // or scanner holding a handle - and CreateHardLinkW reports those the same way
+            // it reports an unsupported filesystem. One short retry separates "not right
+            // now" from "not here at all", so a transient refusal does not silently
+            // degrade every publication to a full copy.
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    if (CreateHardLinkW(destination, source, IntPtr.Zero)) return true;
+                    // A destination that already exists means a previous attempt landed.
+                    if (File.Exists(destination)) return true;
+                }
+                catch (DllNotFoundException) { return false; }
+                catch (EntryPointNotFoundException) { return false; }
+                catch { /* transient handle contention; retry once */ }
+
+                if (attempt == 0) System.Threading.Thread.Sleep(15);
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Links <paramref name="source"/> to <paramref name="destination"/>, falling
+        /// back to a copy. Returns false only when the destination could not be produced
+        /// at all, which is the signal to serialize the shard from the snapshot.
+        /// </summary>
+        private static bool TryLinkOrCopy(string source, string destination, out long bytes, out bool linked)
+        {
+            bytes = 0;
+            linked = false;
+            try { bytes = new FileInfo(source).Length; } catch { bytes = 0; }
+
+            try
+            {
+                // .NET Framework 4.8 has no File.CreateHardLink (that arrived in .NET 6),
+                // so this is the platform call underneath it. It fails cleanly on
+                // volumes or filesystems that cannot support links, which is the signal
+                // to copy instead.
+                if (CreateHardLinkNative(destination, source))
+                {
+                    linked = true;
+                    return true;
+                }
+            }
+            catch (Exception linkFailure)
+            {
+                Logger.Debug("[SNAPSHOT] hard link unavailable, copying instead: " + linkFailure.Message);
+            }
+
+            try
+            {
+                File.Copy(source, destination);
+                return true;
+            }
+            catch (Exception copyFailure)
+            {
+                Logger.Warn("[SNAPSHOT] could not reuse shard " + Path.GetFileName(source)
+                    + ": " + copyFailure.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Writes the generation manifest.
+        ///
+        /// <para>
+        /// Issue #345. This used to SHA-256 every shard on every publication. For the
+        /// shards that were reused byte-for-byte that value is already known - it is in
+        /// the previous generation's manifest - so it is carried forward instead of being
+        /// recomputed. The manifest format is unchanged, so older readers and older
+        /// generations keep loading; this is not a format migration.
+        /// </para>
+        /// </summary>
+        /// <param name="directory">The generation being published.</param>
+        /// <param name="objectCount">Object count for the manifest.</param>
+        /// <param name="previousDirectory">
+        /// The generation the reused shards came from, or null when there is none.
+        /// </param>
+        /// <param name="rewrittenShards">Shards whose bytes were produced in this publication.</param>
+        private void WriteShardManifestAt(string directory, int objectCount,
+            string previousDirectory = null, ISet<int> rewrittenShards = null)
+        {
+            // Only trust a carried-forward hash when the previous manifest actually
+            // recorded one for that shard. A missing or unreadable entry falls back to
+            // hashing, because a manifest that claims a hash it cannot substantiate is
+            // worse than a slower publication.
+            Dictionary<int, string> previousHashes = null;
+            if (!string.IsNullOrEmpty(previousDirectory))
+            {
+                try
+                {
+                    string previousManifest = Path.Combine(previousDirectory, "manifest.json");
+                    if (File.Exists(previousManifest))
+                    {
+                        var parsed = Newtonsoft.Json.JsonConvert.DeserializeObject<ShardManifest>(
+                            File.ReadAllText(previousManifest, Encoding.UTF8));
+                        if (parsed?.ShardHashes != null && parsed.ShardHashes.Count > 0)
+                            previousHashes = new Dictionary<int, string>(parsed.ShardHashes);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[SNAPSHOT] previous manifest unreadable; hashing all shards: " + ex.Message);
+                }
+            }
+
+            var hashes = new Dictionary<int, string>();
+            int carriedForward = 0;
+            foreach (int id in Enumerable.Range(0, ShardCount))
+            {
+                if (rewrittenShards != null && !rewrittenShards.Contains(id)
+                    && previousHashes != null
+                    && previousHashes.TryGetValue(id, out string known)
+                    && !string.IsNullOrWhiteSpace(known))
+                {
+                    hashes[id] = known;
+                    carriedForward++;
+                    continue;
+                }
+                hashes[id] = GetFileSha256(Path.Combine(directory, string.Format("shard_{0:00}.json.gz", id)));
+            }
+
             var manifest = new ShardManifest
             {
                 ShardCount = ShardCount,
                 SchemaVersion = CurrentSchemaVersion,
                 ObjectCount = objectCount,
                 CapturedAtUtc = DateTime.UtcNow.ToString("o"),
-                ShardHashes = Enumerable.Range(0, ShardCount).ToDictionary(id => id, id => GetFileSha256(Path.Combine(directory, string.Format("shard_{0:00}.json.gz", id))))
+                ShardHashes = hashes
             };
             File.WriteAllText(Path.Combine(directory, "manifest.json"), Newtonsoft.Json.JsonConvert.SerializeObject(manifest), new UTF8Encoding(false));
+
+            if (carriedForward > 0)
+                _shardHashCarryForward.AddOrUpdate(carriedForward, 1, (k, v) => v + 1);
         }
 
         // Returns true only after publishing the captured generation. Failures retain
