@@ -193,6 +193,9 @@ namespace GxMcp.Worker.Services
                 // new content's trigrams were the previous content's, and subtract the
                 // wrong postings instead of removing the right ones.
                 _trigramsByRecord.Clear();
+                // Issue #339: same for the freshness certifications - they describe the
+                // store that was just reset.
+                _certifications.Clear();
                 _initialized = false;
                 // Issue #338: clearing the catalog invalidates the incremental total.
                 // Without this the next Put would add its delta to a counter still
@@ -496,6 +499,11 @@ namespace GxMcp.Worker.Services
                 if (replaced)
                     ApplyAccountingDelta(-previous.FileBytes);
                 _records[key] = summary;
+                // Issue #339: the body was just replaced, so any certification for the
+                // previous content no longer describes it. Dropping it here rather than
+                // relying on the window is what makes a same-size replacement visible
+                // immediately instead of up to a window later.
+                _certifications.TryRemove(key, out _);
                 ApplyAccountingDelta(fileBytes);
                 MarkCatalogDirty();
                 EnforceStorageBudget();
@@ -523,6 +531,138 @@ namespace GxMcp.Worker.Services
             return valid;
         }
 
+        /// <summary>
+        /// A prior validation of one record, remembered so it does not have to be redone.
+        ///
+        /// <para>
+        /// Issue #339. <c>IsPartStoredAndFresh</c> reached
+        /// <c>TryReadStoredRecord</c>, which decompresses the body and checks its hash -
+        /// and <c>GetCoverage</c> does that for every entry of the query's entry set
+        /// before the scan starts, discarding the content it just read. So a narrow query,
+        /// or a warm reopen, paid a full read of every unrelated body while holding a
+        /// boolean.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>The trade-off, stated rather than hidden.</b> Certifying from file metadata
+        /// alone would not be safe: a body corrupted in place with identical length and
+        /// timestamp would agree with every recorded field and be reported as certified.
+        /// That is why this is not a metadata-only trust - the certification is also
+        /// bounded in age by <see cref="FreshnessCertificationWindow"/>, so the same body
+        /// is re-read and re-hashed periodically and a metadata-only agreement can never
+        /// be older than that window. A change of length or timestamp invalidates
+        /// immediately, at any age.
+        /// </para>
+        /// </summary>
+        internal sealed class FreshnessCertification
+        {
+            public long FileBytes { get; set; }
+            public long LastWriteUtcTicks { get; set; }
+            public string ContentHash { get; set; } = string.Empty;
+            public DateTime? StoredLastUpdate { get; set; }
+            public long CertifiedAtTicks { get; set; }
+        }
+
+        /// <summary>
+        /// How long a certification may stand without re-reading the body. Bounds both
+        /// the I/O of a query burst and how long a same-metadata corruption can go
+        /// unnoticed.
+        /// </summary>
+        internal static readonly TimeSpan FreshnessCertificationWindow = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Clock seam for the certification window. Issue #339.
+        ///
+        /// <para>
+        /// The window is the safety half of this optimisation, and a safety property that
+        /// can only be tested by waiting 30 seconds - or by mutating private state through
+        /// reflection - is one that does not get tested. The seam makes "this
+        /// certification is now older than the window" expressible directly.
+        /// </para>
+        /// </summary>
+        internal static Func<DateTime> CertificationClock = () => DateTime.UtcNow;
+
+
+        private readonly ConcurrentDictionary<string, FreshnessCertification> _certifications =
+            new ConcurrentDictionary<string, FreshnessCertification>(StringComparer.OrdinalIgnoreCase);
+
+        // Issue #339: read/validation counters. The cost being fixed is I/O, so the
+        // guard has to measure I/O rather than assert that a cache exists.
+        private long _contentValidations;
+        private long _certificationHits;
+        private long _certificationMisses;
+
+        /// <summary>Full body reads performed by the freshness path. Baseline for the bounded-read property.</summary>
+        internal long ContentValidations => Interlocked.Read(ref _contentValidations);
+
+        /// <summary>Times a freshness check was answered from a prior certification, with no body read.</summary>
+        internal long CertificationHits => Interlocked.Read(ref _certificationHits);
+
+        /// <summary>Times a freshness check could not use a certification and had to read the body.</summary>
+        internal long CertificationMisses => Interlocked.Read(ref _certificationMisses);
+
+        /// <summary>Certifications currently held.</summary>
+        internal int CertificationCount => _certifications.Count;
+
+        /// <summary>Drops one record's certification. Called wherever its content can change.</summary>
+        internal void InvalidateCertification(string guid, string partName)
+            => _certifications.TryRemove(MakeKey(guid, partName), out _);
+
+        private bool TryUseCertification(
+            string key, string relativePath, RecordSummary summary, DateTime nowUtc)
+        {
+            if (!_certifications.TryGetValue(key, out var cert)) return false;
+
+            var info = new FileInfo(Path.Combine(_storeDirectory, relativePath));
+            if (!info.Exists) return false;
+            if (cert.FileBytes != info.Length) return false;
+            if (cert.LastWriteUtcTicks != info.LastWriteTimeUtc.Ticks) return false;
+            if (!string.Equals(cert.ContentHash, summary.ContentHash, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (cert.StoredLastUpdate != summary.LastUpdate) return false;
+            if (nowUtc.Ticks - cert.CertifiedAtTicks > FreshnessCertificationWindow.Ticks) return false;
+
+            return true;
+        }
+
+        /// <summary>The certification clock, in one place so no call site can bypass the seam.</summary>
+        private static DateTime CertificationNow() => CertificationClock();
+
+        /// <summary>Records a validation of one body against this exact file identity.</summary>
+        private void RecordCertification(string key, string relativePath, RecordSummary summary, DateTime nowUtc)
+        {
+            try
+            {
+                var info = new FileInfo(Path.Combine(_storeDirectory, relativePath));
+                if (!info.Exists) return;
+                _certifications[key] = new FreshnessCertification
+                {
+                    FileBytes = info.Length,
+                    LastWriteUtcTicks = info.LastWriteTimeUtc.Ticks,
+                    ContentHash = summary.ContentHash ?? string.Empty,
+                    StoredLastUpdate = summary.LastUpdate,
+                    CertifiedAtTicks = nowUtc.Ticks
+                };
+            }
+            catch
+            {
+                // A certification is an optimisation. Failing to remember one costs a
+                // re-read later, so it must never fail the caller's answer.
+            }
+        }
+
+        /// <summary>
+        /// Returns the stored body <em>and</em> whether it is fresh.
+        ///
+        /// <para>
+        /// Issue #339. This always reads the content, and must keep doing so: callers use
+        /// <paramref name="source"/> - the search scan promotes it into the index - so
+        /// answering "fresh" from a certification while leaving the body unread would
+        /// report a hit with nothing behind it. The certification is recorded as a side
+        /// effect here, so the boolean-only probes that do not need the content get to
+        /// skip the read next time.
+        /// </para>
+        /// </summary>
         public bool TryGetStoredAndFresh(SearchIndex.IndexEntry entry, string part, out string source)
         {
             source = null;
@@ -530,24 +670,102 @@ namespace GxMcp.Worker.Services
                 || string.IsNullOrWhiteSpace(part))
                 return false;
 
-            RecordReadState state;
-            string detail;
             string normalizedPart = ObjectService.NormalizeRawSourcePart(
                 ObjectService.ResolveSearchPartName(entry.Type, part));
+
+            RecordReadState state;
+            string detail;
+            // Counted here as well as in the boolean probe: the counter exists to measure
+            // body reads, and this path reads one on every call by design.
+            Interlocked.Increment(ref _contentValidations);
             if (!TryReadStoredRecord(entry.Guid, normalizedPart, out source, out state, out detail))
                 return false;
-            if (!_records.TryGetValue(MakeKey(entry.Guid, normalizedPart), out var summary))
+            if (!TryCertifyAfterRead(entry, normalizedPart))
             {
                 source = null;
                 return false;
             }
-            if (summary.LastUpdate.HasValue
+            return true;
+        }
+
+        /// <summary>
+        /// Compares the index entry's timestamp against the stored record. Split out so
+        /// the certification fast path can answer freshness without reading the body.
+        /// </summary>
+        private static bool IndexEntryIsStale(SearchIndex.IndexEntry entry, RecordSummary summary)
+            => summary.LastUpdate.HasValue
                 && entry.LastUpdate > DateTime.MinValue
-                && entry.LastUpdate > summary.LastUpdate.Value.AddSeconds(2))
+                && entry.LastUpdate > summary.LastUpdate.Value.AddSeconds(2);
+
+        private bool TryCertifyAfterRead(SearchIndex.IndexEntry entry, string normalizedPart)
+        {
+            if (!_records.TryGetValue(MakeKey(entry.Guid, normalizedPart), out var summary))
+                return false;
+            if (IndexEntryIsStale(entry, summary)) return false;
+            RecordCertification(MakeKey(entry.Guid, normalizedPart), summary.RelativeFilePath, summary, DateTime.UtcNow);
+            return true;
+        }
+
+        /// <summary>
+        /// Answers "is this part stored and fresh?" without needing the content.
+        ///
+        /// <para>
+        /// Issue #339. This is the coverage and freshness-probe path, and it used to reach
+        /// <c>TryReadStoredRecord</c> - decompressing the body and checking its hash -
+        /// purely to produce a boolean that <c>GetCoverage</c> then discarded, for every
+        /// entry of the query's entry set before the scan started. A body already
+        /// validated against this exact file identity and catalog hash, still inside the
+        /// certification window, is answered from that record instead.
+        /// </para>
+        ///
+        /// <para>
+        /// Deliberately separate from <see cref="TryGetStoredAndFresh"/>, whose callers
+        /// need the content. Conflating the two would report a hit with nothing behind it.
+        /// </para>
+        /// </summary>
+        public bool IsStoredAndFreshCached(SearchIndex.IndexEntry entry, string part)
+        {
+            if (entry == null || string.IsNullOrWhiteSpace(entry.Guid)
+                || string.IsNullOrWhiteSpace(part))
+                return false;
+
+            string normalizedPart = ObjectService.NormalizeRawSourcePart(
+                ObjectService.ResolveSearchPartName(entry.Type, part));
+            string key = MakeKey(entry.Guid, normalizedPart);
+
+            if (!_records.TryGetValue(key, out var summary))
             {
-                source = null;
+                Interlocked.Increment(ref _certificationMisses);
                 return false;
             }
+            if (IndexEntryIsStale(entry, summary))
+            {
+                Interlocked.Increment(ref _certificationMisses);
+                return false;
+            }
+
+            if (TryUseCertification(key, summary.RelativeFilePath, summary, CertificationNow()))
+            {
+                Interlocked.Increment(ref _certificationHits);
+                return true;
+            }
+
+            Interlocked.Increment(ref _certificationMisses);
+            Interlocked.Increment(ref _contentValidations);
+
+            // Issue #339: a certification that just failed its checks describes content
+            // that is no longer current. Leaving it in place would re-examine it on every
+            // subsequent probe - correct, but it makes CertificationCount overstate what
+            // is actually usable and turns a stale record into a per-probe tax.
+            _certifications.TryRemove(key, out _);
+
+            string ignored;
+            if (!TryReadStoredRecord(entry.Guid, normalizedPart, out ignored, out _, out _))
+                return false;
+            // Only a body that actually validated earns a certification. Caching the
+            // failures too would make a transient read error look like a permanent
+            // "not stored" and silently shrink coverage.
+            RecordCertification(key, summary.RelativeFilePath, summary, CertificationNow());
             return true;
         }
 
@@ -565,11 +783,13 @@ namespace GxMcp.Worker.Services
 
         private bool IsPartStoredAndFresh(SearchIndex.IndexEntry entry, string part)
         {
-            string source;
-            // The summary is only an index.  Freshness is certified by reading
-            // and validating the concrete per-part record, including its hash,
-            // identity, timestamp and file bounds.
-            return TryGetStoredAndFresh(entry, part, out source);
+            // Issue #339: this is a boolean probe whose content was always discarded, so
+            // it now answers from a certification when one is available. The catalog
+            // summary is still only an index - a fresh certification means this exact
+            // body, against this exact file identity and catalog hash, was read and
+            // validated inside the certification window. That is not the same as trusting
+            // catalog metadata, which is what would be unsafe here.
+            return IsStoredAndFreshCached(entry, part);
         }
 
         public SourceStoreCoverage GetCoverage(IEnumerable<SearchIndex.IndexEntry> entries, List<string> scope)
@@ -907,6 +1127,9 @@ namespace GxMcp.Worker.Services
             // survive into it. A leftover entry would make the first replacement of a
             // loaded record subtract the wrong postings.
             _trigramsByRecord.Clear();
+                // Issue #339: same for the freshness certifications - they describe the
+                // store that was just reset.
+                _certifications.Clear();
             if (!File.Exists(catalogPath)) return;
 
             try
@@ -960,6 +1183,9 @@ namespace GxMcp.Worker.Services
                                 StoredAtUtc = s
                             };
                             _records[canonicalKey] = summary;
+                            // Issue #339: the catalog was rebuilt from disk, so every
+                            // certification refers to a previous process's validation.
+                            _certifications.TryRemove(canonicalKey, out _);
                             // Issue #338: the catalog load rebuilt the record set, so
                             // the incremental total describes the previous set. Force
                             // one reconciliation pass rather than trying to patch a
@@ -1020,6 +1246,10 @@ namespace GxMcp.Worker.Services
                     // left the trigram postings, so an evicted record stayed reachable
                     // through the index and the stale keys accumulated across evictions.
                     RemoveTrigramPostings(key);
+                    // Issue #339: and its certification, which now describes a file that
+                    // no longer exists. The FileInfo check would catch it, but leaving a
+                    // dead entry behind makes the count meaningless as a diagnostic.
+                    _certifications.TryRemove(key, out _);
                     try
                     {
                         string fullPath = Path.Combine(_storeDirectory, rec.RelativeFilePath);
