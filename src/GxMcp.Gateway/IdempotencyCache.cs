@@ -167,6 +167,20 @@ namespace GxMcp.Gateway
                     FailJournal(kbPath, tool, key, payloadHash);
                     return ex.Result;
                 }
+                catch (Exception ex) when (PreDispatchFailureClassifier.Is(ex))
+                {
+                    // The mutation provably never reached the SDK, so the 'started'
+                    // fence is describing a write that did not happen. Clear it;
+                    // leaving it poisons this key for the life of the process with a
+                    // false operation_unknown. The contrast is named in
+                    // PreDispatchFailureClassifier: a failure raised AFTER dispatch
+                    // deliberately keeps the fence, because "may have committed" is
+                    // then the truth.
+                    FailJournal(kbPath, tool, key, payloadHash);
+                    // The caller still sees the original failure. This branch only
+                    // corrects the durable journal state, never the response.
+                    throw;
+                }
             }
             finally
             {
@@ -321,5 +335,76 @@ namespace GxMcp.Gateway
                 public LinkedListNode<(string, string)> Node = null!;
             }
         }
+    }
+
+    /// <summary>
+    /// Decides whether an exception escaping a keyed mutation factory means the
+    /// mutation <em>provably did not run</em>, so the durable journal's
+    /// <c>started</c> fence should be cleared.
+    ///
+    /// <para>
+    /// <see cref="IdempotencyCache.GetOrCompute"/> writes a <c>started</c> record
+    /// before running the factory and only clears it on <c>Complete</c> or on
+    /// <see cref="ErrorNotCacheable"/>. Any other exception used to escape with
+    /// the record still <c>started</c>, and the next attempt under the same key
+    /// then mapped it to <c>UnknownAfterRestart</c> — reported to the caller as
+    /// <c>operation_unknown</c>, "a previous process may have committed this
+    /// mutation".
+    /// </para>
+    ///
+    /// <para>
+    /// That fence is correct for a genuinely unknown outcome and a lie for a
+    /// known one. A pool that is full, an unresolvable KB, or a rejected argument
+    /// never reaches the SDK, so no write happened and the key should stay usable.
+    /// Membership here is deliberately narrow: a too-broad predicate deletes the
+    /// fence for a write that may have committed, which is strictly worse than
+    /// the false <c>operation_unknown</c> this fixes.
+    /// </para>
+    ///
+    /// <para>
+    /// This is a pure function of the exception type, kept as a named predicate so
+    /// it can be exercised without a live Worker — the same reason
+    /// <see cref="WorkerLivenessClassifier"/> is its own type.
+    /// </para>
+    /// </summary>
+    internal static class PreDispatchFailureClassifier
+    {
+        /// <summary>
+        /// True when <paramref name="error"/> means the keyed mutation provably
+        /// never reached a worker.
+        /// </summary>
+        /// <remarks>
+        /// Membership is derived from the exception hierarchy and the call sites,
+        /// not assumed. Add a new exception type here only when it can be raised
+        /// <em>before</em> a worker command is written to the pipe, and say so in
+        /// the addition — a later author needs to know this list exists.
+        /// </remarks>
+        internal static bool Is(Exception? error)
+            => error is UsageException
+                // Gateway-side only: GxMcp.Worker has no reference to GxMcp.Gateway
+                // and declares its own UsageException, so worker-side usage errors
+                // cross the pipe as JSON error envelopes and can never match here.
+                // Every Gateway-side UsageException is raised by validation, KB
+                // context, or journal state before dispatch.
+                || error is KbResolutionException
+                // A sibling, not a UsageException: declared in KbResolver.cs and
+                // thrown while choosing the KB context, which is definitionally
+                // before a command exists.
+                || error is WorkerPoolFullException;
+
+        // Deliberately NOT classified as pre-dispatch:
+        //
+        //   * OperationCanceledException / TaskCanceledException — a cancellation
+        //     from RequestAborted can arrive either side of dispatch and is
+        //     indistinguishable here, so a cancellation observed after the command
+        //     was written leaves a genuinely unknown outcome. Keeping the fence is
+        //     the safe direction.
+        //   * IdempotencyConflictException — a payload-conflict signal, not a
+        //     dispatch-position signal; it is raised on both sides of the factory.
+        //   * ArgumentException and every other framework exception — the BCL
+        //     raises these from argument marshalling, which happens after the
+        //     command is written. Too broad to classify as pre-dispatch.
+        //   * Anything thrown once the command has been handed to a worker. If the
+        //     outcome is unknown, the fence must stay 'started'.
     }
 }
