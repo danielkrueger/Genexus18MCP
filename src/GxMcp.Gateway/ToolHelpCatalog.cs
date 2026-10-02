@@ -109,6 +109,7 @@ namespace GxMcp.Gateway
                 "## Required\n" +
                 "- Either `name` (single object) **or** `targets` (array) — never both.\n" +
                 "- `mode`: `full` (replace whole part) or `patch` (Replace/Insert_After/Append over a context anchor).\n" +
+                "- Sending `patch` or `operation` without `mode` implies `mode=patch`; combining them with `mode=full` is a `usage_error`. A full write without `content` is rejected with `ContentRequired` (`content=\"\"` clears the part on purpose).\n" +
                 "- `mode: 'ops'` applies semantic operations; for modular objects pass `module` to select the Transaction module.\n" +
                 "- `dryRun: true` first for either mode. A preview is synchronous, never calls Save, and never starts a lifecycle action.\n" +
                 "- `patch={find,replace}` is the abbreviated textual replace form; it is also the only form that accepts the two opt-in protections below. Combining either protection with `operation`, `mode=ops`, `targets[]`, `parts[]`, `Insert_After` or `Append` is rejected before anything is normalized (`ScopeUnsupportedPatchForm` / `IndentationUnsupportedPatchForm`) — a protection is never silently ignored.\n\n" +
