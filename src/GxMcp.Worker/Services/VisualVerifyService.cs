@@ -39,6 +39,17 @@ namespace GxMcp.Worker.Services
             public string StdOut;
             public string StdErr;
             public bool TimedOut;
+
+            /// <summary>
+            /// Set when the shared cmd.exe shim builder refused an argument
+            /// (an unescaped <c>%</c>, a control character, a driver that is not a
+            /// <c>.cmd</c>/<c>.bat</c> shim) and nothing was spawned. A refusal is
+            /// a result, not a crash, and it is reported apart from a driver
+            /// failure so the caller can tell "the browser did not cooperate" from
+            /// "the argument was not safe to pass". <see cref="StdErr"/> names the
+            /// driver and the problem, never the rejected value.
+            /// </summary>
+            public bool ArgumentRefused;
         }
 
         public class DefaultCliRunner : ICliRunner
@@ -53,8 +64,34 @@ namespace GxMcp.Worker.Services
                                    string.Equals(ext, ".com", StringComparison.OrdinalIgnoreCase);
                 if (!isNativeExe)
                 {
-                    // .cmd/.bat/.ps1 shims need cmd.exe + PATHEXT lookup.
-                    psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + fileName + "\" " + arguments + "\"");
+                    // A .cmd/.bat shim is the one interpreter path, so its command
+                    // line is built by the same hardened builder PreviewService
+                    // uses: re-tokenize the logical arguments, refuse an argument
+                    // carrying `%` or a control character, escape the cmd
+                    // metacharacters. Never concatenate one here. The url and the
+                    // screenshot path are caller-derived, so a hand-rolled `/c`
+                    // line would hand them to cmd with variable expansion and
+                    // metacharacter interpretation still live.
+                    string commandLine;
+                    try
+                    {
+                        commandLine = BrowserDriverProcess.BuildShimArguments(
+                            Path.GetFullPath(fileName),
+                            DefaultBrowserDriverInvoker.ParseLegacyArguments(arguments));
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        // Refused, not crashed, and nothing was spawned: Verify's
+                        // caller turns this into its {skipped, reason, error}
+                        // envelope. ex.Message names the problem only.
+                        return new CliResult
+                        {
+                            ExitCode = -1,
+                            StdErr = "driver argument refused for " + fileName + ": " + ex.Message,
+                            ArgumentRefused = true
+                        };
+                    }
+                    psi = new ProcessStartInfo("cmd.exe", commandLine);
                 }
                 else
                 {
@@ -133,6 +170,9 @@ namespace GxMcp.Worker.Services
         internal const int Base64TruncationBytes = 8 * 1024;
         // Cap of 10 baselines per (obj, part) keeps the .gx dir bounded.
         internal const int BaselineRetention = 10;
+        // Skip reason when the shared shim builder refused a driver argument.
+        // Distinct from CaptureFailed: nothing ran, and the caller is told why.
+        internal const string ArgumentRefusedReason = "DriverArgumentRefused";
         // Default total budget per verify call — 90 s open + 15 s screenshot.
         private const int DefaultCliTimeoutMs = 90000;
 
@@ -242,10 +282,10 @@ namespace GxMcp.Worker.Services
                 string utcIso = DateTime.UtcNow.ToString("yyyy-MM-ddTHH-mm-ss-fffZ");
                 string shotPath = Path.Combine(dir, utcIso + ".png");
 
-                if (!CaptureScreenshot(driver, url, shotPath, out string captureErr))
+                if (!CaptureScreenshot(driver, url, shotPath, out string captureErr, out string captureReason))
                 {
                     result.Skipped = true;
-                    result.SkipReason = "CaptureFailed";
+                    result.SkipReason = captureReason ?? "CaptureFailed";
                     result.Error = captureErr;
                     return result;
                 }
@@ -318,18 +358,29 @@ namespace GxMcp.Worker.Services
 
         // -------- screenshot capture per driver ---------------------------
 
-        private bool CaptureScreenshot(DriverInfo driver, string url, string outPath, out string err)
+        private bool CaptureScreenshot(DriverInfo driver, string url, string outPath, out string err, out string reason)
         {
             err = null;
+            reason = null;
             if (string.Equals(driver.Name, "chrome-devtools-axi", StringComparison.OrdinalIgnoreCase))
             {
-                var openRes = _runner.Run(driver.CliPath, "open " + Quote(url), DefaultCliTimeoutMs);
+                var openRes = _runner.Run(driver.CliPath, Argv.Join(new[] { "open", url }), DefaultCliTimeoutMs);
+                if (Refused(openRes, "open", out err))
+                {
+                    reason = ArgumentRefusedReason;
+                    return false;
+                }
                 if (openRes.TimedOut || openRes.ExitCode != 0)
                 {
                     err = "open: " + (openRes.StdErr ?? "(no stderr)");
                     return false;
                 }
-                var shotRes = _runner.Run(driver.CliPath, "screenshot " + Quote(outPath), DefaultCliTimeoutMs);
+                var shotRes = _runner.Run(driver.CliPath, Argv.Join(new[] { "screenshot", outPath }), DefaultCliTimeoutMs);
+                if (Refused(shotRes, "screenshot", out err))
+                {
+                    reason = ArgumentRefusedReason;
+                    return false;
+                }
                 if (shotRes.TimedOut || shotRes.ExitCode != 0)
                 {
                     err = "screenshot: " + (shotRes.StdErr ?? "(no stderr)");
@@ -341,8 +392,12 @@ namespace GxMcp.Worker.Services
             {
                 // npx playwright screenshot <url> <out>. Single-shot — playwright
                 // CLI exits after writing the PNG.
-                string args = "playwright screenshot " + Quote(url) + " " + Quote(outPath);
-                var res = _runner.Run(driver.CliPath, args, DefaultCliTimeoutMs);
+                var res = _runner.Run(driver.CliPath, Argv.Join(new[] { "playwright", "screenshot", url, outPath }), DefaultCliTimeoutMs);
+                if (Refused(res, "playwright", out err))
+                {
+                    reason = ArgumentRefusedReason;
+                    return false;
+                }
                 if (res.TimedOut || res.ExitCode != 0)
                 {
                     err = "playwright: " + (res.StdErr ?? "(no stderr)");
@@ -352,6 +407,19 @@ namespace GxMcp.Worker.Services
             }
             err = "unknown driver: " + driver.Name;
             return false;
+        }
+
+        /// <summary>
+        /// True when the shared shim builder refused the arguments, so nothing was
+        /// spawned. Reported as its own skip reason: a refusal is a deliberate
+        /// outcome of the hardening, not a browser that failed to cooperate.
+        /// </summary>
+        private static bool Refused(CliResult result, string step, out string err)
+        {
+            err = null;
+            if (result == null || !result.ArgumentRefused) return false;
+            err = step + ": " + (result.StdErr ?? "driver argument refused");
+            return true;
         }
 
         // -------- pixel diff ----------------------------------------------
@@ -500,8 +568,5 @@ namespace GxMcp.Worker.Services
             var chars = s.Select(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_').ToArray();
             return new string(chars);
         }
-
-        private static string Quote(string s) =>
-            "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
     }
 }
