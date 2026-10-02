@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_read part=WebForm` no longer serves the pre-write body after a `genexus_layout` WebForm write. The write marked only the `Layout` read-cache entry dirty, while the body is also cached under `WebForm`; a WebForm write now drops every cached part of the object.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02

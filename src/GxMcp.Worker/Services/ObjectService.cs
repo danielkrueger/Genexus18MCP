@@ -4101,8 +4101,20 @@ namespace GxMcp.Worker.Services
             // reported changed:false / WriteNoChange even though the diff and disk showed
             // the change. Resolve the part name the same way ReadObjectSource does.
             string resolvedPart = string.IsNullOrWhiteSpace(partName) ? null : ResolvePartName(obj, partName);
+            RemoveReadCacheEntries(obj.Guid, resolvedPart);
+
+            // SDK object cache invalidation is expensive; do it only after writes.
+            InvalidateCache(obj);
+        }
+
+        /// <summary>
+        /// Drops the managed read-cache entries of one object. A null
+        /// <paramref name="resolvedPart"/> drops every part of the object.
+        /// </summary>
+        internal static void RemoveReadCacheEntries(Guid objectGuid, string resolvedPart)
+        {
             string normalizedPart = string.IsNullOrWhiteSpace(resolvedPart) ? null : resolvedPart.Trim().ToLowerInvariant();
-            string objectPrefix = obj.Guid.ToString("N") + "|";
+            string objectPrefix = objectGuid.ToString("N") + "|";
             foreach (var kvp in _readCache)
             {
                 string key = kvp.Key;
@@ -4140,9 +4152,6 @@ namespace GxMcp.Worker.Services
                     continue;
                 _emptyRawSourceCache.TryRemove(key, out _);
             }
-
-            // SDK object cache invalidation is expensive; do it only after writes.
-            InvalidateCache(obj);
         }
 
         // PERFORMANCE (perf round 1): raw part-source getter used by SourceSearchService's
