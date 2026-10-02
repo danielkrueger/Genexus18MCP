@@ -181,9 +181,7 @@ SELECT @@ROWCOUNT;";
 
             try
             {
-                var doc = new XmlDocument();
-                doc.LoadXml(xml);
-                CollectStructureIds(doc.DocumentElement, ids);
+                CollectStructureIds(SafeXml.LoadText(xml).DocumentElement, ids);
             }
             catch (Exception ex)
             {

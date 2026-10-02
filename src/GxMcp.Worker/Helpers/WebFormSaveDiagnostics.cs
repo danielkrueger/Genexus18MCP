@@ -232,9 +232,7 @@ namespace GxMcp.Worker.Helpers
             if (string.IsNullOrEmpty(xml)) return "(empty)";
             try
             {
-                var d = new XmlDocument();
-                d.LoadXml(xml);
-                return ExtractProbeAttr(d);
+                return ExtractProbeAttr(SafeXml.LoadText(xml));
             }
             catch (Exception ex)
             {

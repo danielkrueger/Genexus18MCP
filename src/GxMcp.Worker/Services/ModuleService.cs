@@ -291,10 +291,10 @@ namespace GxMcp.Worker.Services
                     using (var stream = manifest.Open())
                     using (var reader = new StreamReader(stream))
                         xml = reader.ReadToEnd();
-                    var document = new XmlDocument();
+                    XmlDocument document;
                     try
                     {
-                        document.LoadXml(xml);
+                        document = SafeXml.LoadText(xml);
                     }
                     catch (Exception ex)
                     {

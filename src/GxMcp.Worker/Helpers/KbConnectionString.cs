@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Xml;
 
 namespace GxMcp.Worker.Helpers
 {
@@ -36,8 +35,7 @@ namespace GxMcp.Worker.Helpers
                 string connFile = Path.Combine(kbPath, ConnectionFileName);
                 if (!File.Exists(connFile)) return null;
 
-                var doc = new XmlDocument();
-                doc.Load(connFile);
+                var doc = SafeXml.LoadFile(connFile);
 
                 string server = doc.SelectSingleNode("/ConnectionInformation/ServerInstance")?.InnerText;
                 string db = doc.SelectSingleNode("/ConnectionInformation/DBName")?.InnerText;
