@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Structure DSL `Attr : DomainName` now bases a new attribute on that Domain. The Domain lookup reflected `GetByName(string, string, string)`, but the SDK signature is `GetByName(string, Guid?, string)`, so the lookup always missed and the attribute silently got the default `NUMERIC(4)`.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
