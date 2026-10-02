@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Terse error envelopes no longer drop the reason of an SDK refusal. The Gateway kept only the first line of an error message, but the SDK writes the reasons as `* reason` lines under a header that ends in `:` (for example `genexus_delete_object` on an attribute an index still uses: "Object(s) could not be deleted:" followed by "* Attribute 'X' is referenced at least by Index 'Y'."). Those bullet lines are now kept on the same line; stack traces and other trailing lines are still dropped.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
