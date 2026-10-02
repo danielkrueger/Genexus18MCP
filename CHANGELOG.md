@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus-mcp doctor`, `status`, `config show` and `clients add` now fall back to `~/.genexus-mcp/config.json` outside a KB folder, as the Gateway and the zero-config launcher already do. Without `GX_CONFIG_PATH` or a `config.json` in the current directory they reported "GX config file is missing" while the runtime was loading the user-profile config; doctor now reports it as `source: neutral`.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02

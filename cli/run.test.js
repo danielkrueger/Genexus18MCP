@@ -1387,6 +1387,34 @@ test('doctor fails closed when GX_CONFIG_PATH points at a missing file', () => {
     }
 });
 
+test('doctor resolves the neutral user config outside a KB folder, like the Gateway', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-user-config-'));
+    try {
+        const home = path.join(tempRoot, 'home');
+        const cwd = path.join(tempRoot, 'project');
+        const userConfig = path.join(home, '.genexus-mcp', 'config.json');
+        fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+        fs.mkdirSync(cwd, { recursive: true });
+        fs.writeFileSync(userConfig, JSON.stringify({ Environment: { ResolutionPolicy: 'strict' } }));
+
+        const result = runCli(['doctor', '--format', 'json'], {
+            cwd,
+            env: { ...sandboxHomeEnv(home), GENEXUS_MCP_GATEWAY_EXE: process.execPath }
+        });
+        assert.equal(result.status, 0);
+        const configCheck = JSON.parse(result.stdout).ok.checks.find((c) => c.id === 'config_file');
+        assert.ok(configCheck);
+        assert.equal(configCheck.status, 'pass', configCheck.detail);
+        assert.ok(configCheck.detail.includes(userConfig), configCheck.detail);
+        assert.ok(configCheck.detail.includes('(source: neutral)'), configCheck.detail);
+        const envCheck = JSON.parse(result.stdout).ok.checks.find((c) => c.id === 'gx_env');
+        assert.ok(envCheck);
+        assert.match(envCheck.detail, /from the user profile/);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('doctor rejects malformed tool definitions instead of reporting only file presence', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-tool-defs-'));
     try {

@@ -165,7 +165,7 @@ function buildStatusData(cwd) {
     if (process.env.GX_CONFIG_PATH) {
         configSource = 'env';
     } else if (configFound) {
-        configSource = 'cwd';
+        configSource = path.resolve(configPath) === path.resolve(cwd, 'config.json') ? 'cwd' : 'neutral';
     }
 
     if (configFound) {
@@ -1125,7 +1125,7 @@ async function handleDoctor(options, ctx) {
     const gxEnvCheck = process.env.GX_CONFIG_PATH
         ? { status: 'pass', detail: 'GX_CONFIG_PATH env var is set.' }
         : data.configFound
-            ? { status: 'not_applicable', detail: `GX_CONFIG_PATH is not set; using ${data.configPath} from the current directory.` }
+            ? { status: 'not_applicable', detail: `GX_CONFIG_PATH is not set; using ${data.configPath} ${data.configSource === 'neutral' ? 'from the user profile' : 'from the current directory'}.` }
             : { status: 'warn', detail: 'GX_CONFIG_PATH env var is not set and no config file was found.' };
     const kbCatalogEntries = Object.entries(data.kbCatalog?.kbs || {});
     const missingCatalogKbs = kbCatalogEntries.filter(([, declaredPath]) => !fs.existsSync(declaredPath));

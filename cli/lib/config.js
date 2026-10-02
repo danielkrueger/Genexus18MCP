@@ -639,6 +639,13 @@ function resolveConfigPathNoMutate(cwd) {
     if (fs.existsSync(cwdConfigPath)) {
         return cwdConfigPath;
     }
+    // Match the Gateway and the zero-config launcher outside a KB folder: the
+    // neutral user config is the last fallback, so diagnostics inspect the file
+    // the runtime actually loads instead of reporting it missing.
+    const userConfigPath = path.join(os.homedir(), '.genexus-mcp', 'config.json');
+    if (!directoryLooksLikeKnowledgeBase(cwd) && fs.existsSync(userConfigPath)) {
+        return userConfigPath;
+    }
     return null;
 }
 
