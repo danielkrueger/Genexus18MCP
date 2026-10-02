@@ -508,9 +508,57 @@ namespace GxMcp.Worker.Services
             //   an existing instance only re-saves the instance while every generated object
             //   keeps its previous version. Reporting that as applied would be a false
             //   success, so reapply stays unsupported until a regenerating route exists.
+            //
+            // SCOPE OF THAT EVIDENCE (issue #353). The measurement covers those TWO
+            // overloads on that ONE combination. It is not a statement that the pattern
+            // engine cannot regenerate - and the reason string below used to read exactly
+            // that way, which made the diagnostic look like a dead end rather than two
+            // exhausted entry points. A third entry point exists and is untested:
+            //
+            //   Artech.Packages.Patterns.PatternEngine.GenerateInstanceObjects(
+            //       IPatternBuildProcess, PatternModel, PatternInstance,
+            //       InstanceObjects, ApplySettings, ApplyResults) -> bool
+            //
+            // an internal static that this build never calls, reached by reflection like
+            // the WorkWithPlus projection. All six arguments are obtainable from the
+            // installed SDK - for standard WorkWith the build process comes from
+            // Artech.Patterns.WorkWith.WorkWithPattern, which is public with a
+            // parameterless constructor. Whether it works is UNKNOWN, and the strongest
+            // argument against it is that it may be the very path that already throws.
+            // It is recorded, not adopted: the switch below stays off until an
+            // experiment on a disposable KB says otherwise, and no such fixture exists on
+            // the machine this was written on. Evidence and member list:
+            // docs/sdk-probe/workwith-regeneration-candidate.md
             // ---------------------------------------------------------------------------
             internal static bool GenericFirstApplySupported = true;
             internal static bool GenericReapplySupported = false;
+
+            /// <summary>
+            /// The regenerating entry point found by reading in #353, and never called.
+            ///
+            /// <para>
+            /// Reported in the capability envelope as an <b>unverified lead</b>, not as a
+            /// capability. The distinction is the whole point: a caller who sees this must
+            /// be able to tell "no route exists" from "a route exists that nobody has run
+            /// yet", because the two call for different next moves and only the first is
+            /// a dead end.
+            /// </para>
+            /// </summary>
+            internal const string UntestedRegenerationEntryPoint =
+                "Artech.Packages.Patterns.PatternEngine.GenerateInstanceObjects";
+
+            /// <summary>
+            /// Whether the rejection reason should name the untested candidate.
+            ///
+            /// <para>
+            /// True for the generic route only. WorkWithPlus returns supported before
+            /// reaching here, so it keeps its own reason-free answer, and a first-apply
+            /// rejection is about a different thing entirely and must not advertise a
+            /// regeneration route.
+            /// </para>
+            /// </summary>
+            internal static bool ShouldNameUntestedCandidate(PatternRoute route) =>
+                route == PatternRoute.Reapply && !GenericReapplySupported;
 
             /// <summary>
             /// Whether a successful reapply regenerates the pattern's derived objects,
@@ -567,10 +615,29 @@ namespace GxMcp.Worker.Services
                 reason = null;
                 if (pattern != null && pattern.IsWorkWithPlus) return true;
                 bool supported = route == PatternRoute.FirstApply ? GenericFirstApplySupported : GenericReapplySupported;
-                if (!supported)
-                    reason = (route == PatternRoute.FirstApply ? "First apply" : "Reapply") + " of " + (pattern?.Name ?? "this pattern") +
-                             " through the pattern engine is not supported by this MCP build: headless reapply does not regenerate the pattern's objects. Apply the pattern in the GeneXus IDE to regenerate them.";
-                return supported;
+                if (supported) return true;
+
+                // Issue #353. The claim is narrowed to what was measured - two named
+                // overloads, on one recorded combination - and the untested third entry
+                // point is named as a lead rather than folded into a blanket "the engine
+                // cannot regenerate". A caller has to be able to tell two exhausted
+                // options from an unmeasured one, because only the second is still worth
+                // someone else's experiment.
+                string what = (route == PatternRoute.FirstApply ? "First apply" : "Reapply")
+                    + " of " + (pattern?.Name ?? "this pattern")
+                    + " through the pattern engine's ApplyPattern overloads is not supported by this MCP build: "
+                    + (route == PatternRoute.FirstApply
+                        ? "first apply is disabled in this build"
+                        : "measured on GX17 U4 + K2BTools 13.1, ApplyPattern(PatternInstance, ApplySettings) throws "
+                          + "NullReferenceException headless and ApplyPattern(KBObject, PatternDefinition) re-saves the "
+                          + "instance while every generated object keeps its previous version")
+                    + ". Apply the pattern in the GeneXus IDE to regenerate the objects.";
+
+                reason = what + (ShouldNameUntestedCandidate(route)
+                    ? " This is a statement about those two overloads, not about the engine: " + UntestedRegenerationEntryPoint
+                      + " is an entry point that this build does not call, and its effect on derived objects is unverified."
+                    : "");
+                return false;
             }
 
             internal static JObject ToJson(PatternManifest pattern)
@@ -579,7 +646,18 @@ namespace GxMcp.Worker.Services
                 {
                     bool ok = IsSupported(pattern, route, out string reason);
                     var e = new JObject { ["supported"] = ok };
-                    if (!ok) e["reason"] = reason;
+                    if (!ok)
+                    {
+                        e["reason"] = reason;
+                        // Reported beside the verdict rather than folded into it, so a
+                        // client branching on `supported` is unaffected and a client
+                        // reading further sees that the absence is scoped, not absolute.
+                        if (ShouldNameUntestedCandidate(route))
+                        {
+                            e["unverifiedRegenerationCandidate"] = UntestedRegenerationEntryPoint;
+                            e["candidateStatus"] = "found by reading the installed SDK; never called, effect on derived objects unmeasured";
+                        }
+                    }
                     return e;
                 }
                 return new JObject { ["firstApply"] = Entry(PatternRoute.FirstApply), ["reapply"] = Entry(PatternRoute.Reapply) };

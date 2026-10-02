@@ -59,11 +59,40 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("GeneXus IDE", examples, StringComparison.Ordinal);
         }
 
+        /// <summary>
+        /// Issue #353 rewrote this one. It used to assert the help says saving "does not
+        /// regenerate" - which was true of the recorded GX17 U4 + K2BTools 13.1 evidence
+        /// and false of GX18, where a <c>PatternInstance</c> save was measured
+        /// regenerating the derived objects three times in both directions.
+        ///
+        /// <para>
+        /// The intent survives: the help must be truthful about regeneration. What changed
+        /// is that a flat negative is no longer truthful on any single environment, so the
+        /// contract is now that the help reports the split, refuses to pick a side, and
+        /// keeps the out-of-box route for a caller whose objects did not follow.
+        /// </para>
+        /// </summary>
         [Fact]
-        public void Help_States_That_Saving_Does_Not_Regenerate_Derived_Objects()
+        public void Help_Does_Not_Claim_A_Flat_Regeneration_Verdict()
         {
             string help = EditHelp();
-            Assert.Contains("does not regenerate", help, StringComparison.OrdinalIgnoreCase);
+
+            Assert.False(help.Contains("does not regenerate", StringComparison.OrdinalIgnoreCase),
+                "a flat 'saving does not regenerate' is falsified on GX18 - see "
+                + "docs/sdk-probe/workwith-regeneration-candidate.md");
+            Assert.False(help.Contains("generatedObjectsRegenerated", StringComparison.Ordinal),
+                "the response no longer carries that field, so the help must not name it");
+        }
+
+        [Fact]
+        public void Help_Reports_The_Regeneration_Evidence_And_Its_Split()
+        {
+            string help = EditHelp();
+
+            Assert.Contains("derivedObjectRegeneration", help, StringComparison.Ordinal);
+            Assert.Contains("GX18", help, StringComparison.Ordinal);
+            Assert.Contains("GX17", help, StringComparison.Ordinal);
+            Assert.Contains("GeneXus IDE", help, StringComparison.Ordinal);
         }
 
         [Fact]

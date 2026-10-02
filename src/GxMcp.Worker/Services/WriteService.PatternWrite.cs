@@ -357,11 +357,41 @@ namespace GxMcp.Worker.Services
                     if (currentPattern != null) success["patternName"] = currentPattern.Name;
                     if (currentPattern != null && !currentPattern.IsWorkWithPlus)
                     {
-                        // Live GX17 + K2BTools: saving the instance leaves the generated objects
-                        // at their previous version, and headless reapply does not regenerate
-                        // them either (issue #260). Say so instead of implying a regeneration.
-                        success["generatedObjectsRegenerated"] = false;
-                        success["warning"] = "The " + currentPattern.Name + " instance was saved, but its generated objects were not regenerated. Apply the pattern in the GeneXus IDE to regenerate them.";
+                        // Issue #353. This used to assert `generatedObjectsRegenerated = false`
+                        // as a flat fact, from evidence recorded on GX17 U4 + K2BTools 13.1
+                        // about the ApplyPattern overloads. That assertion is now falsified on
+                        // GX18: saving a standard WorkWith instance through
+                        // genexus_edit part=PatternInstance DOES regenerate the derived
+                        // objects, three times in a row and in both directions, with the
+                        // change visible in a generated control. Evidence in
+                        // docs/sdk-probe/workwith-regeneration-candidate.md.
+                        //
+                        // So the field is removed rather than flipped. Flipping it to true
+                        // would be the same error wearing the other hat - asserting a
+                        // regeneration nobody measured from this call site - and it would
+                        // also be wrong on the GX17 U4 + K2BTools combination the original
+                        // evidence came from, which this build still supports. What is true
+                        // everywhere is that this call site does not know, so it says the
+                        // recorded provenance and stops claiming a result.
+                        //
+                        // Measuring it properly means re-reading the derived family inside
+                        // the write and deciding what a mismatch does to a write that has
+                        // already committed - a separate change, not a string edit.
+                        success["derivedObjectRegeneration"] = new JObject
+                        {
+                            ["measuredAtThisCallSite"] = false,
+                            ["recordedEvidence"] = "GX17 U4 + K2BTools 13.1: ApplyPattern(PatternInstance, ApplySettings) "
+                                + "throws NullReferenceException headless; ApplyPattern(KBObject, PatternDefinition) re-saves "
+                                + "the instance with derived objects at their previous version.",
+                            ["contradictedOn"] = "GX18 18.0.10.184260: a genexus_edit part=PatternInstance save regenerated "
+                                + "the derived objects (WW<Trn> and View<Trn> followed selection/@description both ways).",
+                            ["reapplyStillRefused"] = true,
+                            ["note"] = "This call site does not measure regeneration, so it does not report one. "
+                                + "Reapply of a non-WorkWithPlus pattern remains refused; see routeCapabilities."
+                        };
+                        success["warning"] = "The " + currentPattern.Name + " instance was saved. Whether its generated objects "
+                            + "were regenerated is not measured at this call site: see derivedObjectRegeneration. If they were not, "
+                            + "apply the pattern in the GeneXus IDE to regenerate them.";
                     }
 
                     // Friction 2026-05-26 — re-assert "Apply this pattern on
