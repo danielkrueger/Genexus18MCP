@@ -681,10 +681,35 @@ namespace GxMcp.Gateway
             }
         }
 
+        /// <summary>
+        /// Test-only: captures the entry currently registered for <paramref name="alias"/>.
+        /// The returned token is an opaque <c>Entry</c> reference, accepted only by
+        /// <see cref="EvictCapturedEntryForTest"/>; <c>Entry</c> itself stays private.
+        /// </summary>
+        /// <remarks>
+        /// The capacity window selects a victim under <see cref="_capacityLock"/> and
+        /// removes it afterwards, so an eviction can legitimately act on an entry that is
+        /// no longer the one registered for its alias. Capturing and evicting separately
+        /// is what lets a test express that without exposing the entry type.
+        /// </remarks>
+        internal object CaptureEntryForTest(string alias) =>
+            _entries[alias.ToLowerInvariant()];
+
+        /// <summary>
+        /// Test-only: runs the real <see cref="EvictEntry"/> against an entry captured
+        /// earlier by <see cref="CaptureEntryForTest"/>, even if a different entry has
+        /// since taken its alias.
+        /// </summary>
+        internal void EvictCapturedEntryForTest(object entryToken) => EvictEntry((Entry)entryToken);
+
         private void EvictEntry(Entry entry)
         {
             try { entry.Worker?.StopWithReason(WorkerStopReason.ExplicitClose); } catch { }
-            _entries.TryRemove(entry.Handle.NormalizedAlias, out _);
+            // Remove only the entry we stopped: if this Worker's exit handler (which does
+            // not take _capacityLock) already tore the alias out and a concurrent
+            // AcquireAsync installed a replacement, the key overload would evict that
+            // replacement and leave its process running with no entry to stop or report it.
+            _entries.TryRemove(new KeyValuePair<string, Entry>(entry.Handle.NormalizedAlias, entry));
         }
 
         // BUG-04: the per-call cap on how long ConfigureWarmSpares will wait for
