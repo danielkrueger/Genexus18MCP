@@ -11,7 +11,7 @@
 
 ### Fixed
 
-- `genexus_delete_object` on a Transaction left the objects the SDK deletes in cascade (its Table, the Table's Index and attributes nothing else uses) in the search index, so `list_objects`/`query` kept returning them and every read failed with `IndexedObjectUnavailable`. `ObjectService.DeleteObject` now captures the SDK's `AfterDeleteKBObject` events during `Delete()` and, once the commit is verified, removes each cascaded object from the index; the result gains `alsoDeleted` (`{name,type,guid}` list).
+- `genexus_delete_object` on a Transaction left the objects the SDK deletes in cascade (its Table and the Table's Indexes) in the search index, so `list_objects`/`query` kept returning them and every read failed with `IndexedObjectUnavailable`. `ObjectService.DeleteObject` now captures the SDK's `AfterDeleteKBObject` events during `Delete()` and, once the commit is verified, removes each cascaded object from the index (the Table's Indexes raise no event, so they are collected from `BeforeDeleteKBObject` and dropped only if the SDK no longer resolves them); the result gains `alsoDeleted` (`{name,type,guid}` list).
 
 ### Internal
 

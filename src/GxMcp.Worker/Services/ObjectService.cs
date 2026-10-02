@@ -124,14 +124,42 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Guids of the indexes of a Table about to be deleted (empty for anything else).
+        private static IEnumerable<Guid> TableIndexGuids(object obj)
+        {
+            var tbl = obj as Artech.Genexus.Common.Objects.Table;
+            if (tbl == null) return new Guid[0];
+            var list = new List<Guid>();
+            foreach (var ti in tbl.TableIndexes.Indexes)
+            {
+                var idxObj = ti == null ? null : ti.Index;
+                if (idxObj != null && idxObj.Guid != Guid.Empty) list.Add(idxObj.Guid);
+            }
+            return list;
+        }
+
         // Drops the objects the SDK removed in cascade (all captured guids except the target)
         // from the search index and records them like the target. Returns {name,type,guid}
         // for those that were indexed.
-        internal static JArray RemoveCascadedEntries(IndexCacheService idx, IEnumerable<Guid> captured, Guid target)
+        // The SDK deletes a Table's Indexes without raising an event for them, so those guids come
+        // from BeforeDeleteKBObject as candidates and are dropped only when isAbsent confirms them.
+        internal static JArray RemoveCascadedEntries(IndexCacheService idx, IEnumerable<Guid> captured, Guid target,
+            IEnumerable<Guid> candidates = null, Func<Guid, bool> isAbsent = null)
         {
             var also = new JArray();
             if (idx == null || captured == null) return also;
-            foreach (var guid in captured.Distinct())
+            var all = captured.ToList();
+            if (candidates != null && isAbsent != null)
+            {
+                foreach (var c in candidates.Distinct())
+                {
+                    if (c == Guid.Empty || all.Contains(c)) continue;
+                    bool absent = false;
+                    try { absent = isAbsent(c); } catch (Exception ex) { Logger.Error("DeleteObject: candidate check failed for " + c + ": " + ex.Message); }
+                    if (absent) all.Add(c);
+                }
+            }
+            foreach (var guid in all.Distinct())
             {
                 if (guid == Guid.Empty || guid == target) continue;
                 string g = guid.ToString();
@@ -991,6 +1019,7 @@ namespace GxMcp.Worker.Services
             bool deleteStarted = false;
             bool transactionCommitted = false;
             IReadOnlyList<Guid> cascadedGuids = new Guid[0];
+            IReadOnlyList<Guid> candidateGuids = new Guid[0];
             try
             {
                 var kb = _kbService.GetKB();
@@ -1173,10 +1202,11 @@ namespace GxMcp.Worker.Services
                         // Delete() cascades inside the SDK (Transaction -> Table -> Index/attributes).
                         // Capture the whole set so the search index can drop it too; otherwise the
                         // cascaded objects stay listed and every read fails with IndexedObjectUnavailable.
-                        using (var capture = new DeletedObjectCapture(GetObjectManager(kb)))
+                        using (var capture = new DeletedObjectCapture(GetObjectManager(kb), (Func<object, IEnumerable<Guid>>)TableIndexGuids))
                         {
                             current.Delete();
                             cascadedGuids = capture.Guids;
+                            candidateGuids = capture.Candidates;
                         }
 
                         var afterDelete = ResolveByNativeIdentity(kb, objGuid, objType);
@@ -1264,7 +1294,8 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex) { Logger.Error("DeleteObject: index RemoveEntry failed for " + objName + ": " + ex.Message); }
 
                 // Committed: mirror the SDK cascade in the index (never reached on rollback).
-                var alsoDeleted = RemoveCascadedEntries(_kbService?.GetIndexCache(), cascadedGuids, objGuid);
+                var alsoDeleted = RemoveCascadedEntries(_kbService?.GetIndexCache(), cascadedGuids, objGuid,
+                    candidateGuids, g => ResolveByNativeIdentity((KnowledgeBase)kb, g, null).Status == NativeResolutionStatus.Absent);
 
                 return McpResponse.Ok(target: objName, code: "ObjectDeleted", result: new JObject
                 {
