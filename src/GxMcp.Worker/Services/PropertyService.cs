@@ -160,7 +160,7 @@ namespace GxMcp.Worker.Services
                         if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
                     }
 
-                    fullPropsResult = SerializeProperties(container);
+                    fullPropsResult = SerializeProperties(container, obj.Model);
                     lock (_propertyCacheLock)
                     {
                         _propertyCache[ck] = (DateTime.UtcNow.AddSeconds(PropertyCacheTtlSeconds), (JObject)fullPropsResult.DeepClone());
@@ -832,6 +832,9 @@ namespace GxMcp.Worker.Services
                     if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
                 }
 
+                if (IsWebPanelReferenceType(GetPropertyTargetType(container, propName)))
+                    return SetWebPanelReferenceProperty(obj, container, target, propName, value, controlName, typeFilter);
+
                 string propertyValidation = ValidatePropertyWrite(container, propName, value);
                 if (propertyValidation != null)
                     return Models.McpResponse.Err(
@@ -852,11 +855,11 @@ namespace GxMcp.Worker.Services
                         // issue #41 (general safety net): capture the prior value so a silent
                         // wipe (non-empty → empty for a non-empty request) is caught even for
                         // properties not on the explicit non-scalar list, and rolled back.
-                        beforeVal = TryReadPropertyString(container, propName);
+                        beforeVal = TryReadPropertyString(container, propName, obj.Model);
 
                         ApplyPropertyValue(container, propName, value, controlName, obj);
 
-                        string afterVal = TryReadPropertyString(container, propName);
+                        string afterVal = TryReadPropertyString(container, propName, obj.Model);
                         if (!string.IsNullOrEmpty(value)
                             && !string.IsNullOrEmpty(beforeVal)
                             && string.IsNullOrEmpty(afterVal))
@@ -943,16 +946,19 @@ namespace GxMcp.Worker.Services
                                 && string.Equals(propName?.Trim(), "OutputSDT", StringComparison.OrdinalIgnoreCase))
                                 throw new InvalidOperationException("'OutputSDT' uses a typed Data Provider API and cannot be combined with a scalar property batch; use action=set with propertyName=OutputSDT.");
 
+                            if (IsWebPanelReferenceType(GetPropertyTargetType(container, propName)))
+                                throw new InvalidOperationException($"'{propName}' is an object reference; set it with action=set and propertyName={propName}, not in a property batch.");
+
                             string propertyValidation = ValidatePropertyWrite(container, propName, val);
                             if (propertyValidation != null)
                                 throw new InvalidOperationException(propertyValidation);
 
-                            string before = TryReadPropertyString(container, propName);
+                            string before = TryReadPropertyString(container, propName, obj.Model);
                             if (before != null) beforeValues[propName] = before;
 
                             ApplyPropertyValue(container, propName, val, controlName, obj);
 
-                            string after = TryReadPropertyString(container, propName);
+                            string after = TryReadPropertyString(container, propName, obj.Model);
                             if (!string.IsNullOrEmpty(val) && !string.IsNullOrEmpty(before) && string.IsNullOrEmpty(after))
                             {
                                 throw new PropertyWipeException(propName, before);
@@ -1100,6 +1106,10 @@ namespace GxMcp.Worker.Services
                 catch { }
             }
 
+            // A WebPanelReference (e.g. MasterPage) is set by object name through a typed
+            // adapter (SetWebPanelReferenceProperty), not by scalar conversion.
+            if (IsWebPanelReferenceType(targetType)) return null;
+
             if (targetType != null && targetType != typeof(string)
                 && !TryConvertToType(rawValue, targetType, out _))
                 return $"InvalidPropertyValue: '{rawValue}' cannot be converted to {targetType.Name} for '{propName}'.";
@@ -1183,7 +1193,7 @@ namespace GxMcp.Worker.Services
                     }
                     catch { }
                 }
-                if (persisted == null) persisted = TryReadPropertyString(container, propName);
+                if (persisted == null) persisted = TryReadPropertyString(container, propName, fresh.Model);
                 if (persisted == null) return null; // unverifiable
 
                 if (!PersistenceVerifier.ValuesMatch(requested, persisted, IsNullablePropertyName(propName)))
@@ -1274,7 +1284,7 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
-        private static string TryReadPropertyString(dynamic container, string propName)
+        private static string TryReadPropertyString(dynamic container, string propName, KBModel model = null)
         {
             try
             {
@@ -1291,7 +1301,7 @@ namespace GxMcp.Worker.Services
                 object existing = ResolvePropertyEntry(container, propName);
                 object val = null;
                 try { val = existing == null ? null : ((dynamic)existing).Value; } catch { }
-                return val?.ToString();
+                return val == null ? null : RenderPropertyValue(val, model);
             }
             catch { return null; }
         }
@@ -1315,6 +1325,112 @@ namespace GxMcp.Worker.Services
 
         private static bool IsObjectPlacementProperty(string propName)
             => !string.IsNullOrEmpty(propName) && _placementProps.Contains(propName.Trim());
+
+        internal static bool IsWebPanelReferenceType(Type type)
+            => type != null && typeof(global::Artech.Genexus.Common.CustomTypes.WebPanelReference).IsAssignableFrom(type);
+
+        private static Type GetPropertyTargetType(dynamic container, string name)
+        {
+            try
+            {
+                dynamic entry = ResolvePropertyEntry(container, name);
+                if (entry == null) return null;
+                try { if (entry.Definition?.Type is Type t) return t; } catch { }
+                try { object cur = entry.Value; if (cur != null) return cur.GetType(); } catch { }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Renders a property value for output. Reference values (WebPanelReference, e.g. the
+        /// MasterPage property) stringify to their CLR type name, so any value exposing
+        /// <c>GetName(KBModel)</c> is rendered as the referenced object's name instead; an
+        /// empty/none reference renders as an empty string.
+        /// </summary>
+        internal static string RenderPropertyValue(object value, KBModel model)
+        {
+            if (value == null) return string.Empty;
+            if (value is string s) return s;
+            var getName = value.GetType().GetMethod("GetName", new[] { typeof(KBModel) });
+            if (getName != null && getName.ReturnType == typeof(string))
+            {
+                try
+                {
+                    // The SDK renders its none reference as "(none)"; that is "no value" here.
+                    string name = (string)getName.Invoke(value, new object[] { model });
+                    return string.IsNullOrEmpty(name) || name == "(none)" ? string.Empty : name;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[PROPERTY] GetName failed for " + value.GetType().Name + ": " + (ex.InnerException?.Message ?? ex.Message));
+                    return string.Empty;
+                }
+            }
+            return value.ToString() ?? string.Empty;
+        }
+
+        // A WebPanelReference property (MasterPage) holds an EntityKey, not a string: resolve the
+        // requested object name in the same KB, build the reference from its key, set it through
+        // the property bag and verify on re-read. An empty value sets NoneRef (clears).
+        private string SetWebPanelReferenceProperty(KBObject obj, dynamic container, string target, string propName, string value, string controlName, string typeFilter)
+        {
+            try
+            {
+                object newRef;
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    newRef = global::Artech.Genexus.Common.CustomTypes.WebPanelReference.NoneRef;
+                }
+                else
+                {
+                    string name = value.Trim();
+                    var referenced = _objectService.FindObject(name, "MasterPage") ?? _objectService.FindObject(name, "WebPanel");
+                    if (referenced == null)
+                        return Models.McpResponse.Err(
+                            code: "ReferencedObjectNotFound",
+                            message: $"Cannot set {propName}: no MasterPage or WebPanel named '{value}' was found in the Knowledge Base.",
+                            hint: "Pass the name of an existing MasterPage (or an empty value to clear).",
+                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", new JObject { ["type"] = "MasterPage", ["query"] = value }, "Lists MasterPages matching the name.")),
+                            target: target);
+                    newRef = new global::Artech.Genexus.Common.CustomTypes.WebPanelReference(referenced.Key);
+                }
+
+                string beforeVal = TryReadPropertyString(container, propName, obj.Model);
+                using (var trans = obj.Model.KB.BeginTransaction())
+                {
+                    bool committed = false;
+                    try
+                    {
+                        container.SetPropertyValue(propName, newRef);
+                        try { if (container != obj) container.Dirty = true; } catch { }
+                        obj.EnsureSave();
+                        trans.Commit();
+                        committed = true;
+                        WriteService.NotePerTargetWrite(target);
+                        InvalidatePropertyCache(obj);
+                    }
+                    finally
+                    {
+                        if (!committed) { try { trans.Rollback(); } catch (Exception rbEx) { Logger.Warn("[PROPERTY] Rollback failed: " + rbEx.Message); } }
+                    }
+                }
+
+                string requested = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+                string verified = VerifyPropertyPersisted(target, propName, requested, controlName, typeFilter, beforeVal, obj);
+                if (verified != null) return verified;
+
+                return Models.McpResponse.Ok(target: target, code: "PropertyApplied", result: new JObject { ["property"] = propName, ["value"] = requested });
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "PropertyWriteFailed",
+                    message: ex.InnerException?.Message ?? ex.Message,
+                    hint: "Check the worker log for the SDK stack trace.",
+                    target: target);
+            }
+        }
 
         // issue #48: set a Data Provider's output SDT through the typed SDK API. OutputSDT is a
         // read-only derived string; the writable output is a DataProviderOutputReference applied
@@ -1808,7 +1924,7 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
-        internal static JObject SerializeProperties(dynamic container)
+        internal static JObject SerializeProperties(dynamic container, KBModel model = null)
         {
             var result = new JObject();
             var props = new JArray();
@@ -1822,7 +1938,7 @@ namespace GxMcp.Worker.Services
                         try {
                             var pObj = new JObject();
                             pObj["name"] = prop.Name.ToString();
-                            pObj["value"] = prop.Value?.ToString() ?? "";
+                            pObj["value"] = RenderPropertyValue((object)prop.Value, model);
                             
                             try {
                                 if (prop.Definition != null) {

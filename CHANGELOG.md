@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_properties` now reads and sets a WebPanel's `MasterPage` (a `WebPanelReference`) by object name: `get` returns the referenced master page name (empty when none) instead of the CLR type name, `set` resolves the name, writes the reference, verifies it on re-read and clears it with an empty value; an unknown name returns `ReferencedObjectNotFound` and writes nothing.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
