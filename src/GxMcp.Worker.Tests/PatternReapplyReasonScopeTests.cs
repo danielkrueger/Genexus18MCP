@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using Newtonsoft.Json.Linq;
+using GxMcp.TestSupport;
 using GxMcp.Worker.Services;
 using Xunit;
 
@@ -25,7 +26,20 @@ namespace GxMcp.Worker.Tests
     /// overloads it actually measured, and that the unmeasured candidate is reported as a
     /// lead with an explicit unverified status instead of being silently absent.
     /// </para>
+    /// <para>
+    /// Serialized with <c>PatternApplyServiceTests</c> through the shared
+    /// <c>InProcessSdkReflection</c> collection. Two of the tests here flip
+    /// <c>GenericReapplySupported</c> / <c>GenericFirstApplySupported</c> to exercise a
+    /// rejection, and so does that class. xunit runs classes in parallel by default, and
+    /// <c>IsSupported</c> reads the switch twice - once for the verdict and once, via
+    /// <c>ShouldNameUntestedCandidate</c>, to decide whether to attach the candidate - so a
+    /// concurrent flip can return a rejection with no candidate text attached. That is
+    /// exactly what happened: every test here passed alone, and
+    /// <c>The_Refusal_Records_That_It_Was_Re_Measured_Not_Inherited</c> failed only in the
+    /// full run.
+    /// </para>
     /// </summary>
+    [Collection("InProcessSdkReflection")]
     public class PatternReapplyReasonScopeTests
     {
         private static string GenericReason(PatternApplyService.PatternRoute route)
@@ -198,6 +212,90 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("GenerateInstanceObjects", name, StringComparison.Ordinal);
             Assert.DoesNotContain(" ", name);
             Assert.Equal(name, name.Trim());
+        }
+
+        [Fact]
+        public void The_Refusal_Records_That_It_Was_Re_Measured_Not_Inherited()
+        {
+            // The original evidence was GX17 U4 + K2BTools 13.1. Repeating it on GX18
+            // without K2BTools is what turns an inherited claim into a confirmed one, and a
+            // caller deciding whether to trust this refusal needs to know which it is.
+            string reason = GenericReason(PatternApplyService.PatternRoute.Reapply);
+
+            Assert.True(reason.Contains("18.0.10.184260"),
+                "the reason must record the combination the refusal was re-measured on, got: " + reason);
+            Assert.True(reason.Contains("without K2BTools"),
+                "and must say the second measurement did not depend on K2BTools, got: " + reason);
+            Assert.True(reason.Contains("confirmed rather than inherited"),
+                "the reason must distinguish a re-measured refusal from an inherited one, got: " + reason);
+        }
+
+        [Fact]
+        public void The_Refusal_Explains_Why_The_Nre_Is_Not_A_Package_Problem()
+        {
+            // Measured: reapply with no settings NREs because this path passes a null
+            // ApplySettings. Telling a caller to check licensing sends them after the wrong
+            // thing, and the throw is the first thing they see.
+            string reason = GenericReason(PatternApplyService.PatternRoute.Reapply);
+
+            Assert.True(reason.Contains("null-ApplySettings"),
+                "the reason must name the actual cause of the NullReferenceException, got: " + reason);
+            Assert.True(reason.Contains("stays refused instead of"),
+                "the reason must say why the route is not simply 'fixed', got: " + reason);
+        }
+
+        [Fact]
+        public void The_Apply_Failure_Hint_Stops_Blaming_Licensing_For_The_Nre()
+        {
+            // Same defect on the other surface: the PatternEngineApplyFailed hint said
+            // "Verify the pattern package is installed and the KB is open" for an exception
+            // this build causes itself.
+            string src = SourceAssert.NormaliseNewlines(
+                RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "PatternApplyService.cs"));
+
+            // The condition itself, not just the identifier's presence. A guard that only
+            // checked `nullSettingsNre` appears in the source stayed green when the
+            // variable was assigned `false` - the branch became dead code and the
+            // licensing advice came straight back. Asserting the exact predicate means a
+            // disabled branch has to be retyped to hide.
+            Assert.True(
+                src.Contains("reapply && ex is NullReferenceException"),
+                "the NRE branch must be gated on exactly 'reapply && ex is NullReferenceException'; "
+                + "anything looser explains away real package failures, anything stricter "
+                + "misses this one. Source has: " + Around(src, "nullSettingsNre = "));
+            Assert.True(src.Contains("nullApplySettings"),
+                "and reported with a machine-readable cause rather than only prose");
+            // Asserted on a phrase that survives the string concatenation, not on the
+            // sentence around it: a first attempt matched "not a package or licensing
+            // problem", which the source splits across a `+` and so never appears whole.
+            Assert.True(src.Contains("licensing problem"),
+                "the NRE branch must retract the licensing advice");
+            // And the genuine-failure branch must still exist, or every apply failure
+            // would be explained away as our own null settings.
+            Assert.True(src.Contains("package is installed and the KB is open"),
+                "the non-NRE branch must keep its original package-and-KB advice");
+        }
+
+        private static string Around(string src, string needle)
+        {
+            int at = src.IndexOf(needle, StringComparison.Ordinal);
+            if (at < 0) return "<not found>";
+            int start = Math.Max(0, at - 10);
+            return src.Substring(start, Math.Min(90, src.Length - start)).Replace("\n", " ").Replace("\r", " ");
+        }
+
+        [Fact]
+        public void The_Apply_Failure_Next_Step_Points_At_The_Route_That_Works()
+        {
+            // A refusal that leaves the caller with no route is half a refusal. The
+            // instance-save path is the one measured to regenerate on GX18.
+            string src = SourceAssert.NormaliseNewlines(
+                RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "PatternApplyService.cs"));
+
+            Assert.True(src.Contains("\"genexus_edit\""),
+                "the NRE next step must offer the measured route, not a blind retry");
+            Assert.True(src.Contains("Saving the instance is the route measured to regenerate"),
+                "and must say why that step is the one to take");
         }
     }
 }

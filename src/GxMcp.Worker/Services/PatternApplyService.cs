@@ -636,6 +636,11 @@ namespace GxMcp.Worker.Services
                 reason = what + (ShouldNameUntestedCandidate(route)
                     ? " This is a statement about those two overloads, not about the engine: " + UntestedRegenerationEntryPoint
                       + " is an entry point that this build does not call, and its effect on derived objects is unverified."
+                      + " Re-measured on GX18 18.0.10.184260 without K2BTools: reapply still leaves every derived object at "
+                      + "its previous version, so this refusal is confirmed rather than inherited. The NullReferenceException "
+                      + "the no-settings path throws is this build's own null-ApplySettings artifact - supplying settings "
+                      + "removes the throw but not the non-regeneration, which is why the route stays refused instead of "
+                      + "being fixed."
                     : "");
                 return false;
             }
@@ -953,14 +958,55 @@ namespace GxMcp.Worker.Services
                 string errName = objectNameForResponse ?? obj?.Name ?? "";
                 Logger.Error("PatternEngine apply failed for '" + errName + "': " + ex);
                 var errExtra = new JObject { ["patternKey"] = patternKey };
+
+                // Issue #353 follow-up. A NullReferenceException here is not a missing or
+                // unlicensed package. Measured on GX18 18.0.10.184260: reapply with no
+                // settings object throws NRE from inside
+                // PatternEngine.ApplyPattern(PatternInstance, ApplySettings), because this
+                // path passes `null` for ApplySettings; supplying a real one
+                // (IsFullGeneration + ForceSave) makes the same call return success. So the
+                // NRE is this adapter's own null-settings artifact, and telling a caller to
+                // go check licensing sends them after the wrong thing.
+                //
+                // What that success is worth is a separate, worse problem, and it is why the
+                // route stays refused rather than "fixed": with settings supplied, the same
+                // reapply returned PatternApplied while every derived object kept its
+                // previous version, verified against a known pending difference and with an
+                // instance-save control in the same run proving the measurement worked.
+                // Removing the NRE would therefore trade a loud refusal for a silent no-op.
+                bool nullSettingsNre = reapply && ex is NullReferenceException;
+                if (nullSettingsNre)
+                {
+                    errExtra["cause"] = "nullApplySettings";
+                    errExtra["note"] = "The SDK threw while this path passed a null ApplySettings. This is not a "
+                        + "package or licensing problem. Supplying settings avoids the throw, but the call still does "
+                        + "not regenerate the derived objects - so the reapply route stays refused. See "
+                        + "docs/sdk-probe/workwith-regeneration-candidate.md";
+                }
+
                 return McpResponse.Err(
                     code: "PatternEngineApplyFailed",
                     message: ex.Message,
-                    hint: "Verify the pattern package is installed and the KB is open.",
-                    nextSteps: new JArray(McpResponse.NextStep(
-                        tool: "genexus_apply_pattern",
-                        args: new JObject { ["name"] = errName, ["pattern"] = patternKey },
-                        why: "Retry after verifying the pattern package and KB state.")),
+                    hint: nullSettingsNre
+                        ? "This NullReferenceException comes from reapply being called without a settings object, not "
+                          + "from the pattern package: the same call with settings supplied does not throw, but it also "
+                          + "does not regenerate the pattern's objects. Headless reapply of a non-WorkWithPlus pattern "
+                          + "remains unsupported - apply the pattern in the GeneXus IDE to regenerate."
+                        : "Verify the pattern package is installed and the KB is open.",
+                    nextSteps: new JArray(nullSettingsNre
+                        ? McpResponse.NextStep(
+                            tool: "genexus_edit",
+                            args: new JObject
+                            {
+                                ["name"] = errName,
+                                ["part"] = "PatternInstance",
+                                ["mode"] = "full"
+                            },
+                            why: "Saving the instance is the route measured to regenerate the derived objects on GX18.")
+                        : McpResponse.NextStep(
+                            tool: "genexus_apply_pattern",
+                            args: new JObject { ["name"] = errName, ["pattern"] = patternKey },
+                            why: "Retry after verifying the pattern package and KB state.")),
                     target: errName,
                     extra: errExtra);
             }

@@ -70,10 +70,98 @@ That is a hypothesis from reading; it was not isolated, and the experiment did n
 which callback did the work. **Do not build on the mechanism until it is identified** -
 only the observable behaviour is established.
 
-Still open, and deliberately not claimed: whether the refused `reapply` route itself
-would now regenerate. `GenericReapplySupported` stays `false`; nothing here tested it.
+## RESULT 2: the reapply route was tested, and the refusal is confirmed
 
-### One caveat on the replacement response field
+Follow-up experiment, same KB and the same GeneXus build, using the reporter's
+precondition discipline: establish a **known pending difference** first, then run reapply
+and re-read instance *and* derived objects with content and hashes. A changed save token
+alone is not accepted as proof either way.
+
+**The pending difference.** Two corruption routes were tried first and both are blocked by
+existing safety guards, which is itself worth recording: hand-editing the generated
+`WW<Trn>` WebForm is refused with `K2BDesignerEditUnsupported` (it would change K2BTools
+designer grid metadata), and deleting a generated object is refused by the SDK. So the
+difference was created legitimately instead - `NewAttr353` (Character(10)) was added to the
+Transaction `Trn353`, and confirmed present on the Transaction while absent from the
+instance and from all three derived objects. Nothing had touched the instance, so
+regeneration could not already have happened.
+
+**Control, to prove the measurement can detect regeneration.** In the same run, the
+instance-save path - measured above to regenerate - changed `selection/@description` to
+`CTRLPROBE`; the value appeared in the generated `TitleText` control and both derived
+`versionToken`s moved. The apparatus detects regeneration when it happens.
+
+**Reapply, with no settings.** `PatternEngineApplyFailed` -
+`NullReferenceException`, rethrown from `ReflectionPatternEngineAdapter.ReapplyPattern`
+(`PatternEngineAdapter.cs:268`), which is the SDK's own exception surfaced through
+`TargetInvocationException`. So the throw is inside
+`PatternEngine.ApplyPattern(PatternInstance, ApplySettings)` on **GX18**, without
+K2BTools - the GX17 U4 + K2BTools 13.1 finding reproduces on a different major and without
+that package.
+
+**And the cause of the throw is ours.** `ReapplyPattern` passes `null` for `ApplySettings`
+when the caller supplies none (`PatternEngineAdapter.cs:245` - "pass null, which the SDK
+treats as 'use defaults'"). That assumption is what the SDK dereferences and throws on. It
+is not a missing or unlicensed package, and the old hint said to go check licensing.
+
+**Reapply, with settings.** `ApplyPattern(reapply=true, settings={IsFullGeneration: true,
+ForceSave: true})` returned **`PatternApplied`** - no throw. And it regenerated nothing:
+
+| | `WW<Trn>` | `View<Trn>` | `<Trn>General` | pending difference |
+|---|---|---|---|---|
+| before | 6070 | 4066 | 2434 | open |
+| after | 6070 | 4066 | 2434 | **still open** |
+
+Byte-identical, and the known pending difference survived. So the recorded negative result
+is **confirmed, not inherited** - on a second major, without K2BTools, against a
+discriminator rather than a token change.
+
+**The consequence is the important part: the route must stay refused.** The
+`NullReferenceException` is fixable on our side by not passing null settings, and fixing it
+would produce `PatternApplied` while every derived object sits at its previous version -
+trading a loud refusal for a silent no-op. The refusal is doing real work, which is the
+opposite of what the #353 diagnosis suggested. The bug this did find is the *diagnosis*,
+not the gate: the `PatternEngineApplyFailed` hint told callers to verify the pattern
+package and KB state, for an exception this build causes itself.
+
+`GenericReapplySupported` remains `false`.
+
+### Limitation of the pending difference
+
+The discriminator is a Transaction attribute the **instance does not reference** - the
+`PatternInstance` was never told to include it. A correct regenerator might legitimately
+not have propagated it into the grids, so "did not regenerate" rests primarily on *nothing
+changed at all* - identical lengths across all three derived objects, with the
+instance-save control in the same run proving the measurement was live - rather than on
+this particular difference being resolved. A stronger discriminator needs drift in an
+object reapply would have rewritten, and every route to create that drift is currently
+blocked by a safety guard or the SDK.
+
+
+### A build trap that produced three false readings
+
+Worth writing down because it cost three separate wrong conclusions during this work, and
+each looked like a real defect in the code under test.
+
+`Copy-Item` restoring a file during a mutation run leaves an **older** mtime than the
+build output it is meant to replace. MSBuild then considers the output current and skips
+the copy, so the *source* is correct while the *binary under test* is the mutated one.
+Two layers are involved and both have to be forced:
+
+- `dotnet build GxMcp.Worker.csproj -t:Rebuild` refreshes the Worker's own `bin`, and
+  nothing else. It does **not** refresh the copy of `GxMcp.Worker.exe` inside
+  `GxMcp.Worker.Tests\bin\Debug\net48\`, which is what `dotnet test` actually loads.
+- The test project must therefore be rebuilt too: `dotnet build
+  GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj -t:Rebuild`. `-t:Rebuild` is accepted by
+  `dotnet build` and **not** by `dotnet test`, which fails the run with an unrecognised
+  option and prints no result line at all.
+
+Symptom to recognise: a test that passes in isolation and fails in the full run, where the
+failure message quotes a string that is *not* in the source. The message is the binary
+talking, not the source. Here it read `... every derived object at at its previous version`
+- a doubled word that exists only in a mutation - which is what finally located it.
+
+
 
 `derivedObjectRegeneration` is emitted from a branch that requires the object's pattern to
 resolve (`currentPattern != null && !IsWorkWithPlus`). Observed live: on a write where the
