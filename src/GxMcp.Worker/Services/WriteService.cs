@@ -1129,6 +1129,12 @@ namespace GxMcp.Worker.Services
             // (patch-vs-patch was bypassing the prior lock site). NotePerTargetWrite
             // fires on the success path so a sibling patch racing against this
             // write can detect the concurrent modification and report Stale.
+            // DataSelector conditions: one expression per line; canonicalize (strip optional
+            // trailing ';') up front so snapshot, write and post-save verification share one text form.
+            if (DataSelectorConditionsEditor.IsConditionsPart(partName) && code != null
+                && _objectService.FindObject(target, typeFilter) is Artech.Genexus.Common.Objects.DataSelector)
+                code = DataSelectorConditionsEditor.Canonicalize(code);
+
             lock (AcquirePerTargetLock(target))
             {
                 IDisposable operationLock = null;
@@ -1561,6 +1567,11 @@ namespace GxMcp.Worker.Services
                 if (obj is Artech.Packages.Patterns.Objects.PatternSettings)
                     return Models.McpResponse.Err(code: "SettingsIsolationUnverified",
                         message: "Generic Settings writes are disabled. Use genexus_wwp settings_edit with dryRun=true; isolated SDK save events have not been certified.");
+
+                if (DataSelectorConditionsEditor.Applies(obj, partName))
+                {
+                    return WriteDataSelectorConditions((Artech.Genexus.Common.Objects.DataSelector)obj, target, decodedCode, dryRun, forceWrite);
+                }
 
                 if (ThemeStyleEditHelper.Applies(obj, partName, out object stylePart))
                 {

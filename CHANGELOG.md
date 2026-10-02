@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- **`genexus_edit` can now write a Data Selector's conditions (`part=Conditions`).** `genexus_read` returned structured conditions but `genexus_edit part=Conditions` failed with `Part 'Conditions' not found in DataSelector` (the SDK keeps them inside `DataSelectorStructure`, which reads empty). `part=Conditions mode=full` now replaces the condition list (one condition per line, optional trailing `;`) inside the normal write transaction, leaves parameters/orders/Defined By untouched, and verifies the saved conditions by re-reading them (`WriteNoChange` when identical, `WriteNotPersisted` on mismatch). `genexus_read parts=["conditions"]` also returns the same text as `source`, and `Conditions` is listed in the part hint.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02

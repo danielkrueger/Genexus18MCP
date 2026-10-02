@@ -533,6 +533,12 @@ namespace GxMcp.Worker.Structure
             if (names.Any(n => string.Equals(n, "Events", StringComparison.OrdinalIgnoreCase)))
                 names.RemoveAll(n => string.Equals(n, "Source", StringComparison.OrdinalIgnoreCase));
 
+            // Data Selector conditions are writable through the virtual 'Conditions' part
+            // (see DataSelectorConditionsEditor); the SDK exposes them inside DataSelectorStructure.
+            if (obj is Artech.Genexus.Common.Objects.DataSelector
+                && !names.Contains("Conditions", StringComparer.OrdinalIgnoreCase))
+                names.Add("Conditions");
+
             names.Sort(StringComparer.OrdinalIgnoreCase);
             return names.ToArray();
         }

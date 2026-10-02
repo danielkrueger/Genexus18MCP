@@ -72,6 +72,9 @@ namespace GxMcp.Worker.Services
                         break;
                     case "conditions":
                         response["conditions"] = new JArray(snapshot.Conditions.Select(ToJson));
+                        // Editable text form for genexus_edit part=Conditions (one condition per line).
+                        if (parts.Length == 1)
+                            response["source"] = DataSelectorConditionsEditor.Join(snapshot.Conditions.Select(c => c.Expression));
                         break;
                     case "orders":
                         response["orders"] = new JArray(snapshot.Orders.Select(ToJson));
