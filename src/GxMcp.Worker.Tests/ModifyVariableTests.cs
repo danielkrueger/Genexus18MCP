@@ -62,10 +62,9 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void ModifyVariable_NullType_ReturnsUnknownTypeError()
+        public void ModifyVariable_NoTypeAndNoDescription_ReturnsMissingParameter()
         {
-            // Unlike AddVariable (which has a legacy "no type — use injector default"
-            // path when typeName==null), ModifyVariable requires an explicit new type.
+            // Nothing to change: a clear usage error, not UnknownType.
             var ws = BuildIsolatedWriteService();
             string json;
             try
@@ -77,7 +76,45 @@ namespace GxMcp.Worker.Tests
 
             var obj = JObject.Parse(json);
             Assert.Equal("error", obj["status"]?.ToString());
-            Assert.Equal("UnknownType", obj["error"]?["code"]?.ToString());
+            Assert.Equal("MissingParameter", obj["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void ModifyVariable_NoTypeWithTypeShapeArg_ReturnsMissingParameter()
+        {
+            var ws = BuildIsolatedWriteService();
+            string json;
+            try
+            {
+                json = ws.ModifyVariable("TestProc", "X", null, length: 10, description: "Sample");
+            }
+            catch (System.IO.FileNotFoundException) { return; }
+            catch (System.TypeLoadException) { return; }
+
+            var obj = JObject.Parse(json);
+            Assert.Equal("MissingParameter", obj["error"]?["code"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("Sample description")]
+        public void ModifyVariable_DescriptionOnly_DoesNotRequireType(string description)
+        {
+            // description without a type must pass the type gate (no UnknownType /
+            // MissingParameter) and reach the object-resolution path.
+            var ws = BuildIsolatedWriteService();
+            string json;
+            try
+            {
+                json = ws.ModifyVariable("NonExistentObj_" + System.Guid.NewGuid().ToString("N"), "X", null, description: description);
+            }
+            catch (System.IO.FileNotFoundException) { return; }
+            catch (System.TypeLoadException) { return; }
+
+            var obj = JObject.Parse(json);
+            string code = obj["error"]?["code"]?.ToString();
+            Assert.NotEqual("UnknownType", code);
+            Assert.NotEqual("MissingParameter", code);
         }
 
         [Fact]

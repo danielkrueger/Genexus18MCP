@@ -197,12 +197,13 @@ namespace GxMcp.Gateway
                 "- `action` — `add`, `delete`, or `modify`\n" +
                 "- `name` — object that owns the variable\n" +
                 "- `varName` — variable name, including `&` when that is how the KB stores it\n" +
-                "- `typeName` or `newTypeName` — replacement type for `add`/`modify` (`dataType` is also accepted as a legacy alias)\n\n" +
+                "- `typeName` or `newTypeName` — type for `add`; replacement type for `modify` (`dataType` is also accepted as a legacy alias). Optional on `modify` when `description` is passed.\n\n" +
                 "## Optional\n" +
                 "- `basedOn` — domain name for compatible typed variables (`Attribute:<name>` also binds an attribute)\n" +
                 "- `basedOnAttribute` — attribute name (or `Attribute:<name>`) binding the variable by native SDK identity, preserving picture/semantics (e.g. `9999999999` vs `ZZZZZZZZZ9`)\n" +
                 "- `typeName: 'Attribute:<name>'` — same attribute binding via the type slot; `variables[]` items accept `basedOn`/`basedOnAttribute` too\n" +
                 "- `dimensions: 1|2` plus `dimensionSizes: [size]` or `[rows, columns]` declares a fixed-size vector/matrix; the SDK persists the native ATT dimension properties. `collection=true` and dimensions are mutually exclusive.\n" +
+                "- `description` — `modify` only: new variable Description (empty string clears it). Without a type the variable keeps its current type and only the description changes; `modify` with neither a type nor `description` returns `MissingParameter`.\n" +
                 "- `async: true` returns immediately with `operationId` / `job_id`; poll `genexus_lifecycle action=status|result target=op:<id>` for completion.\n\n" +
                 "## Notes\n" +
                 "- GAM / WWP+ framework-managed variables are protected and return a refusal instead of mutating them.\n" +
@@ -212,6 +213,7 @@ namespace GxMcp.Gateway
                 "## Examples\n" +
                 "- `{ action: 'add', name: 'InvoiceProc', varName: '&Total', typeName: 'Numeric(10.2)' }`\n" +
                 "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', newTypeName: 'Character(20)', async: true }`\n" +
+                "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', description: 'Customer state' }`\n" +
                 "- `{ action: 'delete', name: 'InvoiceProc', varName: '&ScratchFlag' }`\n",
 
             ["genexus_read"] =

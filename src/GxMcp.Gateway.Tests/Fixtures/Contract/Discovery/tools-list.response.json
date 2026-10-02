@@ -4345,6 +4345,10 @@
             "description": "add/modify optional: overrides decimals…",
             "type": "integer"
           },
+          "description": {
+            "description": "modify: new variable Description (empty…",
+            "type": "string"
+          },
           "dimensionSizes": {
             "description": "add/modify optional: positive sizes in…",
             "items": {

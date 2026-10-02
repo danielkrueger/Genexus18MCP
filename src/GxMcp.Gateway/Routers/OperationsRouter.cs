@@ -92,6 +92,7 @@ namespace GxMcp.Gateway.Routers
                         dataType = args?["dataType"]?.Type == JTokenType.Null ? null : args?["dataType"]?.ToString(),
                         basedOn = args?["basedOn"]?.Type == JTokenType.Null ? null : args?["basedOn"]?.ToString(),
                         basedOnAttribute = args?["basedOnAttribute"]?.ToString(),
+                        description = args?["description"]?.Type == JTokenType.Null ? null : args?["description"]?.ToString(),
                         objectType = args?["objectType"]?.ToString(),
                         objectName = args?["objectName"]?.ToString(),
                         objectModule = args?["module"]?.ToString(),

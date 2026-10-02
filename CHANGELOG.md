@@ -10,6 +10,7 @@
 ### Changed
 
 ### Fixed
+- `genexus_variable` `modify` no longer fails with `UnknownType` when only `description` is passed: the new `description` argument updates (or, with an empty string, clears) the Description in place and keeps the variable's type, binding and shape; `modify` with neither a type nor a description now returns `MissingParameter` instead of `UnknownType`.
 
 ### Internal
 

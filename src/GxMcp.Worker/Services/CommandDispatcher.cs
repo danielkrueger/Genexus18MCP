@@ -2140,7 +2140,8 @@ namespace GxMcp.Worker.Services
                     args?["collection"]?.ToObject<bool?>(),
                     args?["basedOnAttribute"]?.ToObject<string>(),
                     args?["dimensions"]?.ToObject<int?>(),
-                    args?["dimensionSizes"] as JArray);
+                    args?["dimensionSizes"] as JArray,
+                    args?["description"]?.ToObject<string>());
                  return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(modResp, target, args, "Variables");
             }
             if (action == "ValidatePayload")
