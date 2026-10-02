@@ -5,6 +5,53 @@
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.10.0 - 2026-10-02
+
+
+### Tracked issues
+
+- [#331](https://github.com/lennix1337/Genexus18MCP/issues/331) — [Bug] genexus_properties action=get with a single name always fails with InvalidBatchTargets (3.9.4)
+- [#332](https://github.com/lennix1337/Genexus18MCP/issues/332) — [Bug] genexus_wwp action=list throws NullReferenceException when name is the WebPanel instead of the WorkWithPlus host (follow-up to #330)
+- [#333](https://github.com/lennix1337/Genexus18MCP/issues/333) — [Bug] Worker pool eviction can select a busy Worker when opening another KB
+- [#334](https://github.com/lennix1337/Genexus18MCP/issues/334) — [Bug] inspect reads live SDK objects on Task.Run and ignores section timeout completion
+- [#335](https://github.com/lennix1337/Genexus18MCP/issues/335) — [Reliability] Shared WorkerHost needs broker-owned memory and SDK-stall supervision
+- [#336](https://github.com/lennix1337/Genexus18MCP/issues/336) — [Bug] Resource update notifications do not advance Gateway semantic cache revisions
+- [#337](https://github.com/lennix1337/Genexus18MCP/issues/337) — [Perf] Lite indexing performs a growing-list duplicate scan for every object
+- [#338](https://github.com/lennix1337/Genexus18MCP/issues/338) — [Perf] Source inserts repeatedly recompute full-catalog storage and FullSource budgets
+- [#339](https://github.com/lennix1337/Genexus18MCP/issues/339) — [Perf] Source coverage checks and warm load repeatedly read and decompress stored content
+- [#340](https://github.com/lennix1337/Genexus18MCP/issues/340) — [Perf] First-touch warmup is claimed process-wide and runs an unscoped source search
+- [#341](https://github.com/lennix1337/Genexus18MCP/issues/341) — [Reliability] Bound effective command queues and prevent cross-priority starvation
+- [#342](https://github.com/lennix1337/Genexus18MCP/issues/342) — [Reliability] Read logs off the SDK STA and distinguish transport liveness from SDK health
+- [#343](https://github.com/lennix1337/Genexus18MCP/issues/343) — [Perf] Detailed caller-site analysis has no bounded scan or continuation contract
+- [#344](https://github.com/lennix1337/Genexus18MCP/issues/344) — [Perf] Reclaim stale trigram postings and add Worker memory budgets for large KBs
+- [#345](https://github.com/lennix1337/Genexus18MCP/issues/345) — [Perf] Incremental snapshot publication copies clean shards and rewrites accumulated checkpoints
+- [#346](https://github.com/lennix1337/Genexus18MCP/issues/346) — [Perf] Cursor and deep-offset listings sort the complete candidate set for every page
+- [#347](https://github.com/lennix1337/Genexus18MCP/issues/347) — [Reliability] A valid oversized shared Worker response stops the broker for all clients
+- [#348](https://github.com/lennix1337/Genexus18MCP/issues/348) — [Bug] release-preflight.ps1: o motivo da fase que falhou não chega ao release-status.json
+- [#349](https://github.com/lennix1337/Genexus18MCP/issues/349) — [Feature] WorkWithPlus PatternInstance: support structural edits (add / move / remove layout elements) via genexus_wwp
+- [#350](https://github.com/lennix1337/Genexus18MCP/issues/350) — [Bug] PatternInstance: prévia de patch aprova texto que full dryRun recusa no preflight estrutural
+- [#352](https://github.com/lennix1337/Genexus18MCP/issues/352) — [Docs/DX] Corrigir receita e exemplos de PatternInstance e evitar recomendação de reapply bloqueado
+- [#353](https://github.com/lennix1337/Genexus18MCP/issues/353) — [Discussão] Há uma rota candidata de regeneração headless do WorkWith padrão no GeneXus 18?
+- [#354](https://github.com/lennix1337/Genexus18MCP/issues/354) — [Bug] kb_diff reports success for missing inventories and misses same-metadata content changes
+- [#355](https://github.com/lennix1337/Genexus18MCP/issues/355) — [Bug] Gateway queue metrics discard Worker queue time and include startup waiting
+- [#356](https://github.com/lennix1337/Genexus18MCP/issues/356) — [Feature] Bounded read-only discovery across an explicit set of KBs
+- [#357](https://github.com/lennix1337/Genexus18MCP/issues/357) — [Feature] Conditional object-part reads to avoid retransmitting unchanged source
+- [#358](https://github.com/lennix1337/Genexus18MCP/issues/358) — [Perf/Test] Add a reproducible synthetic multi-KB scale regression lane
+- [#359](https://github.com/lennix1337/Genexus18MCP/issues/359) — [Bug] apply_pattern: primeiro apply em Transaction retorna PatternApplied mas não gera os objetos WW (directAttach / InvoiceStyle1); worker recarregado gera WW com user controls não resolvidos
+- [#360](https://github.com/lennix1337/Genexus18MCP/issues/360) — [Bug] WebForm control properties can't be set via MCP on a plain WebPanel (e.g. TextBlock Format = Raw HTML)
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
 ### Internal
 
 - The contract-inventory generator reads the classifier's policy by field name instead of by formatting. `generate-operation-contract-inventory.py` located all six declarations through literal text: `private static readonly HashSet<string> <Field>`, a closing `\n        };` at exactly eight spaces, and the `// Only actions` comment that happens to follow `ActionContracts` today. Those are properties of the current formatting, not of the policy, and none of them is stated anywhere the next person edits - so re-indenting the file, dropping a modifier, or letting an editor's brace preference through broke a published artifact at release time, with a reformat as the trigger and a `ValueError` in the release gate as the only signal. Each declaration is now found by its name in the leading token run of a line followed by `=`, and its body ends at the brace that balances the initialiser's opening brace; comments and string literals are consumed as opaque units so a brace inside either cannot move the boundary, and the entry pattern inside `ActionContracts` tolerates whitespace the same way. Failing closed is unchanged and is the point: a declaration that is genuinely absent still raises naming the field and the file, because a tolerant parse that returned an empty set on a rename would publish an inventory silently missing every tool in that class. `DryRunCapableActions` no longer carries its own private copy of the same search, so there is one reader rather than two that must be kept in agreement. Three tests pin it in the Python lane, which is the lane that sees this and the .NET suite does not: one asserts all six declarations resolve and are non-empty, one runs the reader over a re-indented and modifier-stripped copy of the real source and requires an identical result, and one deletes each declaration in turn and requires a `ValueError` rather than an empty set. The reformatting test is the durable one - the tolerant match is exactly the code someone who means well will tighten back, and without it that tightening is invisible until a release fails. No published output changes: the regenerated inventory is byte-identical. The policy stays in `OperationClassifier.cs`, where `Describe` already consumes it, and the obvious next step - having C# emit the policy as JSON so there is no parse at all - is not taken here.
