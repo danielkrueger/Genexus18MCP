@@ -53,14 +53,39 @@ suites are blind to: a live-test class missing its `ProcessSmoke` trait passes
 every .NET lane and is rejected by the release preflight guard.
 
 ```powershell
-.\build.ps1                                                     # last; see ordering below
 dotnet test Genexus18MCP.sln -c Release --filter "Category!=ProcessSmoke"
 dotnet test Genexus18MCP.sln -c Release --no-build --filter "Category=ProcessSmoke"
 pwsh -NoProfile -File scripts\tests\run-release-script-tests.ps1
 python -m unittest discover -s scripts/tests
+python scripts/validate-tool-contracts.py
+python scripts/generate-operation-contract-inventory.py --check
+python scripts/verify-release-metadata.py --root . --version <package.json version>
 npm test
 npm run lint
+Push-Location src/nexus-ide
+npm ci
+npm run compile
+npm run lint
+npm test
+Pop-Location
+pwsh -NoProfile -File scripts/check-build-warning-baseline.ps1 -ValidateOnly
+pwsh -NoProfile -File scripts/mcp_llm_contract_smoke.ps1
+pwsh -NoProfile -File scripts/coverage/collect.ps1
+pwsh -NoProfile -File scripts/coverage/assert-threshold.ps1 -CoverageRoot artifacts/coverage -MinLineRatePercent 60
+.\build.ps1                                                     # last; see ordering below
 ```
+
+**Superset of CI.** This block is the reviewer's full set.
+`.github/workflows/ci.yml` enforces a *subset* of it: an entry is here because CI
+runs it, because a release depends on it, or because CI cannot run it locally —
+not because every line is a CI step. A reviewer who expects CI and this block to
+be line-for-line identical will flag a legitimate superset as drift. CI
+additionally runs the protected SDK/live lane (`scripts/ci/sdk-validation.ps1`),
+which needs the self-hosted `gx-sdk-18` runner and is therefore not listed.
+
+The Nexus-IDE lane is **not** optional. On a 3.x release the `.vsix` it builds is
+a required release asset, and `.github/workflows/release.yml` byte-compares it
+against the copy inside `publish.zip`.
 
 **Ordering.** `build.ps1` runs **last**. A solution-level `dotnet test -c Release`
 rebuilds the Worker outside the `x86` platform the solution maps it to, so

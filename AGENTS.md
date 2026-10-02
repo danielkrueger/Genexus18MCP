@@ -127,7 +127,6 @@ mode through `-LiveMajors`/`-LiveGxPathMap` or the matching environment variable
 see `docs/live-kb-test-harness.md` for fixture and evidence rules.
 
 ```powershell
-.\build.ps1
 dotnet build Genexus18MCP.sln -v:minimal
 dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
 dotnet build src\GxMcp.Gateway\GxMcp.Gateway.csproj
@@ -136,15 +135,40 @@ dotnet test src\GxMcp.Worker.Tests --filter "FullyQualifiedName~PropertyService"
 dotnet test src\GxMcp.Gateway.Tests --filter "FullyQualifiedName~McpRouter"
 pwsh -NoProfile -File scripts\tests\run-release-script-tests.ps1
 python -m unittest discover -s scripts\tests
+python scripts/validate-tool-contracts.py
+python scripts/generate-operation-contract-inventory.py --check
+python scripts/verify-release-metadata.py --root . --version <package.json version>
 npm test
 npm run lint
 npm run test:one -- "test name pattern"
+Push-Location src\nexus-ide
+npm ci
+npm run compile
+npm run lint
+npm test
+Pop-Location
+pwsh -NoProfile -File scripts\check-build-warning-baseline.ps1 -ValidateOnly
+pwsh -NoProfile -File scripts\mcp_llm_contract_smoke.ps1
+pwsh -NoProfile -File scripts\coverage\collect.ps1
+pwsh -NoProfile -File scripts\coverage\assert-threshold.ps1 -CoverageRoot artifacts\coverage -MinLineRatePercent 60
+.\build.ps1                                                       # last; see ordering below
 ```
 
 A change is validated when **every** lane above is green, not the lanes you
 remember. The PowerShell and Python suites catch contract drift the .NET, CLI and
 Nexus suites are blind to — a live-test class missing its `ProcessSmoke` trait
 passes every .NET lane and is rejected by the release preflight guard.
+
+This block is the operator's **full** set. `.github/workflows/ci.yml` enforces a
+*subset* of it: an entry is here because CI runs it, because an operator needs it
+before a release, or because CI cannot run it locally — not because every line is
+a CI step. When CI gains a lane, add it here in the same change. CI additionally
+runs the protected SDK/live lane (`.\scripts\ci\sdk-validation.ps1`), which needs
+the self-hosted `gx-sdk-18` runner and is therefore not listed above.
+
+The Nexus-IDE lane is **not** optional. On a 3.x release the `.vsix` it builds is a
+required release asset, and `.github/workflows/release.yml` byte-compares it
+against the copy inside `publish.zip`.
 
 Run `.\build.ps1` **last**. A solution-level `dotnet test -c Release` rebuilds
 the Worker outside the `x86` platform the solution maps it to, breaking the
