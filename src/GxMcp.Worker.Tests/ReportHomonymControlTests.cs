@@ -20,7 +20,19 @@ namespace GxMcp.Worker.Tests
             var text = json.ToString();
             Assert.Contains("PbA", text);
             Assert.Contains("PbB", text);
-            Assert.Contains("/Report[1]/PrintBlock[2]/Control[1]", text);
+            Assert.Contains("/Report/PrintBlock[2]/Control[1]", text);
+        }
+
+        [Fact]
+        public void EveryListedPathResolvesBackToItsOwnControl()
+        {
+            var doc = XDocument.Parse(ReportXml);
+            var json = JObject.Parse(LayoutService.AmbiguousControlError(doc, "SampleProc", "lblSame"));
+            string message = json["error"]?["message"]?.ToString() ?? json["message"]?.ToString();
+            var matches = JArray.Parse(message.Substring(message.IndexOf('[')));
+            Assert.Equal(2, matches.Count);
+            Assert.Equal("a", (string)LayoutService.FindControlElement(doc, matches[0]["path"].ToString()).Attribute("Caption"));
+            Assert.Equal("b", (string)LayoutService.FindControlElement(doc, matches[1]["path"].ToString()).Attribute("Caption"));
         }
 
         [Fact]

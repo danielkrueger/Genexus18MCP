@@ -1533,7 +1533,8 @@ namespace GxMcp.Worker.Services
                 for (var cur = m; cur != null; cur = cur.Parent)
                 {
                     int idx = cur.Parent == null ? 1 : cur.Parent.Elements(cur.Name).TakeWhile(x => x != cur).Count() + 1;
-                    segments.Insert(0, cur.Name.LocalName + "[" + idx + "]");
+                    // Same shape as get_tree 'p': the root carries no index.
+                    segments.Insert(0, cur.Parent == null ? cur.Name.LocalName : cur.Name.LocalName + "[" + idx + "]");
                 }
                 var block = m.Ancestors("PrintBlock").FirstOrDefault();
                 paths.Add(new JObject
