@@ -1,8 +1,38 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-25",
-  "warningCount": 213,
+  "generatedAt": "2026-10-02",
+  "warningCount": 274,
   "warnings": [
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/ApplyPatternSchemaPromiseTests.cs",
+      "line": 75
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/ApplyPatternSchemaPromiseTests.cs",
+      "line": 84
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/ApplyPatternSchemaPromiseTests.cs",
+      "line": 86
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/ApplyPatternSchemaPromiseTests.cs",
+      "line": 93
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/ApplyPatternSchemaPromiseTests.cs",
+      "line": 95
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/ApplyPatternSchemaPromiseTests.cs",
+      "line": 183
+    },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway.Tests/CreateIndexRoutingTests.cs",
@@ -60,6 +90,31 @@
     },
     {
       "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/KbDiffHelperTests.cs",
+      "line": 66
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/KbDiffHelperTests.cs",
+      "line": 131
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/KbDiffHelperTests.cs",
+      "line": 166
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/KbDiffHelperTests.cs",
+      "line": 184
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/KbDiffHelperTests.cs",
+      "line": 315
+    },
+    {
+      "code": "CS8600",
       "file": "src/GxMcp.Gateway.Tests/LifecycleResponseShaperTests.cs",
       "line": 48
     },
@@ -76,12 +131,12 @@
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway.Tests/LiveKbFactAttribute.cs",
-      "line": 19
+      "line": 20
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway.Tests/LiveKbFactAttribute.cs",
-      "line": 27
+      "line": 28
     },
     {
       "code": "CS8600",
@@ -175,13 +230,133 @@
     },
     {
       "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/RecipeCatalogTests.cs",
+      "line": 100
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/RecipeCatalogTests.cs",
+      "line": 102
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/RecipeCatalogTests.cs",
+      "line": 110
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/SharedWorkerOversizedFrameTests.cs",
+      "line": 46
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/SharedWorkerOversizedFrameTests.cs",
+      "line": 47
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/SharedWorkerOversizedFrameTests.cs",
+      "line": 178
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/SharedWorkerOversizedFrameTests.cs",
+      "line": 182
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/SharedWorkerOversizedFrameTests.cs",
+      "line": 215
+    },
+    {
+      "code": "CS8600",
       "file": "src/GxMcp.Gateway.Tests/ToolDefinitionsFixtureParityTests.cs",
       "line": 45
     },
     {
       "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 39
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 40
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 56
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 57
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 72
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 87
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 101
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 114
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 115
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 126
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 127
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 150
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 151
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 171
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 208
+    },
+    {
+      "code": "CS8600",
       "file": "src/GxMcp.Gateway/CrashLedger.cs",
       "line": 44
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/KbDiffHelper.cs",
+      "line": 281
     },
     {
       "code": "CS8600",
@@ -191,12 +366,17 @@
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/MacroSuggestionService.cs",
-      "line": 213
+      "line": 212
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/MacroSuggestionService.cs",
-      "line": 226
+      "line": 225
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/MacroSuggestionService.cs",
+      "line": 228
     },
     {
       "code": "CS8600",
@@ -205,33 +385,28 @@
     },
     {
       "code": "CS8600",
-      "file": "src/GxMcp.Gateway/MacroSuggestionService.cs",
-      "line": 230
+      "file": "src/GxMcp.Gateway/McpRouter.cs",
+      "line": 176
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 157
+      "line": 187
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 168
+      "line": 1913
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1944
+      "line": 2011
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 2021
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 2045
+      "line": 2035
     },
     {
       "code": "CS8600",
@@ -251,87 +426,82 @@
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 782
+      "line": 818
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 811
+      "line": 847
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 816
+      "line": 852
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 878
+      "line": 914
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 879
+      "line": 915
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 908
+      "line": 951
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 909
+      "line": 952
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 910
+      "line": 953
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 919
+      "line": 962
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 920
+      "line": 963
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.GatewayTools.cs",
-      "line": 933
+      "line": 976
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.Http.cs",
-      "line": 577
+      "line": 576
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.Http.cs",
-      "line": 621
+      "line": 619
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.Http.cs",
-      "line": 626
+      "line": 624
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.Http.cs",
-      "line": 634
+      "line": 632
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
       "line": 101
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
-      "line": 129
     },
     {
       "code": "CS8600",
@@ -346,122 +516,127 @@
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
-      "line": 139
+      "line": 141
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
-      "line": 142
+      "line": 143
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
-      "line": 537
+      "line": 146
     },
     {
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
-      "line": 819
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 166
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 718
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 720
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 750
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 751
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 756
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 758
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 780
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 785
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 788
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 890
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 904
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 905
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 922
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 937
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 1275
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
-      "line": 325
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
-      "line": 522
-    },
-    {
-      "code": "CS8600",
-      "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
       "line": 599
     },
     {
       "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
+      "line": 847
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 222
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 805
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 807
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 837
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 838
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 843
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 845
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 867
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 872
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 875
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 977
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 991
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 992
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 1009
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 1024
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
+      "line": 1362
+    },
+    {
+      "code": "CS8600",
       "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
-      "line": 601
+      "line": 446
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
+      "line": 660
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
+      "line": 737
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
+      "line": 739
     },
     {
       "code": "CS8600",
@@ -527,6 +702,21 @@
       "code": "CS8600",
       "file": "src/GxMcp.Gateway/Routers/SystemRouter.cs",
       "line": 188
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/WorkerLivenessClassifier.cs",
+      "line": 56
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/WorkerLivenessClassifier.cs",
+      "line": 76
+    },
+    {
+      "code": "CS8600",
+      "file": "src/GxMcp.Gateway/WorkerProcess.cs",
+      "line": 441
     },
     {
       "code": "CS8601",
@@ -611,32 +801,42 @@
     {
       "code": "CS8602",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1816
+      "line": 1785
     },
     {
       "code": "CS8602",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1890
+      "line": 1859
     },
     {
       "code": "CS8602",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1947
+      "line": 1916
+    },
+    {
+      "code": "CS8602",
+      "file": "src/GxMcp.Gateway/Program.cs",
+      "line": 43
     },
     {
       "code": "CS8602",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 175
+      "line": 242
     },
     {
       "code": "CS8602",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 920
+      "line": 1007
     },
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway.Tests/BrowserDriverDetectorTests.cs",
       "line": 14
+    },
+    {
+      "code": "CS8603",
+      "file": "src/GxMcp.Gateway.Tests/LogRedactionSingleSourceTests.cs",
+      "line": 163
     },
     {
       "code": "CS8603",
@@ -646,37 +846,37 @@
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1918
+      "line": 1887
     },
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1937
+      "line": 1906
     },
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1938
+      "line": 1907
     },
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 1939
+      "line": 1908
     },
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 2044
+      "line": 2034
     },
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 2129
+      "line": 2119
     },
     {
       "code": "CS8603",
       "file": "src/GxMcp.Gateway/Program.Whoami.cs",
-      "line": 1994
+      "line": 2033
     },
     {
       "code": "CS8603",
@@ -707,6 +907,11 @@
       "code": "CS8604",
       "file": "src/GxMcp.Gateway.Tests/FullEditConcurrencyRoutingTests.cs",
       "line": 12
+    },
+    {
+      "code": "CS8604",
+      "file": "src/GxMcp.Gateway.Tests/KbDiffHelperTests.cs",
+      "line": 67
     },
     {
       "code": "CS8604",
@@ -780,8 +985,38 @@
     },
     {
       "code": "CS8604",
+      "file": "src/GxMcp.Gateway.Tests/WarmupSourceSearchScopeTests.cs",
+      "line": 63
+    },
+    {
+      "code": "CS8604",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 172
+    },
+    {
+      "code": "CS8604",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 173
+    },
+    {
+      "code": "CS8604",
+      "file": "src/GxMcp.Gateway.Tests/WorkerLivenessClassifierTests.cs",
+      "line": 174
+    },
+    {
+      "code": "CS8604",
+      "file": "src/GxMcp.Gateway/KbDiffHelper.cs",
+      "line": 360
+    },
+    {
+      "code": "CS8604",
+      "file": "src/GxMcp.Gateway/KbDiffHelper.cs",
+      "line": 372
+    },
+    {
+      "code": "CS8604",
       "file": "src/GxMcp.Gateway/MacroSuggestionService.cs",
-      "line": 259
+      "line": 258
     },
     {
       "code": "CS8604",
@@ -801,57 +1036,57 @@
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
-      "line": 342
+      "line": 404
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.LifecycleGateway.cs",
-      "line": 948
+      "line": 976
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 570
+      "line": 664
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 930
+      "line": 1017
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 941
+      "line": 1028
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 954
+      "line": 1041
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 959
+      "line": 1046
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 1061
+      "line": 1148
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 1297
+      "line": 1384
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.ToolDispatch.cs",
-      "line": 1396
+      "line": 1483
     },
     {
       "code": "CS8604",
       "file": "src/GxMcp.Gateway/Program.WorkerLifecycle.cs",
-      "line": 336
+      "line": 457
     },
     {
       "code": "CS8605",
@@ -885,6 +1120,11 @@
     },
     {
       "code": "CS8618",
+      "file": "src/GxMcp.Gateway/KbDiffHelper.cs",
+      "line": 181
+    },
+    {
+      "code": "CS8618",
       "file": "src/GxMcp.Gateway/RecipeCatalog.cs",
       "line": 28
     },
@@ -911,7 +1151,7 @@
     {
       "code": "CS8619",
       "file": "src/GxMcp.Gateway/McpRouter.cs",
-      "line": 519
+      "line": 552
     },
     {
       "code": "CS8620",
@@ -1025,6 +1265,16 @@
     },
     {
       "code": "CS8625",
+      "file": "src/GxMcp.Gateway.Tests/FirstTouchWarmScopeTests.cs",
+      "line": 53
+    },
+    {
+      "code": "CS8625",
+      "file": "src/GxMcp.Gateway.Tests/FirstTouchWarmScopeTests.cs",
+      "line": 54
+    },
+    {
+      "code": "CS8625",
       "file": "src/GxMcp.Gateway.Tests/KbPathValidationTests.cs",
       "line": 79
     },
@@ -1032,6 +1282,11 @@
       "code": "CS8625",
       "file": "src/GxMcp.Gateway.Tests/LifecycleResponseShaperTests.cs",
       "line": 248
+    },
+    {
+      "code": "CS8625",
+      "file": "src/GxMcp.Gateway.Tests/LogRedactionSingleSourceTests.cs",
+      "line": 136
     },
     {
       "code": "CS8625",
@@ -1067,6 +1322,56 @@
       "code": "CS8625",
       "file": "src/GxMcp.Gateway/OperationTracker.cs",
       "line": 90
+    },
+    {
+      "code": "CS8632",
+      "file": "src/GxMcp.Worker.Tests/BatchServicePaginationTests.cs",
+      "line": 93
+    },
+    {
+      "code": "CS8632",
+      "file": "src/GxMcp.Worker.Tests/PrintBlockReadBackTests.cs",
+      "line": 172
+    },
+    {
+      "code": "CS8632",
+      "file": "src/GxMcp.Worker.Tests/PrintBlockReadBackTests.cs",
+      "line": 173
+    },
+    {
+      "code": "XUNIT1012",
+      "file": "src/GxMcp.Gateway.Tests/SafePathSegmentTests.cs",
+      "line": 32
+    },
+    {
+      "code": "XUNIT1031",
+      "file": "src/GxMcp.Worker.Tests/InspectSectionCompletionTests.cs",
+      "line": 70
+    },
+    {
+      "code": "XUNIT2013",
+      "file": "src/GxMcp.Gateway.Tests/MultiKbDiscoveryTests.cs",
+      "line": 323
+    },
+    {
+      "code": "XUNIT2013",
+      "file": "src/GxMcp.Gateway.Tests/MultiKbDiscoveryTests.cs",
+      "line": 366
+    },
+    {
+      "code": "XUNIT2013",
+      "file": "src/GxMcp.Worker.Tests/LiteEntryAccumulatorTests.cs",
+      "line": 99
+    },
+    {
+      "code": "XUNIT2013",
+      "file": "src/GxMcp.Worker.Tests/LiteEntryAccumulatorTests.cs",
+      "line": 175
+    },
+    {
+      "code": "XUNIT2013",
+      "file": "src/GxMcp.Worker.Tests/VisualVerifyCliRunnerHardeningTests.cs",
+      "line": 115
     }
   ]
 }
