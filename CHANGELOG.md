@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus-mcp init` (and the zero-config launcher in a KB folder) no longer picks the newest GeneXus update of the KB major when the `.gxw` names an older one: with several installs of the same major it now prefers the install whose `major.minor.update` matches the KB version (e.g. U7 for an `18.0.7.x` KB), falling back to the previous same-major choice. Opening a KB with a newer update converts it.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02

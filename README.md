@@ -66,7 +66,9 @@ recognized. Classic DAT KB roots are identified from their legacy markers
 
 `init` also reads the KB `.gxw` major and the selected `GeneXus.exe` metadata.
 It aborts before writing `config.json` when the majors conflict or an automatic
-selection cannot be verified. `genexus-mcp doctor` exposes the same result as
+selection cannot be verified. When several installs share the KB major, the
+automatic selection prefers the one whose update matches the `.gxw` version
+(e.g. U7 for an `18.0.7.x` KB) over the newest one. `genexus-mcp doctor` exposes the same result as
 the `kb_sdk_compatibility` check. For a disposable fixture, the
 [live-KB harness](docs/live-kb-test-harness.md) includes a catalog-driven matrix
 that checks every supported major against one published artifact.

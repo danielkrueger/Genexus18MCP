@@ -917,6 +917,38 @@ test('classic gxi identity does not invent a GX8/GX9 mismatch before provider op
     }
 });
 
+test('init prefers the GeneXus install of the KB update over a newer same-major one', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-update-'));
+    const kbDir = path.join(tempRoot, 'kb');
+    const newerGx = path.join(tempRoot, 'GeneXus18_u14');
+    const kbGx = path.join(tempRoot, 'GeneXus18_u7');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(kbDir, 'KnowledgeBase.gxw'),
+        '<KnowledgeBase><VersionNumber>18.0.7.179127</VersionNumber></KnowledgeBase>'
+    );
+    for (const [dir, version] of [[newerGx, '18.0.14.187794'], [kbGx, '18.0.7.179127']]) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'GeneXus.exe'), 'not-a-real-executable');
+        fs.writeFileSync(path.join(dir, 'version.txt'), version);
+    }
+
+    try {
+        // GENEXUS_HOME stands in for the registry, which points at the newest update.
+        const result = runCli(
+            ['init', '--kb', kbDir, '--no-smoke', '--no-write-clients', '--format', 'json'],
+            { env: { ...testGatewayEnv, GENEXUS_HOME: newerGx } }
+        );
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.ok.resolved.gx.path, kbGx);
+        const written = JSON.parse(fs.readFileSync(path.join(kbDir, 'config.json'), 'utf8'));
+        assert.equal(written.GeneXus.InstallationPath, kbGx);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('init rejects a known KB and SDK major mismatch before writing config', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-mismatch-'));
     const kbDir = path.join(tempRoot, 'kb17');

@@ -280,6 +280,50 @@ function discoverGeneXusInstallation(preferredMajor = null) {
     return null;
 }
 
+// Same-major discovery returns the first install the registry or folder scan
+// finds, usually the newest update, and opening a KB with a newer update
+// converts it. When the KB's exact build is known, prefer an install of the
+// same major.minor.update (sibling of the discovered one or under the standard
+// GeneXus roots); otherwise keep the same-major result.
+function discoverGeneXusInstallationForKb(kbIdentity) {
+    const major = kbIdentity ? kbIdentity.major : null;
+    const fallback = discoverGeneXusInstallation(major);
+    const wanted = geneXusUpdateKey(kbIdentity && kbIdentity.version);
+    if (!wanted) return fallback;
+    if (fallback && geneXusUpdateKey(readGeneXusInstallationIdentity(fallback).version) === wanted) return fallback;
+
+    const roots = [];
+    if (fallback) roots.push(path.dirname(fallback));
+    for (const base of [process.env['ProgramFiles(x86)'], process.env.ProgramFiles]) {
+        if (!base) continue;
+        roots.push(path.join(base, 'GeneXus'), path.join(base, 'Artech', 'GeneXus'));
+    }
+    const seen = new Set();
+    for (const root of roots) {
+        const key = root.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        let entries;
+        try {
+            entries = fs.readdirSync(root);
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            if (!/^GeneXus/i.test(entry)) continue;
+            const candidate = path.join(root, entry);
+            if (!hasGeneXusExecutable(candidate)) continue;
+            if (geneXusUpdateKey(readGeneXusInstallationIdentity(candidate).version) === wanted) return candidate;
+        }
+    }
+    return fallback;
+}
+
+function geneXusUpdateKey(version) {
+    const match = String(version || '').trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+    return match ? `${match[1]}.${match[2]}.${match[3]}` : null;
+}
+
 function discoverGeneXusFromPath(preferredMajor = null) {
     if (process.platform !== 'win32') return null;
     try {
@@ -2308,7 +2352,7 @@ function applyLauncherConfigOrExit({ cwd, stderr, quiet }) {
         return { ok: false };
     }
 
-    const foundGxPath = discoverGeneXusInstallation(kbIdentity.major);
+    const foundGxPath = discoverGeneXusInstallationForKb(kbIdentity);
     if (!foundGxPath) {
         log('[genexus-mcp] ERROR: No GeneXus installation matching the KB major was auto-discovered.');
         log(`[genexus-mcp] KB major: ${kbIdentity.major}`);
@@ -2347,6 +2391,7 @@ module.exports = {
     getGeneXusVersionCatalog,
     getGeneXusCatalogEntries,
     discoverGeneXusInstallation,
+    discoverGeneXusInstallationForKb,
     discoverGeneXusFromRegistry,
     discoverKnowledgeBase,
     discoverKnowledgeBases,
