@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Multi-KB discovery (`kbs`) no longer throws away the results of the KBs that already finished when the caller cancels while another KB is still queued. The queued KB's cancellation escaped the fan-out (it was raised by `Task.Run` and by the concurrency gate outside the per-KB `try`), so `Task.WhenAll` threw instead of returning a `canceled` outcome for that KB. A KB whose slot is granted after the cancel is no longer dispatched either.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
