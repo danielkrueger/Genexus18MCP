@@ -738,10 +738,11 @@ It provides a virtual filesystem (`genexus://` scheme), a KB explorer with multi
 
 ### Automated release
 
-- Workflow: `.github/workflows/release.yml`
-- Trigger: push to `main` with a `package.json` version bump
-- Behavior: publishes to npm if version is new + creates a GitHub Release tagged `v<version>`
-- Required secret: `NPM_TOKEN`
+Releases ship through `release.ps1`; the full protocol is in [`docs/release_protocol.md`](docs/release_protocol.md).
+
+- **Entry point:** `./release.ps1 -Version <X.Y.Z>` builds the artifacts, creates the `v<version>` tag and the GitHub Release (with `publish.zip`, its checksum and the Nexus VSIX attached). Nothing is published by a push to `main`.
+- **Workflow:** creating that release fires [`.github/workflows/release.yml`](.github/workflows/release.yml) on the `release: [published]` event; a manual `workflow_dispatch` with a `tag` re-runs it for a release that already exists. The workflow **verifies** the release's assets and publishes the package to npm — it does not create the tag or the release.
+- **npm authentication:** [OIDC Trusted Publishing](https://docs.npmjs.com/trusted-publishers). There is no npm token secret to configure, and the workflow unsets any token it finds before publishing.
 
 ---
 

@@ -13,6 +13,40 @@ function requiredNodeMajor() {
     return match[1];
 }
 
+// Returns the body of one ATX section, addressed by its exact heading line so
+// that editing prose above it cannot silently change what is asserted. The
+// heading must appear exactly once, and the section ends at the next heading of
+// the same or higher rank. Lines inside fenced code blocks are never treated as
+// headings or as section boundaries.
+function markdownSection(markdown, headingLine) {
+    const lines = markdown.split(/\r?\n/);
+    const fenced = [];
+    let fence = null;
+    for (const line of lines) {
+        const opening = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+        if (opening) fence = fence === null ? opening[1][0] : null;
+        fenced.push(fence !== null);
+    }
+
+    const starts = [];
+    lines.forEach((line, index) => {
+        if (!fenced[index] && line.trim() === headingLine) starts.push(index);
+    });
+    assert.equal(starts.length, 1, `Expected exactly one "${headingLine}" heading, found ${starts.length}`);
+
+    const level = /^#+/.exec(headingLine)[0].length;
+    let end = lines.length;
+    for (let index = starts[0] + 1; index < lines.length; index++) {
+        if (fenced[index]) continue;
+        const heading = /^(#{1,6})\s+\S/.exec(lines[index].trim());
+        if (heading && heading[1].length <= level) {
+            end = index;
+            break;
+        }
+    }
+    return lines.slice(starts[0] + 1, end).join('\n');
+}
+
 test('onboarding docs stay aligned with package prerequisites', () => {
     const nodeMajor = requiredNodeMajor();
     const readme = read('README.md');
@@ -26,4 +60,17 @@ test('onboarding docs stay aligned with package prerequisites', () => {
     assert.match(readme, /`\.\\build\.ps1`/);
     assert.match(readme, /\*\*Windows\*\* \(GeneXus is Windows-only\)/);
     assert.match(readme, /GeneXus 18.*installed locally/);
+});
+
+test('the README release section describes the release flow that actually ships', () => {
+    const section = markdownSection(read('README.md'), '### Automated release');
+
+    // The workflow triggers on the published release event and only verifies the
+    // release `release.ps1` already created; it never runs on a push, and it never
+    // creates the tag or the release.
+    assert.doesNotMatch(section, /NPM_TOKEN/);
+    assert.match(section, /`release: \[published\]`/);
+
+    // npm authentication is OIDC Trusted Publishing, so there is no token secret.
+    assert.match(section, /OIDC Trusted Publishing/);
 });
