@@ -119,6 +119,32 @@ namespace GxMcp.Gateway
             _entries.TryRemove(sessionId, out _);
         }
 
+        /// <summary>
+        /// True when a live session entry still points at <paramref name="token"/>.
+        /// This is the reachability question the lease registry asks before
+        /// dropping a terminal entry: every read that can observe a terminal lease
+        /// state takes its token from one of these snapshots.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately a pure read. It does not call <see cref="CleanupExpired"/>
+        /// and does not refresh <c>LastSeenUtc</c>, so asking the question can
+        /// neither retire a session nor extend one. Liveness stays exactly what
+        /// <see cref="TryGetEntry"/> and <see cref="CleanupExpired"/> decide, and the
+        /// stdio exemption documented in <see cref="CleanupExpired"/> applies here
+        /// without this method having to restate it.
+        /// </remarks>
+        internal bool IsLeaseTokenReferenced(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return false;
+            foreach (var pair in _entries)
+            {
+                var lease = pair.Value.Lease;
+                if (lease != null && string.Equals(lease.Token, token, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
+        }
+
         private bool TryGetEntry(string sessionId, out Entry entry)
         {
             entry = null!;

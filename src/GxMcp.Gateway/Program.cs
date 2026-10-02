@@ -33,7 +33,14 @@ namespace GxMcp.Gateway
         // rejected merely because the caller did not first establish a session
         // selection; selected-session calls still use the lease fence below.
         private static readonly AsyncLocal<bool> _currentExplicitKb = new AsyncLocal<bool>();
-        private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(new StopwatchMonotonicClock());
+        // The registry may only reclaim a terminal lease once no session can still read
+        // it, and reachability is a question about _sessionKbContexts. Wiring the
+        // predicate here keeps both classes ignorant of each other. The lambda reads
+        // that field when the trim runs, never during this initializer, so it does not
+        // depend on which of the two static fields is assigned first.
+        private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(
+            new StopwatchMonotonicClock(),
+            token => _sessionKbContexts.IsLeaseTokenReferenced(token));
         // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
         // otherwise the worker for the DefaultKb (acquiring it lazily).
         private static async Task<AcquiredWorker> GetActiveWorkerAsync()
