@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- **`genexus_properties action=set propertyName=idBasedOn` on an Attribute now applies the Domain instead of returning `PropertyApplied` without writing anything.** `idBasedOn` is the SDK name GeneXus shows for an Attribute's "Based on", but `IsDomainPropertyName` only knew `Domain`, `DomainBasedOn`, `BasedOn` and `DomainDefinition`, so the write fell into the generic scalar setter, which cannot bind a string to a `BasedOnReference` and fails silently. The post-save check then could not read the property back (unverifiable), so the plain `PropertyApplied` carried no `before`/`persisted` block and a following `get` still showed an empty `idBasedOn`. `idBasedOn` now takes the same typed Domain path as `propertyName=Domain` (existence check, `DomainBasedOn` write, persisted-name verification). A value qualified as `Domain:<Name>` is accepted on this path, because the SDK qualified-name lookup could not resolve the prefixed form; an `Attribute:<Name>` value still fails with `DomainNotFound`. `get` aliasing is unchanged: `idBasedOn` is excluded from the Domain read alias, so `get Domain` keeps returning the domain name and `get idBasedOn` still returns its own entry.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
