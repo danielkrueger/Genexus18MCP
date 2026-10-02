@@ -321,7 +321,7 @@
           },
           "reapply": {
             "default": false,
-            "description": "Re-run on existing instance.",
+            "description": "Re-run on an existing instance. Refused…",
             "type": "boolean"
           },
           "rollbackOnFailure": {
