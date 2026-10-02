@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -21,28 +22,62 @@ namespace GxMcp.Gateway
         private const int MaxEntries = 4096;
         private const long MaxBytes = 2 * 1024 * 1024;
         private static readonly TimeSpan Retention = TimeSpan.FromDays(7);
+
+        /// <summary>
+        /// Bound on how long a write waits for the cross-process journal lease
+        /// before failing closed. The journal path is fixed per installed exe, so
+        /// every Gateway of an installation contends for the same file; the
+        /// critical section is a single small read-modify-write, so this is far
+        /// more than a healthy peer needs. It exists only so a wedged or
+        /// crashed peer cannot block a mutation forever - exceeding it refuses
+        /// the write instead of dropping the lease, because a journal written
+        /// without the lease is how a committed mutation becomes replayable.
+        /// </summary>
+        internal static readonly TimeSpan LeaseWaitCap = TimeSpan.FromMilliseconds(2000);
+
+        private const int LeaseRetryDelayMs = 20;
+        private const string LeaseBusyError =
+            "Mutation operation journal is held by another Gateway process; retry after it finishes.";
         private readonly string _path;
+        private readonly string _lockPath;
+        private readonly IMonotonicClock _clock;
         private readonly OperationalStateKey? _owner;
         private readonly object _gate = new object();
         private readonly Dictionary<string, Entry> _entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
         private bool _healthy = true;
         private string _error = string.Empty;
+        // Contention is not corruption: a peer holding the lease blocks writes
+        // now but releases it later, so this is reported as unavailable and
+        // cleared by the next successful acquisition rather than latched
+        // permanently the way a rejected journal file is.
+        private volatile bool _leaseBusy;
 
         public MutationOperationJournal(string path)
-            : this(path, null) { }
+            : this(path, null, new StopwatchMonotonicClock()) { }
 
         internal MutationOperationJournal(string path, OperationalStateKey owner)
-            : this(path, (OperationalStateKey?)owner) { }
+            : this(path, (OperationalStateKey?)owner, new StopwatchMonotonicClock()) { }
 
-        private MutationOperationJournal(string path, OperationalStateKey? owner)
+        internal MutationOperationJournal(string path, IMonotonicClock clock)
+            : this(path, null, clock) { }
+
+        private MutationOperationJournal(string path, OperationalStateKey? owner, IMonotonicClock clock)
         {
             _path = path ?? throw new ArgumentNullException(nameof(path));
+            _lockPath = _path + ".lock";
             _owner = owner;
+            _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             Load();
         }
 
-        internal bool IsHealthy { get { lock (_gate) return _healthy; } }
-        internal string Error { get { lock (_gate) return _error; } }
+        internal bool IsHealthy { get { lock (_gate) return _healthy && !_leaseBusy; } }
+        internal string Error
+        {
+            get
+            {
+                lock (_gate) return _leaseBusy ? LeaseBusyError : _error;
+            }
+        }
 
         internal enum BeginResult
         {
@@ -68,60 +103,79 @@ namespace GxMcp.Gateway
             MutationOperationEvidence? evidence)
         {
             string id = RecordId(kbPath, tool, key);
-            lock (_gate)
+            // Failing closed: a refused write leaves no fence, so the caller
+            // reports "not executed" instead of replaying a mutation.
+            BeginResult result = BeginResult.JournalUnavailable;
+            TryExclusiveJournal(() => result = BeginLocked(id, kbPath, tool, key, payloadHash, evidence));
+            return result;
+        }
+
+        private BeginResult BeginLocked(
+            string id,
+            string kbPath,
+            string tool,
+            string key,
+            string payloadHash,
+            MutationOperationEvidence? evidence)
+        {
+            if (!_healthy) return BeginResult.JournalUnavailable;
+            // The in-memory snapshot can be stale: the journal path is fixed per
+            // installed exe, so a second Gateway process writes the same file and
+            // its "started" fence is invisible until this instance re-reads it.
+            // Deciding before the reload would treat that fence as absent and
+            // replay a mutation the peer may already have committed.
+            LoadLocked();
+            if (!_healthy) return BeginResult.JournalUnavailable;
+            PruneLocked();
+            if (_entries.TryGetValue(id, out var existing))
             {
-                if (!_healthy) return BeginResult.JournalUnavailable;
-                PruneLocked();
-                if (_entries.TryGetValue(id, out var existing))
-                {
-                    if (!string.Equals(existing.PayloadHash, payloadHash, StringComparison.Ordinal))
-                        return BeginResult.Conflict;
-                    if (!string.IsNullOrWhiteSpace(existing.TargetHash)
-                        && !string.Equals(existing.TargetHash, evidence?.TargetHash, StringComparison.Ordinal))
-                        return BeginResult.Conflict;
-                    if (!string.IsNullOrWhiteSpace(existing.RevisionHash)
-                        && !string.Equals(existing.RevisionHash, evidence?.RevisionHash, StringComparison.Ordinal))
-                        return BeginResult.Conflict;
-                    if (!string.IsNullOrWhiteSpace(existing.ModelHash)
-                        && !string.Equals(existing.ModelHash, evidence?.ModelHash, StringComparison.Ordinal))
-                        return BeginResult.Conflict;
-                    if (!string.IsNullOrWhiteSpace(existing.EnvironmentHash)
-                        && !string.Equals(existing.EnvironmentHash, evidence?.EnvironmentHash, StringComparison.Ordinal))
-                        return BeginResult.Conflict;
-                    return string.Equals(existing.Status, "completed", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(existing.Status, "reconciled", StringComparison.OrdinalIgnoreCase)
-                        ? BeginResult.Completed
-                        : BeginResult.UnknownAfterRestart;
-                }
-
-                if (_entries.Count >= MaxEntries)
-                {
-                    MarkUnhealthy("mutation operation journal reached its entry limit");
-                    return BeginResult.JournalUnavailable;
-                }
-
-                var entry = new Entry
-                {
-                    Id = id,
-                    ScopeHash = ScopeHash(kbPath),
-                    Tool = tool ?? string.Empty,
-                    KeyHash = Hash(key),
-                    PayloadHash = payloadHash ?? string.Empty,
-                    TargetHash = evidence?.TargetHash ?? string.Empty,
-                    RevisionHash = evidence?.RevisionHash ?? string.Empty,
-                    ModelHash = evidence?.ModelHash ?? string.Empty,
-                    EnvironmentHash = evidence?.EnvironmentHash ?? string.Empty,
-                    Status = "started",
-                    UpdatedAtUtc = DateTime.UtcNow
-                };
-                _entries[id] = entry;
-                if (!PersistLocked())
-                {
-                    _entries.Remove(id);
-                    return BeginResult.JournalUnavailable;
-                }
-                return BeginResult.Started;
+                if (!string.Equals(existing.PayloadHash, payloadHash, StringComparison.Ordinal))
+                    return BeginResult.Conflict;
+                if (!string.IsNullOrWhiteSpace(existing.TargetHash)
+                    && !string.Equals(existing.TargetHash, evidence?.TargetHash, StringComparison.Ordinal))
+                    return BeginResult.Conflict;
+                if (!string.IsNullOrWhiteSpace(existing.RevisionHash)
+                    && !string.Equals(existing.RevisionHash, evidence?.RevisionHash, StringComparison.Ordinal))
+                    return BeginResult.Conflict;
+                if (!string.IsNullOrWhiteSpace(existing.ModelHash)
+                    && !string.Equals(existing.ModelHash, evidence?.ModelHash, StringComparison.Ordinal))
+                    return BeginResult.Conflict;
+                if (!string.IsNullOrWhiteSpace(existing.EnvironmentHash)
+                    && !string.Equals(existing.EnvironmentHash, evidence?.EnvironmentHash, StringComparison.Ordinal))
+                    return BeginResult.Conflict;
+                return string.Equals(existing.Status, "completed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(existing.Status, "reconciled", StringComparison.OrdinalIgnoreCase)
+                    ? BeginResult.Completed
+                    : BeginResult.UnknownAfterRestart;
             }
+
+            if (_entries.Count >= MaxEntries)
+            {
+                MarkUnhealthy("mutation operation journal reached its entry limit");
+                return BeginResult.JournalUnavailable;
+            }
+
+            var entry = new Entry
+            {
+                Id = id,
+                ScopeHash = ScopeHash(kbPath),
+                Tool = tool ?? string.Empty,
+                KeyHash = Hash(key),
+                PayloadHash = payloadHash ?? string.Empty,
+                TargetHash = evidence?.TargetHash ?? string.Empty,
+                RevisionHash = evidence?.RevisionHash ?? string.Empty,
+                ModelHash = evidence?.ModelHash ?? string.Empty,
+                EnvironmentHash = evidence?.EnvironmentHash ?? string.Empty,
+                Status = "started",
+                UpdatedAtUtc = DateTime.UtcNow
+            };
+            _entries[id] = entry;
+            if (!PersistLocked())
+            {
+                _entries.Remove(id);
+                return BeginResult.JournalUnavailable;
+            }
+            return BeginResult.Started;
         }
 
         internal void Complete(OperationalStateKey owner, string tool, string key, string payloadHash)
@@ -138,15 +192,16 @@ namespace GxMcp.Gateway
         internal void Fail(string kbPath, string tool, string key, string payloadHash)
         {
             string id = RecordId(kbPath, tool, key);
-            lock (_gate)
+            TryExclusiveJournal(() =>
             {
+                LoadLocked();
                 if (_entries.TryGetValue(id, out var existing)
                     && string.Equals(existing.PayloadHash, payloadHash, StringComparison.Ordinal))
                 {
                     _entries.Remove(id);
                     PersistLocked();
                 }
-            }
+            });
         }
 
         /// <summary>
@@ -159,20 +214,25 @@ namespace GxMcp.Gateway
             string id = RecordId(kbPath, tool, key);
             lock (_gate)
             {
+                // Read the combined health, not the corrupt/latch flag alone: a
+                // journal this instance cannot coordinate is not evidence that
+                // a record is absent, and reporting not_found here would invite
+                // a caller to authorise a new key over a live fence.
+                bool healthy = _healthy && !_leaseBusy;
                 var result = new JObject
                 {
-                    ["journalHealthy"] = _healthy,
+                    ["journalHealthy"] = healthy,
                     ["recordId"] = id,
                     ["operationKey"] = key ?? string.Empty,
                     ["tool"] = tool ?? string.Empty,
                     ["known"] = false,
                     ["retryWithSameKey"] = false,
-                    ["recoveryRequired"] = !_healthy
+                    ["recoveryRequired"] = !healthy
                 };
-                if (!_healthy)
+                if (!healthy)
                 {
                     result["code"] = "operation_journal_unavailable";
-                    result["error"] = _error;
+                    result["error"] = _leaseBusy ? LeaseBusyError : _error;
                     return result;
                 }
 
@@ -225,81 +285,96 @@ namespace GxMcp.Gateway
                 };
 
             string id = RecordId(kbPath, tool, key);
-            lock (_gate)
-            {
-                if (!_healthy)
-                    return new JObject
-                    {
-                        ["status"] = "Blocked",
-                        ["code"] = "operation_journal_unavailable",
-                        ["error"] = _error,
-                        ["message"] = "The operation journal is unavailable; repair it before reconciling an operation."
-                    };
-                if (!_entries.TryGetValue(id, out var entry))
-                    return new JObject
-                    {
-                        ["status"] = "NotFound",
-                        ["code"] = "operation_not_found",
-                        ["message"] = "No durable operation record exists for this KB, tool, and idempotency key."
-                    };
-                if (!string.Equals(entry.Status, "started", StringComparison.OrdinalIgnoreCase))
-                    return Inspect(kbPath, tool, key);
-
-                if (!string.IsNullOrWhiteSpace(entry.TargetHash)
-                    && !string.Equals(entry.TargetHash, observedEvidence?.TargetHash, StringComparison.Ordinal))
-                {
-                    return new JObject
-                    {
-                        ["status"] = "Rejected",
-                        ["code"] = "operation_evidence_mismatch",
-                        ["message"] = "The observed target set does not match the durable operation fence; the operation remains unknown."
-                    };
-                }
-                if (!string.IsNullOrWhiteSpace(entry.RevisionHash)
-                    && !string.Equals(entry.RevisionHash, observedEvidence?.RevisionHash, StringComparison.Ordinal))
-                {
-                    return new JObject
-                    {
-                        ["status"] = "Rejected",
-                        ["code"] = "operation_evidence_mismatch",
-                        ["message"] = "The observed revision does not match the durable operation fence; the operation remains unknown."
-                    };
-                }
-                if (!string.IsNullOrWhiteSpace(entry.ModelHash)
-                    && !string.Equals(entry.ModelHash, observedEvidence?.ModelHash, StringComparison.Ordinal))
-                {
-                    return new JObject
-                    {
-                        ["status"] = "Rejected",
-                        ["code"] = "operation_evidence_mismatch",
-                        ["message"] = "The observed model identity does not match the durable operation fence; the operation remains unknown."
-                    };
-                }
-                if (!string.IsNullOrWhiteSpace(entry.EnvironmentHash)
-                    && !string.Equals(entry.EnvironmentHash, observedEvidence?.EnvironmentHash, StringComparison.Ordinal))
-                {
-                    return new JObject
-                    {
-                        ["status"] = "Rejected",
-                        ["code"] = "operation_evidence_mismatch",
-                        ["message"] = "The observed environment identity does not match the durable operation fence; the operation remains unknown."
-                    };
-                }
-
-                entry.Status = "reconciled";
-                entry.UpdatedAtUtc = DateTime.UtcNow;
-                entry.VerificationHash = Hash(verification);
-                if (!PersistLocked())
-                    return new JObject
-                    {
-                        ["status"] = "Blocked",
-                        ["code"] = "operation_journal_unavailable",
-                        ["error"] = _error,
-                        ["message"] = "The journal could not persist the reconciliation; the unknown fence remains active in memory."
-                    };
-                return Inspect(kbPath, tool, key);
-            }
+            JObject result = UnavailableEnvelope(
+                "The operation journal is unavailable; repair it before reconciling an operation.");
+            TryExclusiveJournal(() => result = ReconcileLocked(id, kbPath, tool, key, verification, observedEvidence));
+            return result;
         }
+
+        private JObject ReconcileLocked(
+            string id,
+            string kbPath,
+            string tool,
+            string key,
+            string verification,
+            MutationOperationEvidence? observedEvidence)
+        {
+            LoadLocked();
+            if (!_healthy)
+                return UnavailableEnvelope("The operation journal is unavailable; repair it before reconciling an operation.");
+            if (!_entries.TryGetValue(id, out var entry))
+                return new JObject
+                {
+                    ["status"] = "NotFound",
+                    ["code"] = "operation_not_found",
+                    ["message"] = "No durable operation record exists for this KB, tool, and idempotency key."
+                };
+            if (!string.Equals(entry.Status, "started", StringComparison.OrdinalIgnoreCase))
+                return Inspect(kbPath, tool, key);
+
+            if (!string.IsNullOrWhiteSpace(entry.TargetHash)
+                && !string.Equals(entry.TargetHash, observedEvidence?.TargetHash, StringComparison.Ordinal))
+            {
+                return new JObject
+                {
+                    ["status"] = "Rejected",
+                    ["code"] = "operation_evidence_mismatch",
+                    ["message"] = "The observed target set does not match the durable operation fence; the operation remains unknown."
+                };
+            }
+            if (!string.IsNullOrWhiteSpace(entry.RevisionHash)
+                && !string.Equals(entry.RevisionHash, observedEvidence?.RevisionHash, StringComparison.Ordinal))
+            {
+                return new JObject
+                {
+                    ["status"] = "Rejected",
+                    ["code"] = "operation_evidence_mismatch",
+                    ["message"] = "The observed revision does not match the durable operation fence; the operation remains unknown."
+                };
+            }
+            if (!string.IsNullOrWhiteSpace(entry.ModelHash)
+                && !string.Equals(entry.ModelHash, observedEvidence?.ModelHash, StringComparison.Ordinal))
+            {
+                return new JObject
+                {
+                    ["status"] = "Rejected",
+                    ["code"] = "operation_evidence_mismatch",
+                    ["message"] = "The observed model identity does not match the durable operation fence; the operation remains unknown."
+                };
+            }
+            if (!string.IsNullOrWhiteSpace(entry.EnvironmentHash)
+                && !string.Equals(entry.EnvironmentHash, observedEvidence?.EnvironmentHash, StringComparison.Ordinal))
+            {
+                return new JObject
+                {
+                    ["status"] = "Rejected",
+                    ["code"] = "operation_evidence_mismatch",
+                    ["message"] = "The observed environment identity does not match the durable operation fence; the operation remains unknown."
+                };
+            }
+
+            entry.Status = "reconciled";
+            entry.UpdatedAtUtc = DateTime.UtcNow;
+            entry.VerificationHash = Hash(verification);
+            if (!PersistLocked())
+                return new JObject
+                {
+                    ["status"] = "Blocked",
+                    ["code"] = "operation_journal_unavailable",
+                    ["error"] = _error,
+                    ["message"] = "The journal could not persist the reconciliation; the unknown fence remains active in memory."
+                };
+            return Inspect(kbPath, tool, key);
+        }
+
+        private JObject UnavailableEnvelope(string message)
+            => new JObject
+            {
+                ["status"] = "Blocked",
+                ["code"] = "operation_journal_unavailable",
+                ["error"] = _error,
+                ["message"] = message
+            };
 
         internal int Count
         {
@@ -315,75 +390,142 @@ namespace GxMcp.Gateway
         private void Update(string kbPath, string tool, string key, string payloadHash, string status)
         {
             string id = RecordId(kbPath, tool, key);
-            lock (_gate)
+            TryExclusiveJournal(() =>
             {
+                LoadLocked();
                 if (!_entries.TryGetValue(id, out var existing)
                     || !string.Equals(existing.PayloadHash, payloadHash, StringComparison.Ordinal))
                     return;
                 existing.Status = status;
                 existing.UpdatedAtUtc = DateTime.UtcNow;
                 PersistLocked();
-            }
+            });
         }
 
-        private void Load()
+        /// <summary>
+        /// Runs <paramref name="body"/> as the journal's read-modify-write: the
+        /// cross-process lease is taken first, then the in-process gate. The
+        /// journal path is fixed per installed exe, so this is the only
+        /// exclusion between Gateways; ordering it outermost means no path can
+        /// wait for a peer's lease while holding this instance's gate.
+        /// Returns false when the lease stays held past <see cref="LeaseWaitCap"/>,
+        /// in which case <paramref name="body"/> did not run and nothing was
+        /// written - the caller must fail closed rather than proceed unlocked.
+        /// </summary>
+        private bool TryExclusiveJournal(Action body)
         {
-            lock (_gate)
+            FileStream? lease;
+            try
+            {
+                lease = AcquireLease();
+            }
+            catch (LeaseBusyException)
+            {
+                return false;
+            }
+            using (lease)
+            {
+                lock (_gate) body();
+            }
+            return true;
+        }
+
+        private FileStream AcquireLease()
+        {
+            string? directory = Path.GetDirectoryName(Path.GetFullPath(_path));
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+            var started = _clock.Now;
+            while (true)
             {
                 try
                 {
-                    if (!File.Exists(_path)) return;
-                    var info = new FileInfo(_path);
-                    if (info.Length <= 0 || info.Length > MaxBytes)
-                        throw new InvalidDataException("journal size is outside the accepted bounds");
-
-                    JToken root = JToken.Parse(File.ReadAllText(_path));
-                    JArray rows;
-                    if (root is JArray legacyRows)
-                    {
-                        // Accept the pre-v1 array once for an in-place upgrade.
-                        rows = legacyRows;
-                    }
-                    else if (root is JObject envelope
-                        && string.Equals(envelope["schemaVersion"]?.ToString(), JournalSchemaVersion, StringComparison.Ordinal)
-                        && envelope["entries"] is JArray versionedRows)
-                    {
-                        rows = versionedRows;
-                    }
-                    else
-                    {
-                        throw new InvalidDataException("journal schemaVersion is missing or unsupported");
-                    }
-
-                    if (rows.Count > MaxEntries)
-                        throw new InvalidDataException("journal contains too many operation entries");
-
-                    foreach (var row in rows)
-                    {
-                        if (!(row is JObject json))
-                            throw new InvalidDataException("journal contains a non-object entry");
-                        var entry = json.ToObject<Entry>();
-                        if (!IsValid(entry))
-                            throw new InvalidDataException("journal contains an invalid operation entry");
-                        if (_owner.HasValue
-                            && !string.Equals(entry!.ScopeHash, ScopeHash(_owner.Value.Token), StringComparison.Ordinal))
-                            throw new InvalidDataException("journal entry belongs to another operational state scope");
-                        if (DateTime.UtcNow - entry!.UpdatedAtUtc.ToUniversalTime() <= Retention)
-                        {
-                            entry.UpdatedAtUtc = entry.UpdatedAtUtc.ToUniversalTime();
-                            _entries[entry.Id] = entry;
-                        }
-                    }
-
-                    PruneLocked();
-                    if (rows.Count != _entries.Count)
-                        PersistLocked();
+                    // FileShare.None is what makes this cross-process: a second
+                    // Gateway cannot hold the same lease file, so its
+                    // read-modify-write cannot interleave with this one.
+                    var lease = new FileStream(_lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                    _leaseBusy = false;
+                    return lease;
                 }
-                catch (Exception ex)
+                catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33)
                 {
-                    _entries.Clear();
-                    MarkUnhealthy("Mutation operation journal rejected: " + ex.Message);
+                    if (_clock.Now - started >= LeaseWaitCap) throw new LeaseBusyException();
+                    Thread.Sleep(LeaseRetryDelayMs);
                 }
+            }
+        }
+
+        private sealed class LeaseBusyException : IOException { }
+
+        private void Load()
+        {
+            if (TryExclusiveJournal(LoadLocked)) return;
+            // Fail closed: an instance that could not read the durable fence must
+            // not serve decisions from an empty snapshot. This is the busy flag
+            // rather than MarkUnhealthy, because a peer still holding the lease
+            // will release it - the next acquisition reloads and recovers.
+            _leaseBusy = true;
+            lock (_gate) _entries.Clear();
+        }
+
+        private void LoadLocked()
+        {
+            try
+            {
+                if (!File.Exists(_path)) return;
+                var info = new FileInfo(_path);
+                if (info.Length <= 0 || info.Length > MaxBytes)
+                    throw new InvalidDataException("journal size is outside the accepted bounds");
+
+                JToken root = JToken.Parse(File.ReadAllText(_path));
+                JArray rows;
+                if (root is JArray legacyRows)
+                {
+                    // Accept the pre-v1 array once for an in-place upgrade.
+                    rows = legacyRows;
+                }
+                else if (root is JObject envelope
+                    && string.Equals(envelope["schemaVersion"]?.ToString(), JournalSchemaVersion, StringComparison.Ordinal)
+                    && envelope["entries"] is JArray versionedRows)
+                {
+                    rows = versionedRows;
+                }
+                else
+                {
+                    throw new InvalidDataException("journal schemaVersion is missing or unsupported");
+                }
+
+                if (rows.Count > MaxEntries)
+                    throw new InvalidDataException("journal contains too many operation entries");
+
+                // Replace rather than merge: a peer's Complete or Fail may have
+                // removed a record this instance still holds in memory, and
+                // keeping it would resurrect a fence the durable state dropped.
+                _entries.Clear();
+                foreach (var row in rows)
+                {
+                    if (!(row is JObject json))
+                        throw new InvalidDataException("journal contains a non-object entry");
+                    var entry = json.ToObject<Entry>();
+                    if (!IsValid(entry))
+                        throw new InvalidDataException("journal contains an invalid operation entry");
+                    if (_owner.HasValue
+                        && !string.Equals(entry!.ScopeHash, ScopeHash(_owner.Value.Token), StringComparison.Ordinal))
+                        throw new InvalidDataException("journal entry belongs to another operational state scope");
+                    if (DateTime.UtcNow - entry!.UpdatedAtUtc.ToUniversalTime() <= Retention)
+                    {
+                        entry.UpdatedAtUtc = entry.UpdatedAtUtc.ToUniversalTime();
+                        _entries[entry.Id] = entry;
+                    }
+                }
+
+                PruneLocked();
+                if (rows.Count != _entries.Count)
+                    PersistLocked();
+            }
+            catch (Exception ex)
+            {
+                _entries.Clear();
+                MarkUnhealthy("Mutation operation journal rejected: " + ex.Message);
             }
         }
 
