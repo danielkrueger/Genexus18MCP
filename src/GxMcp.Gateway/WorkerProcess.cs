@@ -483,7 +483,7 @@ namespace GxMcp.Gateway
                             double silentSec = (DateTime.UtcNow - _lastResponse).TotalSeconds;
                             if (silentSec >= WedgedSilenceSeconds)
                             {
-                                Program.Log($"[Gateway] worker_wedged_shutdown pid={_process.Id} oldestInFlightAgeMinutes={oldestAge.TotalMinutes:F1} silentSec={silentSec:F0} ceilingMinutes={_wedgedCommandTimeout.TotalMinutes}");
+                                Program.Log($"[Gateway] worker_wedged_shutdown id={workerLabel} oldestInFlightAgeMinutes={oldestAge.TotalMinutes:F1} silentSec={silentSec:F0} ceilingMinutes={_wedgedCommandTimeout.TotalMinutes}");
                                 StopProcess(WorkerStopReason.Wedged);
                                 continue;
                             }

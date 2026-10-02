@@ -34,7 +34,7 @@ namespace GxMcp.Worker.Tests
     /// reference is exactly the kind of change that can quietly break them.
     /// </para>
     /// </summary>
-    public class IndexSnapshotIncrementalPublicationTests
+    public class IndexSnapshotIncrementalPublicationTests : IDisposable
     {
         private readonly List<string> _kbPaths = new List<string>();
 
