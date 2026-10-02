@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_layout action=add_report_control` with a `caption` no longer reports `ReportControlWriteVerificationFailed` ("The SDK changed the report control caption during save") for a label whose caption persisted unchanged: the read-back carries the text as `Caption` while the write sets `Text`, and the verification now accepts either spelling.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
