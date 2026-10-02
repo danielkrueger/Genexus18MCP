@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_structure action=update_group` now saves each relinked subtype Attribute, so the `subtypeOf` link persists (the Group part stores only subtype ids; the supertype lives on the Attribute's `SuperTypeKey`). Previously it returned `GroupUpdated` with `persistedVerified:true` while every member read back as its own supertype and `IS_SUBTYPE=False`; the post-save verification now re-reads each member's supertype and reports `GroupUpdateNotPersisted` with `wrongSupertype` on a mismatch.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
