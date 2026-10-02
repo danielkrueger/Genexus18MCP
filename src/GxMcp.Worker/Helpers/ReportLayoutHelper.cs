@@ -14,9 +14,13 @@ namespace GxMcp.Worker.Helpers
         public static KBObjectPart IsReportPart(KBObjectPart part)
         {
             if (part == null) return null;
-            var name = part.GetType().FullName;
-            if (name.Contains("ReportPart") || name.Contains("LayoutPart")) return part;
-            return null;
+            return IsReportPartTypeName(part.GetType().FullName) ? part : null;
+        }
+
+        public static bool IsReportPartTypeName(string partClassFullName)
+        {
+            if (partClassFullName == null) return false;
+            return partClassFullName.Contains("ReportPart") || partClassFullName.Contains("LayoutPart");
         }
 
         public static string ReadLayout(KBObjectPart part)

@@ -403,7 +403,9 @@ namespace GxMcp.Worker.Services
                 string sourceType = source?.TypeDescriptor?.Name;
                 if (source == null) continue;
                 var sourcePart = WebFormXmlHelper.GetWebFormPart(source);
-                if (sourcePart == null) continue;
+                // GetWebFormPart also returns a Procedure's print layout, which the XPZ
+                // serializes outside <Source>; it is not the WebForm payload this check guards.
+                if (sourcePart == null || !IsWebFormFidelityCandidate(sourcePart.GetType().FullName)) continue;
                 sawWebFormCandidate = true;
 
                 if (string.IsNullOrWhiteSpace(source.Name)
@@ -437,6 +439,9 @@ namespace GxMcp.Worker.Services
 
             return plan;
         }
+
+        internal static bool IsWebFormFidelityCandidate(string partClassFullName)
+            => !ReportLayoutHelper.IsReportPartTypeName(partClassFullName);
 
         internal static Dictionary<string, string> ReadExportWebForms(string file)
         {

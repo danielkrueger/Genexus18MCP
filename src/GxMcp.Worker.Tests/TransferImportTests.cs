@@ -94,6 +94,54 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        [Theory]
+        [InlineData("Artech.Genexus.Common.Parts.ReportPart")]
+        [InlineData("Artech.Genexus.Common.Parts.LayoutPart")]
+        public void IsWebFormFidelityCandidate_SkipsProcedurePrintLayout(string partClass)
+        {
+            Assert.False(TransferService.IsWebFormFidelityCandidate(partClass));
+        }
+
+        [Theory]
+        [InlineData("Artech.Genexus.Common.Parts.WebFormPart")]
+        [InlineData("Artech.Genexus.Common.Parts.WebForm.WebFormPart")]
+        public void IsWebFormFidelityCandidate_KeepsRealWebFormParts(string partClass)
+        {
+            Assert.True(TransferService.IsWebFormFidelityCandidate(partClass));
+        }
+
+        [Fact]
+        public void IsWebFormFidelityCandidate_UnknownPartTypeStaysCandidate()
+        {
+            Assert.True(TransferService.IsWebFormFidelityCandidate(null));
+        }
+
+        [Fact]
+        public void ReadExportWebForms_IgnoresProcedureLayoutSerializedOutsideSource()
+        {
+            // A Procedure's print layout is a direct <Layout> child of <Part>, never a <Source> CDATA,
+            // so no WebForm payload exists for it; import fidelity must not demand one.
+            string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-proc-" + Guid.NewGuid().ToString("N") + ".xpz");
+            try
+            {
+                using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+                using (var writer = new StreamWriter(archive.CreateEntry("export.xml").Open()))
+                {
+                    writer.Write("<ExportFile><Objects>"
+                        + "<Object name=\"SampleProc\">"
+                        + "<Part type=\"c414ed00-8cc4-4f44-8820-4baf93547173\"><Layout><Bands><PrintBlock name=\"Detail\" /></Bands></Layout></Part>"
+                        + "<Part type=\"00000000-0000-0000-0000-000000000000\"><Properties /></Part>"
+                        + "</Object></Objects></ExportFile>");
+                }
+
+                Assert.Empty(TransferService.ReadExportWebForms(path));
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
+
         [Fact]
         public void ReadExportWebForms_HandlesNamespacesAndXmlDeclaration()
         {

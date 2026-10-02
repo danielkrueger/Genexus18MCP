@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_transfer action=import dryRun=false confirm=true` refused every XPZ that contained a Procedure with `TransferImportVerificationUnavailable: The XPZ contains a WebForm candidate without a readable raw WebForm payload`, even for a package the MCP had just exported from an unchanged Procedure, with or without a print block. The import fidelity check added for issue #102 (WebForm `GxWidth`/`AttID` loss) asks `WebFormXmlHelper.GetWebFormPart` for each object's visual part, and that helper deliberately also returns a Procedure's report `Layout` part so `ObjectService` can read it as visual XML. Every Procedure therefore counted as a WebForm candidate, but the XPZ serializes that layout as a direct `<Layout>` child of `<Part>` rather than as `<Source>` CDATA, so `ReadExportWebForms` found no payload and the check failed closed. Report and layout parts (`ReportLayoutHelper.IsReportPartTypeName`) are no longer WebForm fidelity candidates; real WebForm parts of WebPanels and Transactions are unchanged and still fail closed when their raw payload is missing. `GetWebFormPart` itself is untouched, so its other callers are unaffected.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
