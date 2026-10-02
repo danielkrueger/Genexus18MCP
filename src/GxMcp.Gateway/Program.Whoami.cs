@@ -1416,6 +1416,13 @@ namespace GxMcp.Gateway
             };
         }
 
+        // Stand-in Configuration for a gateway that has not loaded a config file. The
+        // resolver takes a Configuration, and an empty one describes honestly (strict
+        // policy, nothing open → context required) rather than leaving whoami to invent
+        // an answer of its own. Immutable by use: KbResolver only reads it.
+        private static readonly Configuration EmptyKbSelectionConfig =
+            new Configuration { Environment = new EnvironmentConfig() };
+
         // PERFORMANCE (perf round 5): CrashLedger.Summarize reads the ledger file on
         // every call; whoami is the most-called first-turn tool. Cache the summary with
         // a 10s TTL — a stale-by-seconds death count is far better than a disk read per
@@ -1449,8 +1456,6 @@ namespace GxMcp.Gateway
             // different, explicitly-opened KB). A default is authoritative when several
             // workers are live; with no selection, only a single worker is reported as
             // active so whoami never invents a target in a multi-KB session.
-            string? activeAlias = null;
-            string? kbPath = null;
             IReadOnlyList<KbHandle> openKbs = Array.Empty<KbHandle>();
             IReadOnlyList<KbHandle> knownKbs = Array.Empty<KbHandle>();
             string resolutionPolicy = !string.Equals(cfg?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
@@ -1464,126 +1469,68 @@ namespace GxMcp.Gateway
                 ? GetSessionLeaseState(sessionId!)
                 : "none";
             bool leaseActive = string.Equals(leaseState, "active", StringComparison.Ordinal);
+
+            // Defaults describe "nothing is selected, so context is required" — the state
+            // whoami reports when it cannot ask at all (no config, no pool).
             string selectionSource = "none";
             string selectionState = "absent";
-            bool contextRequired = false;
+            string? selectionErrorCode = null;
+            bool contextRequired = true;
+            string? activeAlias = null;
+            string? kbPath = null;
             try
             {
                 var pool = _workerPool;
                 openKbs = pool?.ListOpen() ?? Array.Empty<KbHandle>();
                 knownKbs = pool?.ListKnown() ?? Array.Empty<KbHandle>();
 
-                var available = new Dictionary<string, KbHandle>(StringComparer.OrdinalIgnoreCase);
-                if (cfg?.Environment?.KBs != null)
-                {
-                    foreach (var k in cfg.Environment.KBs)
-                    {
-                        if (!string.IsNullOrWhiteSpace(k.Alias))
-                            available[k.Alias] = KbHandle.FromEntry(k);
-                    }
-                }
-                foreach (var k in openKbs)
-                {
-                    if (!string.IsNullOrWhiteSpace(k.Alias))
-                        available[k.Alias] = k;
-                }
-                foreach (var k in knownKbs)
-                {
-                    if (!string.IsNullOrWhiteSpace(k.Alias))
-                        available[k.Alias] = k;
-                }
+                // One decision, asked once. whoami used to carry a second copy of the
+                // resolution policy, and the two copies drifted two ways: its alias map
+                // was built declared -> open -> known, so a `known` entry overwrote an
+                // `open` one; and in legacy mode it fell through to single-open /
+                // declared-first when the configured default did not resolve, reporting
+                // `valid` for a call that raises KB_NOT_FOUND. Neither can happen now
+                // that the resolver expresses the decision as data — whoami reports what
+                // the next call does, which is the only reason it exists.
+                //
+                // `contextRequired` is the resolver's verdict, tightened by the lease: a
+                // resolved *session* selection (kbArg is always null here, so a resolved
+                // selection is a session selection) still needs an active lease to be
+                // usable without a per-call `kb`.
+                var selection = new KbResolver(cfg ?? EmptyKbSelectionConfig).Describe(
+                    kbArg: null,
+                    openKbs: openKbs,
+                    knownKbs: knownKbs,
+                    sessionDefaultAlias: sessionSelected);
 
-                if (!string.IsNullOrWhiteSpace(sessionSelected))
+                selectionSource = selection.SelectionSource;
+                selectionState = selection.SelectionState;
+                selectionErrorCode = selection.ErrorCode;
+                contextRequired = selection.ContextRequired
+                    || (selection.IsResolved && !leaseActive
+                        && !string.IsNullOrWhiteSpace(sessionSelected));
+
+                if (selection.Handle != null)
                 {
-                    selectionSource = "session-select";
-                    if (available.TryGetValue(sessionSelected, out var matchedHandle))
-                    {
-                        selectionState = "valid";
-                        contextRequired = !leaseActive;
-                        activeAlias = sessionSelected;
-                        kbPath = matchedHandle.Path;
-                    }
-                    else
-                    {
-                        selectionState = "invalid";
-                        contextRequired = true;
-                        activeAlias = sessionSelected;
-                        kbPath = null;
-                    }
+                    activeAlias = selection.Handle.Alias;
+                    kbPath = selection.Handle.Path;
                 }
-                else
+                else if (!string.IsNullOrWhiteSpace(sessionSelected))
                 {
-                    if (resolutionPolicy == "strict")
-                    {
-                        if (openKbs.Count == 1)
-                        {
-                            var sole = openKbs.First();
-                            if (!string.IsNullOrWhiteSpace(startupDefault) && !string.Equals(startupDefault, sole.Alias, StringComparison.OrdinalIgnoreCase))
-                            {
-                                selectionSource = "none";
-                                selectionState = "conflicting";
-                                contextRequired = true;
-                                activeAlias = null;
-                                kbPath = null;
-                            }
-                            else
-                            {
-                                selectionSource = "single-open";
-                                selectionState = "valid";
-                                contextRequired = false;
-                                activeAlias = sole.Alias;
-                                kbPath = sole.Path;
-                            }
-                        }
-                        else
-                        {
-                            selectionSource = "none";
-                            selectionState = "absent";
-                            contextRequired = true;
-                            activeAlias = null;
-                            kbPath = null;
-                        }
-                    }
-                    else // legacy mode
-                    {
-                        if (!string.IsNullOrWhiteSpace(startupDefault) && available.TryGetValue(startupDefault, out var defHandle))
-                        {
-                            selectionSource = "config-default";
-                            selectionState = "valid";
-                            contextRequired = false;
-                            activeAlias = defHandle.Alias;
-                            kbPath = defHandle.Path;
-                        }
-                        else if (openKbs.Count == 1)
-                        {
-                            var sole = openKbs.First();
-                            selectionSource = "single-open";
-                            selectionState = "valid";
-                            contextRequired = false;
-                            activeAlias = sole.Alias;
-                            kbPath = sole.Path;
-                        }
-                        else if (cfg?.Environment?.KBs?.Count > 0)
-                        {
-                            var first = cfg.Environment.KBs[0];
-                            selectionSource = "declared-first";
-                            selectionState = "valid";
-                            contextRequired = false;
-                            activeAlias = first.Alias;
-                            kbPath = first.Path;
-                        }
-                        else
-                        {
-                            selectionSource = "none";
-                            selectionState = "absent";
-                            contextRequired = true;
-                            activeAlias = null;
-                            kbPath = null;
-                        }
-                    }
+                    // The alias the session asked for stays visible even when it does not
+                    // resolve: that is what has to be corrected.
+                    activeAlias = sessionSelected;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Narrowed from `catch { }` deliberately: the resolution decision itself
+                // can no longer throw, so this only guards the diagnostic endpoint from
+                // failing its caller on something unrelated (a pool snapshot, a config
+                // read). An unanswerable probe reports `absent` with context required —
+                // unknown is not valid — and says so in the log rather than pretending.
+                Log($"[Whoami] KB selection could not be described: {ex.Message}");
+            }
             // Do not report the legacy KBPath scaffold as the selected target when
             // this session points at an alias that is currently unavailable.
             if (string.IsNullOrEmpty(kbPath) && string.IsNullOrWhiteSpace(sessionSelected))
@@ -1608,6 +1555,11 @@ namespace GxMcp.Gateway
                     ["sessionSelection"] = sessionSelected,
                     ["selectionSource"] = selectionSource,
                     ["selectionState"] = selectionState,
+                    // The code the next call will raise when nothing was selected
+                    // (KB_CONTEXT_REQUIRED / KB_AMBIGUOUS / KB_NOT_FOUND), so an agent
+                    // reading whoami sees the failure it is about to get rather than
+                    // discovering it one call later. Null whenever a KB was selected.
+                    ["selectionErrorCode"] = selectionErrorCode,
                     ["leaseState"] = leaseState,
                     ["leaseActive"] = leaseActive,
                     ["startupDefault"] = startupDefault,

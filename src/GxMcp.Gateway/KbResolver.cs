@@ -11,6 +11,87 @@ namespace GxMcp.Gateway
         public KbResolutionException(string code, string message) : base(message) { Code = code; }
     }
 
+    /// <summary>
+    /// The KB-selection decision expressed as data: which handle was chosen, why, and
+    /// — when nothing was chosen — the error code <see cref="KbResolver.Resolve"/>
+    /// would have thrown.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists because <c>genexus_whoami</c> used to re-implement the resolution
+    /// policy as a second tree, and the two copies drifted: whoami built an
+    /// alias→handle map declared→open→known so a <c>known</c> entry overwrote an
+    /// <c>open</c> one, and in legacy mode it fell through to
+    /// <c>single-open</c>/<c>declared-first</c> when the configured default did not
+    /// resolve. Both made whoami report a selection the next call would not honour.
+    /// With the decision expressed once, a caller that reports it cannot disagree.
+    /// </para>
+    /// <para>
+    /// <c>SelectionState</c> uses the published whoami vocabulary and adds nothing to
+    /// it: <c>valid</c> (a handle was chosen), <c>invalid</c> (an explicit alias was
+    /// given and does not resolve), <c>conflicting</c> (a configured default contradicts
+    /// the sole open KB) and <c>absent</c> (nothing was selected, so the caller must
+    /// supply context). <c>KB_NOT_FOUND</c> on an unresolvable configured default is
+    /// <c>absent</c>: nothing is selected, which is exactly what it means.
+    /// </para>
+    /// </remarks>
+    public sealed class KbSelectionResult
+    {
+        private KbSelectionResult(
+            KbHandle? handle,
+            string selectionSource,
+            string selectionState,
+            string? errorCode,
+            string? errorMessage)
+        {
+            Handle = handle;
+            SelectionSource = selectionSource;
+            SelectionState = selectionState;
+            ErrorCode = errorCode;
+            ErrorMessage = errorMessage;
+        }
+
+        /// <summary>The selected KB, or <c>null</c> when nothing was selected.</summary>
+        public KbHandle? Handle { get; }
+
+        /// <summary>
+        /// Published whoami vocabulary: <c>explicit-arg</c>, <c>session-select</c>,
+        /// <c>single-open</c>, <c>config-default</c>, <c>declared-first</c>, <c>none</c>.
+        /// </summary>
+        public string SelectionSource { get; }
+
+        /// <summary>
+        /// Published whoami vocabulary: <c>valid</c>, <c>absent</c>, <c>invalid</c>,
+        /// <c>conflicting</c>.
+        /// </summary>
+        public string SelectionState { get; }
+
+        /// <summary>
+        /// True when no handle was selected, so the caller must pass KB context. A
+        /// caller with extra context of its own (whoami's session lease) may tighten
+        /// this; nothing here can loosen it.
+        /// </summary>
+        public bool ContextRequired => Handle == null;
+
+        /// <summary>The code <see cref="KbResolver.Resolve"/> throws; null when resolved.</summary>
+        public string? ErrorCode { get; }
+
+        /// <summary>The message <see cref="KbResolver.Resolve"/> throws; null when resolved.</summary>
+        public string? ErrorMessage { get; }
+
+        public bool IsResolved => Handle != null;
+
+        internal static KbSelectionResult Resolved(KbHandle handle, string selectionSource)
+            => new KbSelectionResult(handle, selectionSource, "valid", null, null);
+
+        internal static KbSelectionResult Unresolved(
+            string selectionSource,
+            string selectionState,
+            string errorCode,
+            string errorMessage)
+            => new KbSelectionResult(null, selectionSource, selectionState, errorCode, errorMessage);
+    }
+
     public sealed class KbResolver
     {
         private readonly Configuration _config;
@@ -40,6 +121,12 @@ namespace GxMcp.Gateway
             bool sessionContextInitialized)
             => Resolve(kbArg, openKbs, knownKbs, sessionDefaultAlias, out _);
 
+        /// <summary>
+        /// Resolves the KB for a call, throwing the code and message the decision
+        /// carries when nothing was selected. It adds no decision of its own: the tree
+        /// lives in <see cref="Describe"/>, so a caller that reports the selection
+        /// (whoami) and a caller that enforces it cannot disagree.
+        /// </summary>
         public KbHandle Resolve(
             string? kbArg,
             IReadOnlyCollection<KbHandle> openKbs,
@@ -47,18 +134,36 @@ namespace GxMcp.Gateway
             string? sessionDefaultAlias,
             out string selectionSource)
         {
+            var selection = Describe(kbArg, openKbs, knownKbs, sessionDefaultAlias);
+            selectionSource = selection.SelectionSource;
+            if (selection.Handle != null) return selection.Handle;
+
+            throw new KbResolutionException(selection.ErrorCode!, selection.ErrorMessage!);
+        }
+
+        /// <summary>
+        /// The single KB-selection policy: explicit <c>kb</c> argument → MCP-session
+        /// selection → strict or legacy fallback. It has no throwing path, so a
+        /// diagnostic surface can report the decision instead of re-deriving it.
+        /// </summary>
+        /// <remarks>
+        /// Order matters and is the published contract: an explicit alias wins, then the
+        /// session selection, then — in strict mode — the sole open KB unless a
+        /// configured default contradicts it, and in legacy mode — the configured
+        /// default (open before declared before known), else the sole open KB, else the
+        /// first declared KB.
+        /// </remarks>
+        public KbSelectionResult Describe(
+            string? kbArg,
+            IReadOnlyCollection<KbHandle> openKbs,
+            IReadOnlyCollection<KbHandle>? knownKbs,
+            string? sessionDefaultAlias)
+        {
             if (!string.IsNullOrWhiteSpace(kbArg))
-            {
-                selectionSource = "explicit-arg";
-                return ResolveExplicit(kbArg!, openKbs, knownKbs, fromSession: false);
-            }
+                return ExplicitSelection(kbArg!, openKbs, knownKbs, "explicit-arg", fromSession: false);
 
             if (!string.IsNullOrWhiteSpace(sessionDefaultAlias))
-            {
-                var handle = ResolveExplicit(sessionDefaultAlias!, openKbs, knownKbs, fromSession: true);
-                selectionSource = "session-select";
-                return handle;
-            }
+                return ExplicitSelection(sessionDefaultAlias!, openKbs, knownKbs, "session-select", fromSession: true);
 
             bool isStrict = !string.Equals(_config.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
 
@@ -76,35 +181,42 @@ namespace GxMcp.Gateway
                     string? configuredDefault = _config.Environment?.RawDefaultKb ?? _config.Environment?.DefaultKb;
                     if (!string.IsNullOrWhiteSpace(configuredDefault) && !string.Equals(configuredDefault, sole.Alias, StringComparison.OrdinalIgnoreCase))
                     {
-                        selectionSource = "none";
-                        throw new KbResolutionException("KB_CONTEXT_REQUIRED",
+                        return KbSelectionResult.Unresolved(
+                            "none",
+                            "conflicting",
+                            "KB_CONTEXT_REQUIRED",
                             $"DefaultConflict: single open KB '{sole.Alias}' conflicts with configured default '{configuredDefault}'. Explicit KB context is required for this session.");
                     }
-                    selectionSource = "single-open";
-                    return sole;
+
+                    return KbSelectionResult.Resolved(sole, "single-open");
                 }
 
                 if (openKbs.Count > 1)
                 {
-                    selectionSource = "none";
-                    throw new KbResolutionException("KB_AMBIGUOUS",
+                    return KbSelectionResult.Unresolved(
+                        "none",
+                        "absent",
+                        "KB_AMBIGUOUS",
                         $"Multiple KBs open ({string.Join(",", openKbs.Select(k => k.Alias))}); 'kb' parameter is required.");
                 }
 
                 // openKbs.Count == 0
-                selectionSource = "none";
                 var declared = _config.Environment?.KBs ?? new List<KbEntry>();
                 if (declared.Count <= 1)
                 {
-                    throw new KbResolutionException("KB_CONTEXT_REQUIRED",
+                    return KbSelectionResult.Unresolved(
+                        "none",
+                        "absent",
+                        "KB_CONTEXT_REQUIRED",
                         "No Knowledge Base is open. Open a KB with 'genexus_kb action=open' or pass 'kb'.");
                 }
-                else
-                {
-                    var aliases = string.Join(", ", declared.Select(k => k.Alias));
-                    throw new KbResolutionException("KB_AMBIGUOUS",
-                        $"Multiple Knowledge Bases are declared ({aliases}); no KB is currently open. Pass 'kb' or open a KB with 'genexus_kb action=open'.");
-                }
+
+                var aliases = string.Join(", ", declared.Select(k => k.Alias));
+                return KbSelectionResult.Unresolved(
+                    "none",
+                    "absent",
+                    "KB_AMBIGUOUS",
+                    $"Multiple Knowledge Bases are declared ({aliases}); no KB is currently open. Pass 'kb' or open a KB with 'genexus_kb action=open'.");
             }
 
             // Legacy mode (ResolutionPolicy == "legacy"):
@@ -116,101 +228,94 @@ namespace GxMcp.Gateway
             {
                 var openDefault = openKbs.FirstOrDefault(
                     k => string.Equals(k.Alias, legacyDefault, StringComparison.OrdinalIgnoreCase));
-                if (openDefault != null)
-                {
-                    selectionSource = "config-default";
-                    return openDefault;
-                }
+                if (openDefault != null) return KbSelectionResult.Resolved(openDefault, "config-default");
 
-                if (openKbs.Count == 1)
-                {
-                    selectionSource = "single-open";
-                    return openKbs.First();
-                }
+                if (openKbs.Count == 1) return KbSelectionResult.Resolved(openKbs.First(), "single-open");
 
                 var declaredDefault = _config.Environment?.KBs?.FirstOrDefault(
                     k => string.Equals(k.Alias, legacyDefault, StringComparison.OrdinalIgnoreCase));
                 if (declaredDefault != null)
-                {
-                    selectionSource = "config-default";
-                    return KbHandle.FromEntry(declaredDefault);
-                }
+                    return KbSelectionResult.Resolved(KbHandle.FromEntry(declaredDefault), "config-default");
 
                 var knownDefault = knownKbs?.FirstOrDefault(
                     k => string.Equals(k.Alias, legacyDefault, StringComparison.OrdinalIgnoreCase));
-                if (knownDefault != null)
-                {
-                    selectionSource = "config-default";
-                    return knownDefault;
-                }
+                if (knownDefault != null) return KbSelectionResult.Resolved(knownDefault, "config-default");
 
-                selectionSource = "none";
-                throw new KbResolutionException("KB_NOT_FOUND",
+                // Nothing here substitutes single-open or declared-first for a default
+                // that cannot resolve: the next call would raise KB_NOT_FOUND, so
+                // selecting something else now would make whoami's answer a lie.
+                return KbSelectionResult.Unresolved(
+                    "none",
+                    "absent",
+                    "KB_NOT_FOUND",
                     $"Configured default KB '{legacyDefault}' is not declared, open, or known in this session.");
             }
 
-            if (openKbs.Count == 1)
-            {
-                selectionSource = "single-open";
-                return openKbs.First();
-            }
+            if (openKbs.Count == 1) return KbSelectionResult.Resolved(openKbs.First(), "single-open");
 
             if (openKbs.Count == 0)
             {
                 var first = _config.Environment?.KBs?.FirstOrDefault();
-                if (first != null)
-                {
-                    selectionSource = "declared-first";
-                    return KbHandle.FromEntry(first);
-                }
+                if (first != null) return KbSelectionResult.Resolved(KbHandle.FromEntry(first), "declared-first");
 
-                selectionSource = "none";
-                throw new KbResolutionException("KB_AMBIGUOUS",
+                return KbSelectionResult.Unresolved(
+                    "none",
+                    "absent",
+                    "KB_AMBIGUOUS",
                     "No 'kb' parameter, no DefaultKb configured, and no KB currently open.");
             }
 
-            selectionSource = "none";
-            throw new KbResolutionException("KB_AMBIGUOUS",
+            return KbSelectionResult.Unresolved(
+                "none",
+                "absent",
+                "KB_AMBIGUOUS",
                 $"Multiple KBs open ({string.Join(",", openKbs.Select(k => k.Alias))}); 'kb' parameter is required.");
         }
 
-        private KbHandle ResolveExplicit(
+        // An explicit alias is matched declared → open → known (issue #26 P3: the known
+        // set survives worker recycles) → an existing absolute path. A miss is a state,
+        // not an exception, so the caller can report it; the code differs by caller
+        // because a bad session selection and a bad per-call `kb` are different faults.
+        private KbSelectionResult ExplicitSelection(
             string kbArg,
             IReadOnlyCollection<KbHandle> openKbs,
             IReadOnlyCollection<KbHandle>? knownKbs,
+            string selectionSource,
             bool fromSession)
         {
             var declared = _config.Environment?.KBs?.FirstOrDefault(
                 k => string.Equals(k.Alias, kbArg, StringComparison.OrdinalIgnoreCase));
-            if (declared != null) return KbHandle.FromEntry(declared);
+            if (declared != null) return KbSelectionResult.Resolved(KbHandle.FromEntry(declared), selectionSource);
 
             var openMatch = openKbs.FirstOrDefault(
                 k => string.Equals(k.Alias, kbArg, StringComparison.OrdinalIgnoreCase));
-            if (openMatch != null) return openMatch;
+            if (openMatch != null) return KbSelectionResult.Resolved(openMatch, selectionSource);
 
-            // issue #26 P3: fall back to the durable known set (survives worker recycle).
             if (knownKbs != null)
             {
                 var knownMatch = knownKbs.FirstOrDefault(
                     k => string.Equals(k.Alias, kbArg, StringComparison.OrdinalIgnoreCase));
-                if (knownMatch != null) return knownMatch;
+                if (knownMatch != null) return KbSelectionResult.Resolved(knownMatch, selectionSource);
             }
 
             if (Path.IsPathRooted(kbArg) && Directory.Exists(kbArg))
             {
                 string alias = Path.GetFileName(kbArg.TrimEnd('\\', '/')).ToLowerInvariant();
                 if (string.IsNullOrEmpty(alias)) alias = "adhoc";
-                return new KbHandle(alias, kbArg);
+                return KbSelectionResult.Resolved(new KbHandle(alias, kbArg), selectionSource);
             }
 
-            if (fromSession)
-            {
-                throw new KbResolutionException("KB_SELECTION_INVALID",
-                    $"Session-selected KB '{kbArg}' is not declared, open, or known. Declare an alias in config.Environment.KBs[] or pass an absolute path to an existing directory.");
-            }
-
-            throw new KbResolutionException("KB_NOT_FOUND",
-                $"Unknown KB '{kbArg}' is not declared, open, or known. Declare an alias in config.Environment.KBs[] or pass an absolute path to an existing directory.");
+            return fromSession
+                ? KbSelectionResult.Unresolved(
+                    selectionSource,
+                    "invalid",
+                    "KB_SELECTION_INVALID",
+                    $"Session-selected KB '{kbArg}' is not declared, open, or known. Declare an alias in config.Environment.KBs[] or pass an absolute path to an existing directory.")
+                : KbSelectionResult.Unresolved(
+                    selectionSource,
+                    "invalid",
+                    "KB_NOT_FOUND",
+                    $"Unknown KB '{kbArg}' is not declared, open, or known. Declare an alias in config.Environment.KBs[] or pass an absolute path to an existing directory.");
         }
     }
 }
