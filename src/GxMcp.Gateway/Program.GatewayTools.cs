@@ -733,7 +733,7 @@ namespace GxMcp.Gateway
                         }
                         catch { transportAlive = false; }
 
-                        JObject sdkProbe = null;
+                        JObject? sdkProbe = null;
                         try
                         {
                             sdkProbe = await SendWorkerCommandAsync(

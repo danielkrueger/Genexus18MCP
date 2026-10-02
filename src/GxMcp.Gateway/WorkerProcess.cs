@@ -483,11 +483,44 @@ namespace GxMcp.Gateway
                             double silentSec = (DateTime.UtcNow - _lastResponse).TotalSeconds;
                             if (silentSec >= WedgedSilenceSeconds)
                             {
-                                Program.Log($"[Gateway] worker_wedged_shutdown id={workerLabel} oldestInFlightAgeMinutes={oldestAge.TotalMinutes:F1} silentSec={silentSec:F0} ceilingMinutes={_wedgedCommandTimeout.TotalMinutes}");
-                                StopProcess(WorkerStopReason.Wedged);
-                                continue;
+                                // Issue #335's rule is that a shared Gateway may act only
+                                // once the broker reports an election, and `mayRecycle`
+                                // carries exactly that. The idle and heap branches above
+                                // have carried it since #335; this branch never did, and
+                                // only by accident. The log line here used to interpolate
+                                // `pid={_process.Id}`, which throws for a shared Worker -
+                                // a shared Gateway owns no child Process, so `_process`
+                                // is null - the loop's own catch swallowed the exception,
+                                // and the StopProcess below never ran. Commit 59ccc02d
+                                // replaced that dereference with the shared-safe
+                                // `workerLabel`, which removed the accident and made an
+                                // ungated shared reap reachable: two Gateways attached to
+                                // one Worker, each free to decide to kill it. The gate is
+                                // not removable. Reaping a shared Worker stays with the
+                                // broker's elected Gateway.
+                                if (mayRecycle)
+                                {
+                                    Program.Log($"[Gateway] worker_wedged_shutdown id={workerLabel} oldestInFlightAgeMinutes={oldestAge.TotalMinutes:F1} silentSec={silentSec:F0} ceilingMinutes={_wedgedCommandTimeout.TotalMinutes}");
+                                    StopProcess(WorkerStopReason.Wedged);
+                                    continue;
+                                }
+
+                                // Observed, not elected. Deliberately NOT named
+                                // `worker_wedged_shutdown`: that token is what an operator
+                                // greps for to establish that a reap happened, and nothing
+                                // was reaped here. Reusing it would let a second watcher's
+                                // line stand in as the elected Gateway's confirmation.
+                                Program.Log($"[Gateway] worker_wedged_observed id={workerLabel} oldestInFlightAgeMinutes={oldestAge.TotalMinutes:F1} silentSec={silentSec:F0} ceilingMinutes={_wedgedCommandTimeout.TotalMinutes} — silent past the ceiling, but the broker has not elected this gateway to recycle; observing only, re-checked each pass.");
                             }
-                            Program.Log($"[Gateway] worker in-flight command old ({oldestAge.TotalMinutes:F1}min) but still emitting output ({silentSec:F0}s ago) — progressing, not wedged.");
+                            else
+                            {
+                                // The `else` is load-bearing, not tidiness: before the gate
+                                // the `continue` above made this line unreachable once
+                                // silentSec crossed the ceiling. Without it a non-elected
+                                // Gateway falls through and reports a Worker that has been
+                                // silent past the ceiling as "still emitting output".
+                                Program.Log($"[Gateway] worker in-flight command old ({oldestAge.TotalMinutes:F1}min) but still emitting output ({silentSec:F0}s ago) — progressing, not wedged.");
+                            }
                         }
 
                         if ((DateTime.UtcNow - _lastResponse).TotalSeconds > 45)

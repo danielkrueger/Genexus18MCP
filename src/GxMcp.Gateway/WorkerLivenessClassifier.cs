@@ -50,7 +50,7 @@ namespace GxMcp.Gateway
         /// The SDK-lane probe result, a timeout sentinel (<c>__timeout</c>), or null when
         /// the probe did not return at all.
         /// </param>
-        internal static JObject Classify(string alias, bool transportAlive, JObject sdkProbe)
+        internal static JObject Classify(string alias, bool transportAlive, JObject? sdkProbe)
         {
             string sdk;
             string operation = null;

@@ -191,7 +191,7 @@ namespace GxMcp.Gateway.Tests
             // every combination of probe outcomes, the classification must be reachable
             // without ever concluding "fine" from the transport alone.
             var transports = new[] { true, false };
-            var probes = new JObject[]
+            var probes = new JObject?[]
             {
                 SdkProbe(false, false, null),
                 SdkProbe(true, true, 1_000),
