@@ -481,8 +481,12 @@ namespace GxMcp.Worker.Services
 
         internal static InProcessBuildOutcome FailedNativeBuild(BuildTaskStatus status)
         {
+            // The batch route now forwards the SDK output, so only claim missing
+            // diagnostics when none were itemized.
             RecordVerificationFailure(status, "NativeBuildFailed",
-                "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.", "native");
+                status.ErrorCount > 0
+                    ? "The native SDK build failed; see the diagnostics above. No automatic retry was performed."
+                    : "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.", "native");
             return InProcessBuildOutcome.FailedWithDiagnostics;
         }
 
