@@ -1602,6 +1602,36 @@ if (-not $notes) {
     }
 }
 
+# GitHub rejects a release body over 125000 characters with an unhelpful
+# HTTP 422 "Validation Failed", and this repository's changelog voice is
+# deliberately long: each entry explains why the change was made rather than
+# what changed, so a section that documents a release honestly can exceed the
+# cap. Cutting mid-bullet produces a body that reads as though the release
+# stopped early, and failing outright would mean a release cannot ship because
+# its notes are thorough - which is the wrong reason to not ship.
+#
+# So: cut at the last complete bullet that fits, and say plainly in the body
+# that it was cut and where the rest lives. The full text is not lost - it is in
+# CHANGELOG.md at the tag, which is the same place a reader would look for it.
+$GitHubReleaseBodyLimit = 125000
+if ($notes.Length -gt $GitHubReleaseBodyLimit) {
+    $originalLength = $notes.Length
+    $budget = $GitHubReleaseBodyLimit - 1000
+    $cut = $notes.LastIndexOf("`n- ", $budget)
+    if ($cut -lt 1) { $cut = $notes.LastIndexOf("`n##", $budget) }
+    if ($cut -lt 1) { $cut = $notes.LastIndexOf("`n", $budget) }
+    if ($cut -lt 1) { $cut = $budget }
+    $omitted = $originalLength - $cut
+    $pointer = @"
+
+---
+
+_This release body was truncated to fit GitHub's $GitHubReleaseBodyLimit-character limit. The full entry for $tag is $originalLength characters; $omitted characters were omitted here. The complete text is in ``CHANGELOG.md`` at tag ``$tag``._
+"@
+    $notes = $notes.Substring(0, $cut).TrimEnd() + $pointer
+    Warn "Release notes exceeded the GitHub body limit: $originalLength -> $($notes.Length) chars. Truncated at a bullet boundary; the full entry stays in CHANGELOG.md at $tag."
+}
+
 $notesTmp = Join-Path $env:TEMP "release-notes-$tag.md"
 if (-not $DryRun) {
     [System.IO.File]::WriteAllText($notesTmp, $notes, [System.Text.UTF8Encoding]::new($false))
