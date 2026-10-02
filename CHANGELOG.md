@@ -10,6 +10,7 @@
 ### Changed
 
 ### Fixed
+- `genexus_read` now accepts `objectName` as an alias of `name` (the spelling `genexus_search_source` uses) instead of silently dropping it and answering `Object not found:` with an empty name plus unrelated "Did you mean" suggestions; a read with no object identity at all now fails fast with a `usage_error` and performs no lookup.
 
 ### Internal
 
