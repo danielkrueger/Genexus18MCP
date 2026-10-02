@@ -20,6 +20,25 @@ namespace GxMcp.Gateway
         private const int MaxJournalEntries = 1024;
         private const long MaxJournalBytes = 1024 * 1024;
 
+        // How long the write gate waits for a peer Gateway's lease. A write refused
+        // because another process was mid-commit would be a false block, and the
+        // caller can simply retry.
+        internal const int JournalLeaseBudgetMs = 2000;
+
+        // The read path's share of that wait. A read is a cache-freshness check on
+        // the hottest path in the product, and paying seconds for it under writer
+        // contention is worse than paying for it a moment later. Losing this race
+        // does not lose a fence: RefreshIfChanged reports the journal as busy, which
+        // is the direction that makes the read path bypass the cache, not trust it.
+        internal const int ReadPathLeaseBudgetMs = 100;
+
+        // Backstop for the metadata change signal. Timestamp and length together
+        // describe every commit but one - two commits inside a single filesystem
+        // timestamp tick, at the same byte length - so the journal content is
+        // re-read at least this often. That makes the miss bounded instead of
+        // permanent, which is the property the signal has to have.
+        internal const int ReadPathRecheckIntervalMs = 250;
+
         // A manifest can affect an unknown set of objects and parts. Keep its
         // recovery fence explicit and conservative instead of pretending that
         // the manifest path is an object named Source.
@@ -35,6 +54,11 @@ namespace GxMcp.Gateway
         private readonly object _journalLock = new object();
         private volatile bool _journalHealthy = true;
         private string _journalError = string.Empty;
+        // Journal metadata as the last trusted load left it, published as a single
+        // immutable reference so the read path can read the pair without the lock and
+        // cannot observe half of a new stamp. null means "never loaded", which the
+        // change signal reports as changed.
+        private volatile JournalStamp? _loadedStamp;
 
         public MutationRecoveryRegistry(string? journalPath = null)
         {
@@ -187,7 +211,7 @@ namespace GxMcp.Gateway
                 _undurable[key] = requirement;
                 try
                 {
-                    using var lease = AcquireJournalLock();
+                    using var lease = AcquireJournalLock(JournalLeaseBudgetMs);
                     ReloadTrustedJournal();
                     _pending[key] = requirement;
                     if (_journalHealthy) PersistJournal();
@@ -328,7 +352,9 @@ namespace GxMcp.Gateway
                         observed.TargetGuid, observed.TargetEntityKey, observed.TargetType, observed.TargetPath) != key) return false;
                 try
                 {
-                    using var lease = AcquireJournalLock();
+                    // A confirmation rewrites the journal, so it keeps the write
+                    // gate's patience even when it was reached from a read.
+                    using var lease = AcquireJournalLock(JournalLeaseBudgetMs);
                     ReloadTrustedJournal();
                     if (!_pending.TryGetValue(key, out var current)
                         || current.RequiredAtUtc != observed.RequiredAtUtc
@@ -439,19 +465,99 @@ namespace GxMcp.Gateway
 
         private void LoadJournal() => Refresh();
 
-        // Read-only refresh is required at the write gate: several Gateways can
-        // share this path. An unhealthy instance recovers only via explicit repair.
-        public void Refresh()
+        // The write gate refreshes unconditionally: several Gateways can share this
+        // path, so it must see a peer's fence before it admits a write, and an
+        // unhealthy instance recovers only via explicit repair. The read path calls
+        // RefreshIfChanged() instead, which reaches the same reload through a cheap
+        // change signal. The two call sites are deliberately different - do not
+        // "simplify" the read path back to this one.
+        public void Refresh() => Refresh(JournalLeaseBudgetMs);
+
+        private void Refresh(int leaseBudgetMs)
         {
             lock (_journalLock)
             {
                 try
                 {
-                    using var lease = AcquireJournalLock();
+                    using var lease = AcquireJournalLock(leaseBudgetMs);
                     ReloadTrustedJournal();
                 }
                 catch (Exception ex) { RecordFault("Mutation recovery journal rejected: ", ex); }
             }
+        }
+
+        /// <summary>
+        /// The read path's refresh: reload the journal only when its metadata says
+        /// another process moved it.
+        /// </summary>
+        /// <remarks>
+        /// A fence committed by another Gateway is still observed - the signal is
+        /// consulted on every call, and a commit moves the journal's metadata. What
+        /// is skipped for an unchanged journal is the exclusive cross-process lease,
+        /// the full re-parse and the directory glob, on the call that happens most.
+        /// When the lease is genuinely contended the read gives up after
+        /// <see cref="ReadPathLeaseBudgetMs"/> and reports the journal as busy, which
+        /// is what forces the read off the cache.
+        /// </remarks>
+        public void RefreshIfChanged()
+        {
+            // _journalBusy is a transient outcome of a lost lease, not a settled state.
+            // Skipping while it is latched would keep the journal untrusted until some
+            // unrelated commit happened to change its metadata.
+            if (_journalBusy || HasJournalChanged()) Refresh(ReadPathLeaseBudgetMs);
+        }
+
+        /// <summary>
+        /// The change signal the read path consults, without taking the lease.
+        /// </summary>
+        /// <remarks>
+        /// Reading file metadata does not acquire the <c>FileShare.None</c> lease, so
+        /// it neither waits for a concurrent writer nor blocks one - which is the
+        /// entire reason this check exists.
+        /// <para>
+        /// Timestamp and length are a pair, and neither alone would do.
+        /// <c>PersistJournal</c> commits by renaming a candidate over the journal, so
+        /// the length is what a fence serialising to the same size would otherwise be
+        /// invisible to, and the timestamp is what two journals holding the same
+        /// number of entries would otherwise be indistinguishable by. The one commit
+        /// the pair can miss is a same-tick, same-length one, and that is what
+        /// <see cref="ReadPathRecheckIntervalMs"/> bounds: the content is re-read at
+        /// least that often, so a missed commit is picked up by the next interval
+        /// rather than staying invisible until the next unrelated write.
+        /// </para>
+        /// </remarks>
+        private bool HasJournalChanged()
+        {
+            var loaded = _loadedStamp;
+            if (loaded == null) return true;
+            if (Environment.TickCount64 - loaded.ObservedAtTicks >= ReadPathRecheckIntervalMs)
+                return true;
+            if (string.IsNullOrWhiteSpace(_journalPath)) return false;
+            try
+            {
+                var info = new FileInfo(_journalPath);
+                if (!info.Exists) return loaded.Length >= 0;
+                return info.LastWriteTimeUtc != loaded.LastWriteUtc || info.Length != loaded.Length;
+            }
+            // Unreadable metadata means "assume it moved": an extra reload is the
+            // cheap direction, a skipped one could serve a fence we never saw.
+            catch (IOException) { return true; }
+            catch (UnauthorizedAccessException) { return true; }
+        }
+
+        /// <summary>
+        /// Records what the journal looks like on disk right now. Called by every
+        /// path that has just read or written it; a path that throws first leaves the
+        /// previous stamp, so the next conditional refresh retries instead of trusting
+        /// a file this instance did not verify.
+        /// </summary>
+        private void CaptureJournalBaseline()
+        {
+            if (string.IsNullOrWhiteSpace(_journalPath)) return;
+            var info = new FileInfo(_journalPath);
+            _loadedStamp = info.Exists
+                ? new JournalStamp(info.LastWriteTimeUtc, info.Length, Environment.TickCount64)
+                : new JournalStamp(DateTime.MinValue, -1, Environment.TickCount64);
         }
 
         internal JObject GetJournalStatus()
@@ -475,7 +581,7 @@ namespace GxMcp.Gateway
             {
                 try
                 {
-                    using var lease = AcquireJournalLock();
+                    using var lease = AcquireJournalLock(JournalLeaseBudgetMs);
                     if (_journalObserved && !string.IsNullOrWhiteSpace(_journalPath) && !File.Exists(_journalPath))
                         throw new InvalidDataException("previously observed journal is missing");
                     var candidates = new Dictionary<string, RecoveryRequirement>();
@@ -531,7 +637,7 @@ namespace GxMcp.Gateway
             }
         }
 
-        private FileStream? AcquireJournalLock()
+        private FileStream? AcquireJournalLock(int leaseBudgetMs)
         {
             if (string.IsNullOrWhiteSpace(_journalPath)) return null;
             var directory = Path.GetDirectoryName(Path.GetFullPath(_journalPath));
@@ -547,7 +653,7 @@ namespace GxMcp.Gateway
                 }
                 catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33)
                 {
-                    if (Environment.TickCount64 - started >= 2000) throw new JournalBusyException();
+                    if (Environment.TickCount64 - started >= leaseBudgetMs) throw new JournalBusyException();
                     Thread.Sleep(20);
                 }
             }
@@ -575,6 +681,9 @@ namespace GxMcp.Gateway
             _pending = new ConcurrentDictionary<string, RecoveryRequirement>(merged);
             if (TemporaryFiles().Length != 0)
                 throw new InvalidDataException("uncommitted journal candidates require explicit journal_repair");
+            // Only past the last check that can throw: a stamp captured before a
+            // fault would make the read path trust a journal this load rejected.
+            CaptureJournalBaseline();
         }
 
         private IReadOnlyList<RecoveryRequirement> ReadJournal(string path)
@@ -639,6 +748,10 @@ namespace GxMcp.Gateway
                 throw new InvalidDataException("journal readback did not match the committed recovery fences");
             _undurable.Clear();
             _journalObserved = true;
+            // The file this instance just committed is what the read path's change
+            // signal is measured against; without this the next read would see its
+            // own write as a peer's and take the lease for nothing.
+            CaptureJournalBaseline();
         }
 
         private string WriteCandidate(byte[] bytes)
@@ -665,6 +778,26 @@ namespace GxMcp.Gateway
             }));
 
         private sealed class JournalBusyException : IOException { }
+
+        /// <summary>
+        /// The journal's metadata as one immutable value, so the read path can read
+        /// timestamp, length and observation time without the lock and without the
+        /// risk of pairing one field from a new stamp with another from the old.
+        /// </summary>
+        private sealed class JournalStamp
+        {
+            internal JournalStamp(DateTime lastWriteUtc, long length, long observedAtTicks)
+            {
+                LastWriteUtc = lastWriteUtc;
+                Length = length;
+                ObservedAtTicks = observedAtTicks;
+            }
+
+            internal DateTime LastWriteUtc { get; }
+            /// <summary>-1 when the journal was not on disk at observation time.</summary>
+            internal long Length { get; }
+            internal long ObservedAtTicks { get; }
+        }
 
         private void RecordFault(string prefix, Exception exception)
         {

@@ -154,6 +154,10 @@ namespace GxMcp.Gateway
             // genexus_edit used to serialize its full source payload into a key
             // for that doomed lookup on every call.
             bool isMutating = IsMutatingTool(tName, tArgs);
+            // WRITE GATE: unconditional on purpose. A write refused because a peer
+            // Gateway held the journal mid-commit would be a false block, so this
+            // must not consult a change signal. The genexus_read branch below uses
+            // RefreshIfChanged() instead; the asymmetry is deliberate, do not unify.
             if (isMutating && !IsMutationPreview(tArgs))
                 _mutationRecovery.Refresh();
             if (isMutating
@@ -226,7 +230,13 @@ namespace GxMcp.Gateway
             bool requireAuthoritativeRead = false;
             if (string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
             {
-                _mutationRecovery.Refresh();
+                // READ PATH: conditional. The journal is shared with other Gateways,
+                // so a fence written elsewhere must still be observed - the signal is
+                // checked on every call - but a read is a cache-freshness check and
+                // must not pay an exclusive cross-process lock, a full re-parse and a
+                // directory glob on every call. The mutating branch above keeps the
+                // unconditional Refresh(); the two are deliberately different.
+                _mutationRecovery.RefreshIfChanged();
                 bool ReadCoversPart(string part)
                 {
                     if (tArgs?["part"] != null && tArgs["part"].Type != JTokenType.Null)
