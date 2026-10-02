@@ -11,7 +11,7 @@
 
 ### Fixed
 
-- Structure DSL `Attr : DomainName` now bases a new attribute on that Domain. The Domain lookup reflected `GetByName(string, string, string)`, but the SDK signature is `GetByName(string, Guid?, string)`, so the lookup always missed and the attribute silently got the default `NUMERIC(4)`.
+- Structure DSL `Attr : DomainName` now bases a new attribute on that Domain. The Domain lookup reflected `GetByName(string, string, string)`, but the SDK signature is `GetByName(string, Guid?, string)`, so the lookup always missed and the attribute silently got the default `NUMERIC(4)`. The write is also no longer reported as `WriteNotPersisted`: the Structure re-read renders a domain-based attribute with its physical type (`CHARACTER(10)`), so post-save verification now treats `Attr : SomeDomain` as matching only when the persisted attribute is really based on that domain.
 
 ### Internal
 
