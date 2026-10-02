@@ -868,6 +868,7 @@ namespace GxMcp.Worker.Services
                         obj.EnsureSave();
                         trans.Commit();
                         committed = true;
+                        WriteService.NotePerTargetWrite(target);
                         InvalidatePropertyCache(obj);
                     }
                     finally
@@ -962,6 +963,7 @@ namespace GxMcp.Worker.Services
                         obj.EnsureSave();
                         trans.Commit();
                         committed = true;
+                        WriteService.NotePerTargetWrite(target);
                         InvalidatePropertyCache(obj);
                     }
                     finally
@@ -1389,6 +1391,7 @@ namespace GxMcp.Worker.Services
                         obj.EnsureSave();
                         trans.Commit();
                         committed = true;
+                        WriteService.NotePerTargetWrite(target);
                         InvalidatePropertyCache(obj);
                     }
                     finally

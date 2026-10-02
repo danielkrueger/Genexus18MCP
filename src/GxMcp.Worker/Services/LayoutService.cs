@@ -979,6 +979,7 @@ namespace GxMcp.Worker.Services
                     }
                 }
                 _objectService.MarkReadCacheDirty(obj, "Layout");
+                WriteService.NotePerTargetWrite(target);
 
                 var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
@@ -1118,6 +1119,7 @@ namespace GxMcp.Worker.Services
                     }
                 }
                 _objectService.MarkReadCacheDirty(obj, "Layout");
+                WriteService.NotePerTargetWrite(target);
 
                 var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
@@ -1239,6 +1241,7 @@ namespace GxMcp.Worker.Services
                     }
                 }
                 _objectService.MarkReadCacheDirty(obj, "Layout");
+                WriteService.NotePerTargetWrite(target);
 
                 // Cold read-back to prove the block is really gone from disk.
                 var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;

@@ -92,6 +92,7 @@ namespace GxMcp.Worker.Services.Structure
                     }
 
                     obj.EnsureSave();
+                    WriteService.NotePerTargetWrite(objName);
                     int count = isMethod ? exo.ExternalMethods.Count : exo.ExternalProperties.Count;
                     return Models.McpResponse.Ok(
                         target: objName,
@@ -159,6 +160,7 @@ namespace GxMcp.Worker.Services.Structure
                     menuPart.Options.Add(opt);
 
                     obj.EnsureSave();
+                    WriteService.NotePerTargetWrite(objName);
                     return Models.McpResponse.Ok(
                         target: objName,
                         code: "MenuOptionAdded",
@@ -215,6 +217,7 @@ namespace GxMcp.Worker.Services.Structure
                     if (part.Root == null) part.Root = new DataSelectorLevel(part);
                     part.Root.AddCondition(source);
                     obj.EnsureSave();
+                    WriteService.NotePerTargetWrite(objName);
                     int count = part.Root.Conditions?.Count() ?? 0;
                     return Models.McpResponse.Ok(
                         target: objName,

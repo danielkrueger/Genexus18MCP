@@ -98,6 +98,7 @@ namespace GxMcp.Worker.Services.Structure
                             SkipValidation = false
                         });
                         sdkTrans.Commit();
+                        WriteService.NotePerTargetWrite(domainName);
 
                         var persistedDomain = _objectService.FindObject(domainName, "Domain") as Domain;
                         var persisted = SnapshotDomain(persistedDomain);

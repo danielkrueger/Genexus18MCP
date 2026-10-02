@@ -69,7 +69,8 @@ namespace GxMcp.Worker.Services.Structure
             
             // Batch Save: Salva cada objeto modificado apenas uma vez
             foreach (var obj in _modifiedObjects) {
-                try { obj.Save(); } catch (Exception ex) { Logger.Error($"Failed to save modified object {obj.Name}: {ex.Message}"); }
+                try { obj.Save(); } catch (Exception ex) { Logger.Error($"Failed to save modified object {obj.Name}: {ex.Message}"); continue; }
+                WriteService.NotePerTargetWrite(obj.Name);
             }
         }
 

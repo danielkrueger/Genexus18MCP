@@ -219,6 +219,7 @@ namespace GxMcp.Worker.Services.Structure
                             created.EnsureSave();
                             current.Table.EnsureSave();
                             sdkTrans.Commit();
+                            WriteService.NotePerTargetWrite(targetName);
                         }
                     }
                     catch (Exception ex)

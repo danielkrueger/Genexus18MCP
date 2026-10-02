@@ -102,6 +102,7 @@ namespace GxMcp.Worker.Services.Structure
 
                         attr.EnsureSave();
                         sdkTrans.Commit();
+                        WriteService.NotePerTargetWrite(attrName);
 
                         return Models.McpResponse.Ok(
                             target: attrName,

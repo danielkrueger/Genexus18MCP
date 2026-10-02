@@ -120,6 +120,7 @@ namespace GxMcp.Worker.Services.Structure
 
                         group.EnsureSave();
                         sdkTrans.Commit();
+                        WriteService.NotePerTargetWrite(groupName);
 
                         try { _objectService.GetKbService().GetIndexCache().UpdateEntry(group); }
                         catch (Exception iex) { Logger.Warn("[GroupStructureService] index UpdateEntry failed: " + iex.Message); }

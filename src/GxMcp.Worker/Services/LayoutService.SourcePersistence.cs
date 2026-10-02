@@ -210,6 +210,14 @@ namespace GxMcp.Worker.Services
                     }
 
                     _objectService.MarkReadCacheDirty(obj, context.PartName ?? "Layout");
+                    // Build-path bookkeeping, distinct from the read-cache invalidation
+                    // above. Every visual XML write - set_property, set_properties and
+                    // the report control mutations in LayoutService.ReportControls.cs -
+                    // commits here, so a layout change made after the last Specify
+                    // leaves the target classified clean and the next incremental build
+                    // would ship a stale assembly. Marked after the commit, so a
+                    // rolled-back write is not marked.
+                    WriteService.NotePerTargetWrite(target);
                     return null;
                 }
                 catch (Exception ex)
