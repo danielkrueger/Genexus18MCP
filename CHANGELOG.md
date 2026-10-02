@@ -3,6 +3,7 @@
 ## Unreleased
 
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+- `genexus_transfer action=import` run as a preview (dryRun omitted or true) now says so: the response carries `previewOnly`, `imported:false`, a `hint` and a `nextAction` with `dryRun:false` + `confirm:true`, plus a `warning` when `confirm:true` was passed without `dryRun:false` (confirm alone does not import). The dryRun default is unchanged.
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
 ### Added
