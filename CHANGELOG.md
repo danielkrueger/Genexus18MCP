@@ -10,6 +10,7 @@
 ### Changed
 
 ### Fixed
+- `genexus_layout` `set_property` / `set_properties` on a report layout no longer silently change only the first of several same-named controls (e.g. the same label in two print blocks); they now fail with `AmbiguousControl`, listing each match's print block and path, and accept the get_tree path (`/Report/PrintBlock[2]/Control[1]`) as `control` to disambiguate.
 
 ### Internal
 
