@@ -28,25 +28,93 @@ def _strings(value: str) -> list[str]:
     return re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', value)
 
 
-def _set_block(source: str, field: str) -> set[str]:
-    match = re.search(
-        rf"private static readonly HashSet<string> {field}.*?\{{(.*?)\n        \}};",
-        source,
-        re.S,
-    )
+# A declaration is recognised by its field name in the leading token run of a
+# line, followed by `=`.  Modifier text, attributes, line wrapping and indentation
+# are deliberately not part of the match.
+_DECLARATION = r"(?m)^[ \t]*(?:\[[^\]\n]*\][ \t]*)*(?:[\w\[\]<>,\.]+[ \t\r\n]+)*?{name}[ \t\r\n]*=(?!=)"
+
+
+def _skip_trivia(source: str, index: int) -> int:
+    """Return the index just past the literal or comment starting at ``index``.
+
+    Brace matching is only sound when a brace inside a string, char literal or
+    comment is never counted, so each of those is consumed as an opaque unit.
+    Returns ``index`` unchanged when no literal or comment starts there.
+    """
+    if source.startswith("//", index):
+        newline = source.find("\n", index)
+        return len(source) if newline < 0 else newline
+    if source.startswith("/*", index):
+        closing = source.find("*/", index + 2)
+        return len(source) if closing < 0 else closing + 2
+    if source[index] == "@" or (source[index] == "$" and source.startswith('@"', index + 1)):
+        cursor = index + 1 if source[index] == "@" else index + 2
+        while cursor < len(source):
+            if source[cursor] == '"':
+                if source.startswith('""', cursor):
+                    cursor += 2
+                    continue
+                return cursor + 1
+            cursor += 1
+        return cursor
+    if source.startswith('"""', index) or source[index] in "\"'":
+        quote = '"""' if source.startswith('"""', index) else source[index]
+        cursor = index + len(quote)
+        while cursor < len(source):
+            if source.startswith(quote, cursor):
+                return cursor + len(quote)
+            if quote != '"""' and source[cursor] == "\\":
+                cursor += 2
+                continue
+            cursor += 1
+        return cursor
+    return index
+
+
+def _initialiser(source: str, field: str) -> str:
+    """Return the text inside ``field``'s collection initialiser.
+
+    Tolerant of the declaration's modifier text and indentation, and of nested
+    braces in the body: the end is the brace that balances the initialiser's
+    opening brace rather than an expected ``\\n        };``.  Fails closed, so a
+    renamed or deleted declaration raises instead of reading an empty set.
+    """
+    match = re.search(_DECLARATION.format(name=re.escape(field)), source)
     if not match:
         raise ValueError(f"could not locate {field} in OperationClassifier.cs")
-    return set(_strings(match.group(1)))
+    depth = 0
+    opened = -1
+    cursor = match.end()
+    while cursor < len(source):
+        skipped = _skip_trivia(source, cursor)
+        if skipped != cursor:
+            cursor = skipped
+            continue
+        character = source[cursor]
+        if character == "{":
+            opened = cursor if opened < 0 else opened
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opened + 1 : cursor]
+        cursor += 1
+    raise ValueError(f"unterminated initialiser for {field} in OperationClassifier.cs")
+
+
+def _set_block(source: str, field: str) -> set[str]:
+    return set(_strings(_initialiser(source, field)))
 
 
 def read_policy(path: Path) -> tuple[dict[str, dict[str, set[str]]], dict[str, set[str]], set[str]]:
     source = path.read_text(encoding="utf-8")
     contracts: dict[str, dict[str, set[str]]] = {}
-    marker = "private static readonly Dictionary<string, ActionContract> ActionContracts"
-    start = source.index(marker)
-    end = source.index("\n\n        // Only actions", start)
-    block = source[start:end]
-    entries = list(re.finditer(r'\["([^"]+)"\]\s*=\s*Contract\(', block))
+    # Bounded by brace matching, not by the comment that happens to follow the
+    # dictionary today.
+    block = _initialiser(source, "ActionContracts")
+    entries = list(re.finditer(r'\[\s*"([^"]+)"\s*\]\s*=\s*Contract\s*\(', block))
+    if not entries:
+        raise ValueError("could not locate any ActionContracts entry in OperationClassifier.cs")
     for index, entry in enumerate(entries):
         segment_end = entries[index + 1].start() if index + 1 < len(entries) else len(block)
         segment = block[entry.end() : segment_end]
@@ -66,16 +134,10 @@ def read_policy(path: Path) -> tuple[dict[str, dict[str, set[str]]], dict[str, s
             "KnownMutatingTools",
             "ModeDependentTools",
             "NameOnlyMutatingTools",
+            "DryRunCapableActions",
         )
     }
-    preview_match = re.search(
-        r"private static readonly HashSet<string> DryRunCapableActions.*?\{(.*?)\n        \};",
-        source,
-        re.S,
-    )
-    if not preview_match:
-        raise ValueError("could not locate DryRunCapableActions in OperationClassifier.cs")
-    return contracts, named, set(_strings(preview_match.group(1)))
+    return contracts, named, named["DryRunCapableActions"]
 
 
 def classify(tool: str, action: str | None, contracts: dict[str, dict[str, set[str]]], named: dict[str, set[str]]) -> str:

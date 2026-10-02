@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "generate-operation-contract-inventory.py"
 INVENTORY = ROOT / "docs" / "operation-contract-inventory.json"
+POLICY_FIELDS = (
+    "PureReadOnlyTools",
+    "KnownMutatingTools",
+    "ModeDependentTools",
+    "NameOnlyMutatingTools",
+    "DryRunCapableActions",
+    "ActionContracts",
+)
+
+
+def _load_generator():
+    """Load the generator script the way the rest of this file already does."""
+    from importlib.util import module_from_spec, spec_from_file_location
+    spec = spec_from_file_location("inventory", SCRIPT)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def _drop_declaration(source: str, field: str) -> str:
+    """Return *source* with ``field``'s declaration and body removed."""
+    lines = source.splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines) if field in line)
+    end = next(index for index in range(start, len(lines)) if lines[index].strip() == "};")
+    del lines[start : end + 1]
+    return "".join(lines)
 
 
 class OperationContractInventoryTests(unittest.TestCase):
@@ -115,6 +143,51 @@ class OperationContractInventoryTests(unittest.TestCase):
             self.assertEqual(actions[name]["retry"], "reconcile_inventory")
             self.assertEqual(actions[name]["kind"], "mutating")
         self.assertEqual(actions["list"]["retry"], "safe")
+
+    def test_read_policy_locates_every_required_field(self):
+        module = _load_generator()
+        contracts, named, preview_actions = module.read_policy(module.CLASSIFIER)
+        self.assertTrue(contracts)
+        for field in POLICY_FIELDS:
+            with self.subTest(field=field):
+                if field == "ActionContracts":
+                    self.assertIn("genexus_module", contracts)
+                else:
+                    self.assertIn(field, named)
+                    self.assertTrue(named[field])
+        self.assertEqual(preview_actions, named["DryRunCapableActions"])
+
+    def test_read_policy_is_insensitive_to_reformatting(self):
+        module = _load_generator()
+        expected = module.read_policy(module.CLASSIFIER)
+        source = module.CLASSIFIER.read_text(encoding="utf-8")
+        indented = "".join(
+            "    " + line if line.strip() else line for line in source.splitlines(keepends=True)
+        )
+        stripped = re.sub(r"(?m)^([ \t]*)private ", r"\1", source)
+        restyled = re.sub(r"(?m)^([ \t]*)private ", r"\1", indented)
+        with tempfile.TemporaryDirectory() as temp:
+            for label, text in (
+                ("indented", indented),
+                ("private stripped", stripped),
+                ("both", restyled),
+            ):
+                with self.subTest(reformatting=label):
+                    copy = Path(temp) / "OperationClassifier.cs"
+                    copy.write_text(text, encoding="utf-8")
+                    self.assertEqual(module.read_policy(copy), expected)
+
+    def test_read_policy_still_fails_closed_on_a_missing_field(self):
+        module = _load_generator()
+        source = module.CLASSIFIER.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as temp:
+            for field in POLICY_FIELDS:
+                with self.subTest(field=field):
+                    copy = Path(temp) / "OperationClassifier.cs"
+                    copy.write_text(_drop_declaration(source, field), encoding="utf-8")
+                    with self.assertRaises(ValueError) as caught:
+                        module.read_policy(copy)
+                    self.assertIn(field, str(caught.exception))
 
 
 if __name__ == "__main__":
