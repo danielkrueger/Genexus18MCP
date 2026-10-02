@@ -185,6 +185,12 @@ namespace GxMcp.Worker.Services
                         SkipValidation = true
                     };
                     parent.Save(prefs);
+                    // Every caller of this helper marks only the WWP instance and reports
+                    // the parent separately, but the projection regenerates the parent
+                    // WebForm here, and a WebForm is itself a build target. Without this
+                    // mark the next build takes the compile-only fast path and ships a
+                    // stale generated class.
+                    WriteService.NotePerTargetWrite(parent.Name);
                     result.ParentSaved = true;
                     Logger.Info("[WWP-PROJECT] Saved parent '" + parent.Name + "' (ForceSave+SkipValidation).");
                 }
@@ -194,6 +200,9 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         parent.EnsureSave(true);
+                        // The fallback path is a real save, not a lesser one: it persists
+                        // the same parent, so it owes the same mark.
+                        WriteService.NotePerTargetWrite(parent.Name);
                         result.ParentSaved = true;
                     }
                     catch (Exception ex2)

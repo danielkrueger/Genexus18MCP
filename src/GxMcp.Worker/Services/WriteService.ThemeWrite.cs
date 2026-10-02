@@ -83,6 +83,7 @@ namespace GxMcp.Worker.Services
                     ForceSaveThemeObject(obj);
                     transaction.Commit();
                     ScheduleFlush(force: true);
+                    NotePerTargetWrite(target);
                     _objectService.MarkReadCacheDirty(obj, partName);
 
                     string persisted = ReadPersistedThemeText(target, partName, obj.TypeDescriptor?.Name);

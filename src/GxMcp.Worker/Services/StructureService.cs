@@ -187,6 +187,7 @@ namespace GxMcp.Worker.Services
 
                             sdkTrans.Commit();
                             committed = true;
+                            WriteService.NotePerTargetWrite(targetName);
                         }
                         finally { if (!committed) try { sdkTrans.Rollback(); } catch { } }
                     }
@@ -497,6 +498,7 @@ namespace GxMcp.Worker.Services
                         RestoreAuthoredTransactionParts(trn, snapshot);
 
                         sdkTrans.Commit();
+                        WriteService.NotePerTargetWrite(targetName);
                     }
                     catch (Exception ex)
                     {
@@ -517,6 +519,7 @@ namespace GxMcp.Worker.Services
                             var authoredTarget = RefreshTransaction(trn) ?? trn;
                             RestoreAuthoredTransactionParts(authoredTarget, snapshot);
                             authoredTx.Commit();
+                            WriteService.NotePerTargetWrite(targetName);
                         }
                     }
                     catch (Exception ex)
@@ -726,6 +729,7 @@ namespace GxMcp.Worker.Services
                         RestoreAuthoredTransactionParts(trn, snapshot);
 
                         sdkTrans.Commit();
+                        WriteService.NotePerTargetWrite(targetName);
                     }
                     catch (Exception ex)
                     {
@@ -743,6 +747,7 @@ namespace GxMcp.Worker.Services
                             var authoredTarget = RefreshTransaction(trn) ?? trn;
                             RestoreAuthoredTransactionParts(authoredTarget, snapshot);
                             authoredTx.Commit();
+                            WriteService.NotePerTargetWrite(targetName);
                         }
                     }
                     catch (Exception ex)
@@ -2157,6 +2162,7 @@ namespace GxMcp.Worker.Services
 
                         trn.EnsureSave();
                         sdkTrans.Commit();
+                        WriteService.NotePerTargetWrite(targetName);
                         return Models.McpResponse.Ok(
                             target: targetName,
                             code: "LevelUpdated",

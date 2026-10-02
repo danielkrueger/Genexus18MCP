@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using GxMcp.TestSupport;
 using GxMcp.Worker.Services;
@@ -8,78 +9,158 @@ using Xunit;
 namespace GxMcp.Worker.Tests
 {
     /// <summary>
-    /// The incremental build has a compile-only fast path, taken for any target
-    /// <c>EditDirtyTracker</c> classifies as clean, and with
-    /// <c>fastIncremental</c> an all-clean target list short-circuits to
-    /// <c>NoBuildNeeded</c> without dispatching a build at all. Cleanliness is
-    /// decided solely by <c>EditDirtyTracker.MarkDirty</c>, and the only way a write
-    /// surface reaches it is <c>WriteService.NotePerTargetWrite</c>.
+    /// A write that commits through the SDK has to record its target as dirty, or the next
+    /// build silently takes the compile-only fast path and ships a stale artifact built from
+    /// a <c>.cs</c> that was never regenerated. The mechanism is one call,
+    /// <c>WriteService.NotePerTargetWrite(target)</c>.
     ///
-    /// <para>
-    /// The property, layout and <c>Services/Structure/</c> write surfaces commit
-    /// through the SDK and return success without calling it, so a target that had
-    /// already been built and marked clean in the same session stayed clean after the
-    /// edit. The next build then took the compile-only path against a <c>.cs</c> that
-    /// Specify+Generate had never regenerated, and shipped the stale assembly. Every
-    /// other failure this class guards against produces a wrong message; this one
-    /// produced a wrong artifact, with no error surface at all.
-    /// </para>
+    /// <para><b>These guards are source-shape, and that is a forced choice, not a shortcut.</b>
+    /// The dirty mark and the build decision are separated by an SDK transaction commit. A
+    /// unit test cannot drive <c>KB.BeginTransaction()</c>/<c>Commit()</c> against a real
+    /// KBObject and then observe what a later build decides to skip - that needs a live
+    /// GeneXus installation and a two-phase session. So the observable link is the source:
+    /// the mark is present next to the commit, and the consumer that reads the mark is
+    /// unchanged.</para>
     ///
-    /// <para>
-    /// <b>Why the guard is source-shape.</b> The mark and the build decision are
-    /// separated by an SDK commit inside a transaction on a live KB model, which a
-    /// unit test cannot perform. What is observable here without one is the link
-    /// itself: that each write surface states the mark, and that the two consumers
-    /// that read the tracker still exist. <see cref="AMarkedTargetStaysDirtyUntilItIsRebuilt"/>
-    /// is the behavioural half - it pins the tracker's semantics on the states this
-    /// class depends on, and needs no SDK model either.
-    /// </para>
+    /// <para><b>Counts read through <c>RepoSource.WithoutComments</c>, never
+    /// <c>RepoSource.Read</c>.</b> Every mark added here sits under a comment explaining
+    /// why it is placed there - which is the correct way to write the code and the wrong way
+    /// to test it. A comment naming <c>NotePerTargetWrite</c> satisfies a naive
+    /// <c>Contains</c> assertion on its own, so an unstripped count passes with the call
+    /// deleted. The same applies in reverse to the negative theory: a comment reading
+    /// "deliberately not marked" inside a rollback helper would satisfy a naive
+    /// <c>DoesNotContain</c>.</para>
     ///
-    /// <para>
-    /// Counts are read through <c>RepoSource.WithoutComments</c> so prose cannot
-    /// satisfy an assertion about code. <c>SourceAssert</c> documents that failure
-    /// mode: a comment-stripper that ate real code once made an assertion about code
-    /// that should be present pass because the code it looked for had been deleted.
-    /// The inverse - a comment naming the call counting as the call - is the same trap
-    /// with the sign flipped.
-    /// </para>
-    ///
-    /// <para>
-    /// <b>Table, not list.</b> The convention after this change is that a write which
-    /// commits through the SDK calls <c>WriteService.NotePerTargetWrite</c>. A new
-    /// commit site that omits it reintroduces the stale-artifact defect, so a surface
-    /// added without a row here fails loudly. Add a row when you add a surface.
-    /// </para>
+    /// <para><b>The negative theory is the part worth reviewing.</b> The twenty-two positive
+    /// marks are mechanical. Marking a rollback helper is a new defect: it records a
+    /// reverted write as dirty, which is the exact failure the mechanism exists to prevent.
+    /// Without an assertion, a later "be thorough" edit marking
+    /// <c>RestoreTransactionSnapshot</c> leaves every other test green.</para>
     /// </summary>
     public class MutatingToolDirtyMarkTests
     {
-        private const string Mark = "WriteService.NotePerTargetWrite(";
+        /// <summary>
+        /// The twenty-two services that own their commit sites. The minimum is deliberately
+        /// below the count actually added, so an unrelated future mark cannot mask a
+        /// removed one; <see cref="WriteSurfaceNeedsAtLeastTheseManyMarks"/> is the layer
+        /// that catches a wholesale revert of one file.
+        /// </summary>
+        public static TheoryData<string, int> MarkedWriteSurfaces => new TheoryData<string, int>
+        {
+            { "AtomicAuthoringService.cs", 1 },
+            { "AtomicCreateService.cs", 1 },
+            { "BatchService.cs", 1 },
+            { "RefactorService.cs", 4 },
+            { "ForgeService.cs", 1 },
+            { "GxServerWriteService.cs", 2 },
+            { "MergeToolService.cs", 1 },
+            { "PatternApplyService.cs", 2 },
+            { "StructureService.cs", 5 },
+            { "WwpProjectionHelper.cs", 2 },
+            { "WriteService.PatternWrite.cs", 1 },
+            { "WriteService.ThemeWrite.cs", 1 },
+            { "WriteService.VisualWrite.cs", 1 },
+            { "PropertyService.cs", 3 },
+            { "LayoutService.cs", 3 },
+            { "LayoutService.SourcePersistence.cs", 1 },
+            { "Structure/AuthoringService.cs", 3 },
+            { "Structure/AttributeWriteService.cs", 1 },
+            { "Structure/GroupStructureService.cs", 1 },
+            { "Structure/IndexService.cs", 1 },
+            { "Structure/VisualStructureService.cs", 1 },
+            { "Structure/DomainWriteService.cs", 1 },
+        };
+
+        [Theory]
+        [MemberData(nameof(MarkedWriteSurfaces))]
+        public void WriteSurfaceNeedsAtLeastTheseManyMarks(string file, int minimum)
+        {
+            string source = Service(file);
+
+            Assert.True(
+                CountMarks(source) >= minimum,
+                file + " owns its own commit site(s) but records only " + CountMarks(source)
+                + " NotePerTargetWrite call(s); expected at least " + minimum
+                + ". A commit with no mark ships a stale artifact on the next fast-path build.");
+        }
 
         /// <summary>
-        /// Every mutating write surface states at least the stated number of dirty
-        /// marks. The minimum is the number of distinct SDK commit sites the surface
-        /// has, not a number chosen to pass: lowering it to zero would leave the guard
-        /// green with the defect back.
+        /// The fallback save in the WWP projection helper is not a lesser save - it
+        /// persists the same parent WebForm, which is itself a build target. Two marks, not
+        /// one.
+        /// </summary>
+        [Fact]
+        public void WwpProjectionMarksTheParentOnBothThePrimaryAndTheFallbackSave()
+        {
+            string source = Service("WwpProjectionHelper.cs");
+
+            // parent.Save(prefs) and the parent.EnsureSave(true) fallback both stamp it.
+            Assert.Equal(2, CountMarks(source));
+            Assert.Contains("parent.Save(prefs);", source, StringComparison.Ordinal);
+            Assert.Contains("parent.EnsureSave(true);", source, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// The consumer end of the mechanism. These are pinned as full statements, and the
+        /// exactness is load-bearing: <c>!EditDirtyTracker.IsDirty(kbPath, t)</c> occurs
+        /// <em>twice</em> in InProcessBuildRunner.cs, so an earlier guard that pinned that
+        /// substring stayed green with the fast path replaced by a literal <c>true</c>.
+        /// Pinning the whole assignment, and requiring it exactly once, is what makes the
+        /// assertion about the fast path rather than about a repeated fragment.
+        /// </summary>
+        [Fact]
+        public void FastPathConsumerStillConsultsTheDirtySet()
+        {
+            string runner = Service("InProcessBuildRunner.cs");
+            const string fastPath = "targetMaySkipSpecify = !EditDirtyTracker.IsDirty(kbPath, t);";
+
+            Assert.True(
+                Occurrences(runner, fastPath) == 1,
+                "The compile-only skip must still be derived from EditDirtyTracker.IsDirty, "
+                + "and the pinned statement must stay unique so this guard cannot be satisfied "
+                + "by a different occurrence of the same fragment. Found "
+                + Occurrences(runner, fastPath) + ".");
+
+            string decision = Service("DefaultFastIncrementalDecision.cs");
+            Assert.True(
+                Occurrences(decision, "if (EditDirtyTracker.IsDirty(kbPath, t)) dirty.Add(t);") == 1);
+        }
+
+        /// <summary>
+        /// ApiIntrospectService reaches the mechanism indirectly, through
+        /// <c>WritePipeline.NoteWrite</c>, which is <c>NotePerTargetWrite</c> under another
+        /// name. A literal scan for the call finds nothing there and would wrongly report it
+        /// as an unmarked surface; this pins the indirect route so nobody "fixes" it by
+        /// deleting the working call or duplicating it directly.
+        /// </summary>
+        [Fact]
+        public void ApiIntrospectMarksThroughTheWritePipelineHelper()
+        {
+            Assert.True(
+                Occurrences(Service("ApiIntrospectService.cs"), "WritePipeline.NoteWrite(api.Name);") == 1);
+        }
+
+        /// <summary>
+        /// The layer that makes this more than a sweep. A mark inside a rollback helper
+        /// records a reverted write as dirty; a mark inside dead code marks an object no
+        /// tool ever wrote. Both are new defects, and neither shows up in the positive table
+        /// - every file above would stay green.
         /// </summary>
         [Theory]
-        [InlineData("PropertyService.cs", 3)]
-        [InlineData("LayoutService.cs", 3)]
-        [InlineData("LayoutService.SourcePersistence.cs", 1)]
-        [InlineData("Structure/AuthoringService.cs", 3)]
-        [InlineData("Structure/AttributeWriteService.cs", 1)]
-        [InlineData("Structure/GroupStructureService.cs", 1)]
-        [InlineData("Structure/IndexService.cs", 1)]
-        [InlineData("Structure/VisualStructureService.cs", 1)]
-        [InlineData("Structure/DomainWriteService.cs", 1)]
-        public void EveryMutatingWriteSurfaceMarksItsTargetDirty(string file, int minimum)
+        [InlineData("StructureService.cs", "private static void RestoreAuthoredTransactionParts(")]
+        [InlineData("StructureService.cs", "private RestoreResult RestoreTransactionSnapshot(")]
+        [InlineData("PatternApplyService.cs", "internal bool TryDirectAttachPatternInstance(")]
+        [InlineData("PatternApplyService.cs", "private void TryInvokeBuildProcessUpdateParent_Legacy(")]
+        public void RollbackHelpersAndDeadCodeAreNeverMarked(string file, string declaration)
         {
-            string source = RepoSource.WithoutComments(
-                "src", "GxMcp.Worker", "Services", file.Replace('/', Path.DirectorySeparatorChar));
+            string body = BodyOf(Service(file), declaration);
 
-            Assert.True(SourceAssert.Count(source, Mark) >= minimum,
-                file + " commits SDK writes without marking its target dirty; the next incremental "
-                + "build would ship a stale artifact. Expected at least " + minimum + " "
-                + "WriteService.NotePerTargetWrite calls, found " + SourceAssert.Count(source, Mark) + ".");
+            Assert.True(
+                CountMarks(body) == 0,
+                declaration + " in " + file + " must not record a dirty mark. It restores "
+                + "pre-mutation state or is unreachable, so marking it either records a "
+                + "reverted write as dirty - the failure this mechanism exists to prevent - "
+                + "or marks an object no tool wrote. Found " + CountMarks(body) + ".");
         }
 
         /// <summary>
@@ -96,11 +177,10 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void TheVisualXmlCommitChokePointIsMarked()
         {
-            string source = RepoSource.WithoutComments(
-                "src", "GxMcp.Worker", "Services", "LayoutService.SourcePersistence.cs");
+            string source = Service("LayoutService.SourcePersistence.cs");
 
             Assert.Contains("private string PersistVisualXml(", source, StringComparison.Ordinal);
-            Assert.True(SourceAssert.Count(source, Mark) >= 1,
+            Assert.True(SourceAssert.Count(source, MarkCall) >= 1,
                 "PersistVisualXml is the only SDK commit in LayoutService.SourcePersistence.cs; without a "
                 + "mark there, set_property, set_properties and the report control mutations all leave the "
                 + "target classified clean.");
@@ -120,13 +200,12 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void TheRollbackAndFlushHelpersAreNotCommitSites()
         {
-            string source = RepoSource.WithoutComments(
-                "src", "GxMcp.Worker", "Services", "LayoutService.SourcePersistence.cs");
+            string source = Service("LayoutService.SourcePersistence.cs");
 
             string restore = SourceAssert.MethodBody(
                 source, "private bool TryRestoreProcedureSource(KBObject obj, string sourceSnapshot)");
 
-            Assert.DoesNotContain(Mark, restore, StringComparison.Ordinal);
+            Assert.DoesNotContain(MarkCall, restore, StringComparison.Ordinal);
             Assert.Contains("obj.EnsureSave(false);", restore, StringComparison.Ordinal);
             Assert.Contains("return false;", restore, StringComparison.Ordinal);
         }
@@ -151,13 +230,11 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void TheIncrementalBuildStillConsultsTheDirtyTracker()
         {
-            string runner = RepoSource.WithoutComments(
-                "src", "GxMcp.Worker", "Services", "InProcessBuildRunner.cs");
+            string runner = Service("InProcessBuildRunner.cs");
             Assert.Contains(
                 "targetMaySkipSpecify = !EditDirtyTracker.IsDirty(kbPath, t);", runner, StringComparison.Ordinal);
 
-            string decision = RepoSource.WithoutComments(
-                "src", "GxMcp.Worker", "Services", "DefaultFastIncrementalDecision.cs");
+            string decision = Service("DefaultFastIncrementalDecision.cs");
             Assert.Contains(
                 "if (EditDirtyTracker.IsDirty(kbPath, t)) dirty.Add(t);", decision, StringComparison.Ordinal);
         }
@@ -209,6 +286,83 @@ namespace GxMcp.Worker.Tests
 
             EditDirtyTracker.MarkClean(null, name);
             Assert.False(EditDirtyTracker.IsDirty(null, name));
+        }
+
+        // ---- helpers ----------------------------------------------------------
+
+        /// <summary>The bare identifier: the sweep counts any mention of it.</summary>
+        private const string Mark = "NotePerTargetWrite";
+
+        /// <summary>
+        /// The qualified call, argument included. The negative and choke-point guards use
+        /// this rather than <see cref="Mark"/> so they keep pinning an actual invocation -
+        /// a declaration or a mention without the argument list does not satisfy them.
+        /// </summary>
+        private const string MarkCall = "WriteService.NotePerTargetWrite(";
+
+        private static string Service(string file) =>
+            RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", file.Replace('/', Path.DirectorySeparatorChar));
+
+        private static int CountMarks(string source) => Occurrences(source, Mark);
+
+        private static int Occurrences(string source, string needle)
+        {
+            int count = 0;
+            for (int i = source.IndexOf(needle, StringComparison.Ordinal); i >= 0;
+                 i = source.IndexOf(needle, i + needle.Length, StringComparison.Ordinal))
+            {
+                count++;
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// The body between a declaration's opening brace and its matching close. Comments
+        /// are already blanked by the caller, but string and char literals survive
+        /// <c>WithoutComments</c>, so a brace inside one would end the scan early and the
+        /// guard would read a truncated body.
+        /// </summary>
+        private static string BodyOf(string source, string declaration)
+        {
+            int start = source.IndexOf(declaration, StringComparison.Ordinal);
+            Assert.True(start >= 0, "Declaration not found: " + declaration);
+
+            int open = source.IndexOf('{', start + declaration.Length);
+            Assert.True(open >= 0, "Declaration has no body: " + declaration);
+
+            int depth = 0;
+            for (int i = open; i < source.Length; i++)
+            {
+                char c = source[i];
+
+                if (c == '"' || c == '\'')
+                {
+                    char quote = c;
+                    bool verbatim = quote == '"' && i > 0 && source[i - 1] == '@';
+                    for (i++; i < source.Length; i++)
+                    {
+                        if (!verbatim && source[i] == '\\') { i++; continue; }
+                        if (source[i] == quote)
+                        {
+                            if (verbatim && i + 1 < source.Length && source[i + 1] == quote) { i++; continue; }
+                            break;
+                        }
+                        if (source[i] == '\n') break;
+                    }
+                    continue;
+                }
+
+                if (c == '{') { depth++; continue; }
+                if (c != '}') continue;
+
+                depth--;
+                if (depth == 0) return source.Substring(open + 1, i - open - 1);
+            }
+
+            Assert.Fail("Unterminated body: " + declaration);
+            return string.Empty;
         }
     }
 }

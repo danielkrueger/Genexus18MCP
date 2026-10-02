@@ -468,6 +468,10 @@ namespace GxMcp.Worker.Services
 
                     transaction.Commit();
                     sdkCommitCompleted = true;
+                    // Placed here rather than on the return paths below: every one of them
+                    // already carries committed: true, so one mark after the commit covers
+                    // the success and the committed-but-unverified exits alike.
+                    NotePerTargetWrite(target);
                     // Force synchronous flush so the data actually lands on disk before we re-read
                     // for verification. ScheduleFlush() default is timer-based and async — if the
                     // worker is killed before the timer fires (or before ProcessExit), unflushed

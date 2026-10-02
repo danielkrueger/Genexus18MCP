@@ -152,6 +152,7 @@ namespace GxMcp.Worker.Services
                 {
                     merged.EnsureSave();
                     saved = true;
+                    WriteService.NotePerTargetWrite(merged.Name);
                 }
                 catch (Exception exSave)
                 {

@@ -568,6 +568,7 @@ namespace GxMcp.Worker.Services
                 // SINGLE ATOMIC SAVE FOR THE ENTIRE OBJECT
                 currentField = "save";
                 obj.EnsureSave(check: false);
+                WriteService.NotePerTargetWrite(spec.Name);
 
                 try
                 {

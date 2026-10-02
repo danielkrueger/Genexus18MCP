@@ -227,6 +227,11 @@ namespace GxMcp.Worker.Services
                         }
                     }
                     transaction.Commit();
+                    // Marks the object the tool addressed. resolvedObject is what the SDK
+                    // save above acted on (:214/:226); the two coincide in the normal
+                    // PatternInstance case, and target is the convention the sibling
+                    // partials (EventsIsolation, Variables) already follow.
+                    NotePerTargetWrite(target);
                     // Force synchronous flush so the bytes hit disk before the verification read; the default
                     // timer-based ScheduleFlush() can lose writes if the worker is recycled before it fires.
                     ScheduleFlush(force: true);

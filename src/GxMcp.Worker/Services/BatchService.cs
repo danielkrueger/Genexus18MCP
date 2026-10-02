@@ -116,6 +116,7 @@ namespace GxMcp.Worker.Services
                                 obj.EnsureSave(check: false);
                                 trans.Commit();
                                 ok = true;
+                                WriteService.NotePerTargetWrite(target);
                             }
                             finally
                             {

@@ -132,6 +132,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 obj.EnsureSave(check: false);
+                WriteService.NotePerTargetWrite(name);
 
                 bool validate = args?["validate"]?.ToObject<bool?>() ?? false;
                 string validationMode = args?["validationMode"]?.ToString() ?? "specify";

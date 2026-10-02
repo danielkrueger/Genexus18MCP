@@ -952,6 +952,10 @@ namespace GxMcp.Worker.Services
                     wasFirstApply = true;
                 }
                 Phase("engineApply");
+                // The engine apply persisted the host's derived objects. targetName is
+                // declared further down, so the equivalent in-scope expression is used
+                // here; it is the same value targetName is assigned below.
+                WriteService.NotePerTargetWrite(objectNameForResponse ?? obj?.Name ?? "");
             }
             catch (Exception ex)
             {
@@ -2342,6 +2346,9 @@ namespace GxMcp.Worker.Services
 
                 Logger.Info("Package-interface attach succeeded: host='" + result.HostName + "' parent='" + parent.Name + "' template='" + usedTemplate + "'");
                 result.Attached = true;
+                // CreatePatternInstanceWithTemplate already saved the host, so this is a
+                // confirmed write for the host object the caller did not name.
+                WriteService.NotePerTargetWrite(result.HostName);
                 return result;
             }
             catch (Exception ex)

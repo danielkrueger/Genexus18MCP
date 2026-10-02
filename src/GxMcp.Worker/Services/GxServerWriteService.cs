@@ -443,6 +443,7 @@ namespace GxMcp.Worker.Services
                             else if (strategy == "theirs")
                             {
                                 theirs.EnsureSave();
+                                WriteService.NotePerTargetWrite(name);
                                 outcome["ok"] = true;
                             }
                             else // automerge
@@ -459,6 +460,7 @@ namespace GxMcp.Worker.Services
                                 else
                                 {
                                     merged.EnsureSave();
+                                    WriteService.NotePerTargetWrite(name);
                                     outcome["ok"] = true;
                                     outcome["threeWay"] = baseObj != null;
                                 }

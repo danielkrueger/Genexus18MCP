@@ -441,6 +441,7 @@ namespace GxMcp.Worker.Services
                     }
                 }
                 newProc.EnsureSave();
+                WriteService.NotePerTargetWrite(newProcName);
 
                 bool updated = false;
                 foreach (var part in sourceObj.Parts.Cast<KBObjectPart>()) {
@@ -460,6 +461,7 @@ namespace GxMcp.Worker.Services
 
                 if (updated) {
                     sourceObj.EnsureSave();
+                    WriteService.NotePerTargetWrite(sourceObjectName);
                     _indexCacheService.UpdateEntry(sourceObj);
                     _indexCacheService.UpdateEntry(newProc);
                     return Models.McpResponse.Ok(
@@ -588,6 +590,7 @@ namespace GxMcp.Worker.Services
             if (!dryRun)
             {
                 sourceObj.EnsureSave();
+                WriteService.NotePerTargetWrite(sourceObjectName);
                 _indexCacheService.UpdateEntry(sourceObj);
             }
 
@@ -706,6 +709,12 @@ namespace GxMcp.Worker.Services
                     attrObj.Name = newName;
                     attrObj.EnsureSave();
                     sdkTrans.Commit();
+                    // The single commit above persists both the renamed attribute and every
+                    // caller saved inside the transaction, so the dirty set is stamped here
+                    // rather than at each pre-commit EnsureSave: a commit that rolls back
+                    // below must not leave a reverted write marked.
+                    WriteService.NotePerTargetWrite(newName);
+                    foreach (var patchedName in patched) WriteService.NotePerTargetWrite(patchedName);
                 }
                 catch (Exception)
                 {
@@ -813,6 +822,10 @@ namespace GxMcp.Worker.Services
                     obj.Name = newName;
                     obj.EnsureSave();
                     sdkTrans.Commit();
+                    // Same reasoning as RenameAttribute: one commit covers the renamed object
+                    // and every caller patched inside the transaction.
+                    WriteService.NotePerTargetWrite(newName);
+                    foreach (var patchedName in patched) WriteService.NotePerTargetWrite(patchedName);
                 }
                 catch (Exception)
                 {

@@ -67,6 +67,7 @@ namespace GxMcp.Worker.Services
                 
                 Logger.Info("[DEBUG-SCAFFOLD] Step 5: Before Save");
                 obj.EnsureSave();
+                WriteService.NotePerTargetWrite(name);
                 Logger.Info($"Scaffold complete: {name}");
                 return Models.McpResponse.Ok(
                     target: name,
