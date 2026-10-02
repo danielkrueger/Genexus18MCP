@@ -118,10 +118,6 @@ namespace GxMcp.Gateway.Routers
         public object? ConvertToolCall(string toolName, JObject? args)
         {
             string? nameArg = args?["name"]?.ToString();
-            // genexus_search_source and genexus_refactor name the object `objectName`; agents carry that
-            // spelling over to genexus_read, where it used to be dropped silently (empty-name lookup).
-            if (string.IsNullOrEmpty(nameArg) && toolName == "genexus_read")
-                nameArg = args?["objectName"]?.ToString();
             string? target = nameArg ?? args?["path"]?.ToString() ?? args?["entityKey"]?.ToString() ?? args?["guid"]?.ToString();
             string part = args?["part"]?.ToString() ?? "Source";
 
@@ -129,6 +125,17 @@ namespace GxMcp.Gateway.Routers
             {
                 case "genexus_read":
                 {
+                    // genexus_search_source and genexus_refactor name the object `objectName`; agents carry that
+                    // spelling over to genexus_read, where it used to be dropped silently (empty-name lookup).
+                    if (string.IsNullOrEmpty(nameArg))
+                    {
+                        string? objectNameArg = args?["objectName"]?.ToString();
+                        if (!string.IsNullOrEmpty(objectNameArg))
+                        {
+                            nameArg = objectNameArg;
+                            target = objectNameArg;
+                        }
+                    }
                     var targetsTokRead = args?["targets"];
                     bool hasTargetsRead = targetsTokRead is JArray;
                     bool hasNameRead = !string.IsNullOrEmpty(nameArg) || !string.IsNullOrEmpty(args?["path"]?.ToString())
