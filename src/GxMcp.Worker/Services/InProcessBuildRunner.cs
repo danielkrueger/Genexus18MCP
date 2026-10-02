@@ -170,8 +170,12 @@ namespace GxMcp.Worker.Services
                         // result rather than falling back to a full MSBuild.exe spawn. If the spec
                         // pass produced nothing at all, CouldNotRun lets RunBuild's specifyOnly
                         // guard report "spec-check unavailable" (it still never runs a full build).
-                        return (specOk || status.ErrorCount > 0)
-                            ? InProcessBuildOutcome.Succeeded
+                        if (specOk || status.ErrorCount > 0)
+                            return InProcessBuildOutcome.Succeeded;
+                        // The spec pass ran and closed a section with E0 but no itemized
+                        // line was parsed: that is a spec failure, not "could not run".
+                        return engine.PreCompileSectionFailed
+                            ? InProcessBuildOutcome.FailedWithDiagnostics
                             : InProcessBuildOutcome.CouldNotRun;
                     }
 
@@ -435,7 +439,7 @@ namespace GxMcp.Worker.Services
                                 // stage was post-compile, treat as PartialSuccess and skip
                                 // the costly MSBuild.exe fallback. Net wall-clock drops from
                                 // ~6min to ~56s for single-target builds.
-                                if (engine.CompileSucceeded && engine.WebAppConfigStarted)
+                                if (IsLateStagePartialSuccess(engine))
                                 {
                                     lineSink("[BUILD-INPROCESS] BuildOne late-stage failure after compile OK — accepting as PARTIAL SUCCESS (DLL written, web.config step skipped).", false);
                                     Logger.Info("[BUILD-INPROCESS] PartialSuccess: compile OK for '" + t + "'; web.config / deploy step failed but DLL is in place.");
@@ -834,6 +838,16 @@ namespace GxMcp.Worker.Services
                 || !parameters[2].ParameterType.IsInstanceOfType(keys))
                 return null;
             return (bool)method.Invoke(service, new[] { workingSet, Enum.ToObject(optionsType, 0), keys, (object)token });
+        }
+
+        // A failed Specification/Generation section means the compile that followed
+        // used the previously generated .cs, so the DLL is not the requested object.
+        internal static bool IsLateStagePartialSuccess(InProcessBuildEngine engine)
+        {
+            return engine != null
+                && engine.CompileSucceeded
+                && engine.WebAppConfigStarted
+                && !engine.PreCompileSectionFailed;
         }
 
         // Fast per-object build (IDE F5 parity). Returns true on Execute returning

@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- An in-process build whose specification failed no longer reports `Succeeded` with 0 errors. Inside the Worker, GeneXus emits specifier and generator diagnostics as `>O1<code>: <message>|<SourcePosition>` (error) and `>O2<code>: ...` (warning). Those lines carry no `error`/`warning` word, so `HandleLine` never counted them. A procedure failing with `spc0010` (type mismatch) or `spc0167` came back with an empty `ErrorsDetailed`. The lines are now normalized to `error spc0010: <message> [Object, line N]` before the existing parsers see them, so they are counted, itemized and reach `SpecificationDiagnostics`. Separately, BuildOne keeps going after `>E0Specification`: it compiles the target from its previously generated `.cs`, then fails in WebAppConfig, and the runner accepted that as "compile OK, post-compile failed → partial success", shipping a DLL that was not the requested source. A failed Specification or Generation section now rules out partial success. With `specifyOnly`, a spec pass that closed a section with `E0` but produced no itemized line is reported as a spec failure, not as "could not run in-process".
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02
