@@ -2,7 +2,9 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Unicode;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -197,6 +199,15 @@ namespace GxMcp.Gateway
 
             // Generate temporary MSBuild project file
             string tempProj = Path.Combine(Path.GetTempPath(), $"gxmcp_create_kb_{Guid.NewGuid():N}.proj");
+            // ...and the response file that carries the database password. The password is a
+            // credential, not a parameter: a `/p:` value on a Windows command line is readable by
+            // any process that can query the running process, and MSBuild echoes its own
+            // invocation back in its error output, which used to reach the caller verbatim in
+            // ["output"]. The value therefore travels in a response file that MSBuild parses as if
+            // the arguments had been typed, and the command line carries only the property NAME.
+            // MSBuild reads a response file as UTF-8 only when it is told, via a byte order mark -
+            // without one it decodes as ANSI and mangles a non-ASCII password.
+            string tempRsp = Path.Combine(Path.GetTempPath(), $"gxmcp_create_kb_{Guid.NewGuid():N}.rsp");
             try
             {
                 string projXml = $@"<Project DefaultTargets=""Create"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
@@ -216,11 +227,25 @@ namespace GxMcp.Gateway
                 File.WriteAllText(tempProj, projXml);
 
                 bool integrated = string.IsNullOrWhiteSpace(options.DbUser);
-                string arguments = $"/nologo /v:minimal \"{tempProj}\" \"/p:KBDirectory={fullPath}\" \"/p:KBTemplate={templatePath}\" \"/p:KBDbServer={dbServer}\" \"/p:KBDbName={dbName}\" \"/p:KBIntegratedSecurity={integrated}\"";
+
+                string? passwordResponseFile = null;
                 if (!integrated)
                 {
-                    arguments += $" \"/p:KBDbUser={options.DbUser}\" \"/p:KBDbPassword={options.DbPassword}\"";
+                    // Written only for a non-integrated login, and deleted in the finally below
+                    // even when the spawn fails, so a failed create cannot leave a file with this
+                    // shape on disk.
+                    passwordResponseFile = tempRsp;
+                    File.WriteAllText(
+                        passwordResponseFile,
+                        "/p:KBDbPassword=" + QuoteResponseValue(options.DbPassword) + Environment.NewLine,
+                        ResponseFileEncoding);
                 }
+
+                // NOTE: this string must never reach a log, an error envelope or Program.Log.
+                // It is the one value on the command line that would carry a credential, so the
+                // command line carries only the property name; see BuildMsBuildArguments.
+                string arguments = BuildMsBuildArguments(
+                    tempProj, fullPath, templatePath, dbServer, dbName, integrated, options.DbUser, passwordResponseFile);
 
                 var psi = new ProcessStartInfo
                 {
@@ -260,16 +285,7 @@ namespace GxMcp.Gateway
 
                 if (proc.ExitCode != 0 || !Configuration.IsPlausibleKbPath(fullPath))
                 {
-                    return new JObject
-                    {
-                        ["status"] = "Error",
-                        ["code"] = "KbCreationFailed",
-                        ["message"] = $"GeneXus KB creation exited with code {proc.ExitCode}.",
-                        ["path"] = fullPath,
-                        ["durationMs"] = sw.ElapsedMilliseconds,
-                        ["output"] = allOutput,
-                        ["hint"] = "Check database permissions, LocalDB instance state, and ensure no conflicting database exists."
-                    };
+                    return BuildCreationFailureEnvelope(fullPath, proc.ExitCode, sw.ElapsedMilliseconds, allOutput);
                 }
 
                 // Optional persistence to config.json
@@ -334,13 +350,196 @@ namespace GxMcp.Gateway
             }
             finally
             {
+                // Both temp files go, including the response file when the spawn itself threw:
+                // it holds the database password in the clear and must not outlive the call.
                 try
                 {
                     if (File.Exists(tempProj)) File.Delete(tempProj);
                 }
                 catch { }
+                try
+                {
+                    if (File.Exists(tempRsp)) File.Delete(tempRsp);
+                }
+                catch { }
             }
         }
+
+        /// <summary>
+        /// The MSBuild command line for a KB create.
+        ///
+        /// The database password is deliberately absent: it travels in
+        /// <paramref name="passwordResponseFile"/> instead, because a <c>/p:</c> value on a
+        /// Windows command line is readable by any process that can query the running
+        /// process, and MSBuild echoes its own invocation back in its error output. The
+        /// <c>@</c> reference is quoted so a response file under a temp path containing
+        /// spaces survives the child's command-line split - MSBuild itself takes the whole
+        /// token as the path.
+        /// </summary>
+        internal static string BuildMsBuildArguments(
+            string tempProj,
+            string fullPath,
+            string templatePath,
+            string dbServer,
+            string dbName,
+            bool integrated,
+            string? dbUser,
+            string? passwordResponseFile)
+        {
+            var builder = new StringBuilder();
+            builder.Append("/nologo /v:minimal \"").Append(tempProj).Append('"');
+            builder.Append(" /p:KBDirectory=").Append(fullPath);
+            builder.Append(" /p:KBTemplate=").Append(templatePath);
+            builder.Append(" /p:KBDbServer=").Append(dbServer);
+            builder.Append(" /p:KBDbName=").Append(dbName);
+            builder.Append(" /p:KBIntegratedSecurity=").Append(integrated ? "True" : "False");
+
+            // The user is not a secret, so it stays inline where an operator reading a failing
+            // invocation can see which login was attempted.
+            if (!integrated)
+            {
+                builder.Append(" /p:KBDbUser=").Append(dbUser);
+            }
+
+            if (!integrated && !string.IsNullOrEmpty(passwordResponseFile))
+            {
+                builder.Append(" \"@").Append(passwordResponseFile).Append('"');
+            }
+
+            return builder.ToString();
+        }
+
+        /// <summary>
+        /// MSBuild parses a response-file line with the same rules the C runtime applies to a
+        /// command line, so a value is quoted and its embedded quotes are escaped. Always quoted,
+        /// because an unquoted value is split on the semicolons MSBuild treats as property
+        /// separators. Measured against .NET Framework MSBuild 4.8: this round-trips values
+        /// containing spaces, semicolons, quotes, trailing backslashes and non-ASCII text, which
+        /// the previous inline <c>/p:</c> form did not.
+        /// </summary>
+        internal static string QuoteResponseValue(string? value)
+        {
+            var sb = new StringBuilder();
+            sb.Append('"');
+            for (int i = 0; value != null && i < value.Length; i++)
+            {
+                int backslashes = 0;
+                while (i < value.Length && value[i] == '\\') { backslashes++; i++; }
+
+                if (i == value.Length)
+                {
+                    // Trailing backslashes would otherwise consume the closing quote.
+                    sb.Append('\\', backslashes * 2);
+                    break;
+                }
+
+                if (value[i] == '"')
+                {
+                    sb.Append('\\', backslashes * 2 + 1);
+                }
+                else
+                {
+                    sb.Append('\\', backslashes);
+                }
+                sb.Append(value[i]);
+            }
+            sb.Append('"');
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// The failure envelope for a KB create, with the child's combined output redacted and
+        /// bounded.
+        ///
+        /// MSBuild's own error output echoes the invocation back, so the raw text is treated as
+        /// untrusted: it is run through <see cref="LogRedaction"/> and then capped, because a KB
+        /// create that dumps a multi-megabyte log is a nuisance and an absolute SDK path is not
+        /// something the caller needs echoed verbatim.
+        /// </summary>
+        internal static JObject BuildCreationFailureEnvelope(string fullPath, int exitCode, long durationMs, string? childOutput)
+        {
+            return new JObject
+            {
+                ["status"] = "Error",
+                ["code"] = "KbCreationFailed",
+                ["message"] = $"GeneXus KB creation exited with code {exitCode}.",
+                ["path"] = fullPath,
+                ["durationMs"] = durationMs,
+                ["output"] = BoundFailureOutput(childOutput),
+                ["hint"] = "Check database permissions, LocalDB instance state, and ensure no conflicting database exists."
+            };
+        }
+
+        /// <summary>
+        /// Cap on the child's combined stdout+stderr before it reaches the response, measured the
+        /// same way <see cref="ResponseSizeGuard"/> measures a payload so the two caps are
+        /// comparable. 16 KB keeps a useful tail of a real MSBuild failure and still fits the
+        /// response budget.
+        /// </summary>
+        internal const int MaxFailureOutputBytes = 16 * 1024;
+
+        /// <summary>
+        /// Runs the child's output through credential redaction and then caps it. Never returns
+        /// null: the response contract is that <c>output</c> is a string.
+        /// </summary>
+        internal static string BoundFailureOutput(string? childOutput, int maxBytes = MaxFailureOutputBytes)
+        {
+            string redacted = MaskDbPasswordProperty(LogRedaction.Redact(childOutput ?? string.Empty));
+
+            if (ResponseSizeGuard.ByteSize(redacted) <= maxBytes) return redacted;
+
+            // Truncate on a rune boundary rather than a byte offset: a cut mid-sequence would
+            // put invalid UTF-8 in the response, which is a worse outcome than losing a few bytes.
+            int keep = maxBytes - TruncationMarkerBytes;
+            var sb = new StringBuilder();
+            int used = 0;
+            foreach (Rune rune in redacted.EnumerateRunes())
+            {
+                if (used + rune.Utf8SequenceLength > keep) break;
+                sb.Append(rune);
+                used += rune.Utf8SequenceLength;
+            }
+            sb.Append(TruncationMarker);
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// <c>KBDbPassword</c> is the one key shape on this command line that
+        /// <see cref="LogRedaction"/> does NOT catch, and the gap is worth recording: its pattern
+        /// requires a word boundary before <c>password</c>, and in <c>KBDbPassword</c> the
+        /// preceding character is a letter, so <c>/p:KBDbPassword=secret</c> passes through
+        /// unredacted. Measured, not assumed. Since the project template keeps that exact
+        /// property name, masking it here is what actually closes the echo path - the generic
+        /// call alone leaves the credential in the response.
+        /// </summary>
+        private static readonly Regex KbDbPasswordPropertyShape =
+            new(@"(?i)(KBDbPassword\s*=\s*)(?:"".*?""|'.*?'|[^\s""']+)", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Replaces the value of a <c>KBDbPassword=</c> assignment, keeping the property name so
+        /// the failure stays diagnosable.
+        /// </summary>
+        internal static string MaskDbPasswordProperty(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            return KbDbPasswordPropertyShape.Replace(
+                text,
+                m => m.Groups[1].Value + "<redacted>");
+        }
+
+        /// <summary>
+        /// Appended when the child's output was capped, so the caller can tell a short failure
+        /// from a cut one instead of reading a silent gap as the whole log.
+        /// </summary>
+        internal const string TruncationMarker = "\n... [output truncated]";
+
+        private static readonly int TruncationMarkerBytes = (int)ResponseSizeGuard.ByteSize(TruncationMarker);
+
+        /// <summary>
+        /// MSBuild response files are read as UTF-8 only when the byte order mark says so;
+        /// without it MSBuild decodes them as ANSI and mangles a non-ASCII password.
+        /// </summary>
+        private static readonly Encoding ResponseFileEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
 
         private static string? ResolveSdkPath(string? explicitPath, string? explicitMajor, Configuration? activeConfig)
         {
