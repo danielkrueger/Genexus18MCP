@@ -26,10 +26,16 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ThePatternExistsOncePerAssembly()
         {
-            const string keyList = "password|passwd|pass|token|secret|api[-_]?key|authorization|credential|connectionstring";
+            // The needle is the declaration, not the key list. The key list is
+            // expected to change whenever a credential shape is added - that is
+            // the point of the rule - and pinning it made this test fail for a
+            // correct change, which is how a real leak would get waved through.
+            // One "internal const string Pattern" per assembly is the invariant the
+            // name actually claims.
+            const string declaration = "internal const string Pattern";
 
-            Assert.Equal(1, CountOccurrences(AllSource("GxMcp.Gateway"), keyList));
-            Assert.Equal(1, CountOccurrences(AllSource("GxMcp.Worker"), keyList));
+            Assert.Equal(1, CountOccurrences(AllSource("GxMcp.Gateway"), declaration));
+            Assert.Equal(1, CountOccurrences(AllSource("GxMcp.Worker"), declaration));
         }
 
         [Fact]
@@ -89,27 +95,28 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void APwdDelimitedConnectionStringStillLeaksItsTail()
+        public void APwdDelimitedConnectionStringNoLongerLeaksItsTail()
         {
-            // KNOWN GAP, unchanged by this consolidation and present in all five
-            // copies before it. The unmasked value pattern stops at a delimiter,
-            // so a semicolon-delimited connection string is masked up to its
-            // first ";" and whatever follows - including "Pwd=", which is a
-            // standard ADO.NET alias for "Password" and is not itself a key this
-            // pattern recognises - is logged intact.
-            //
-            // Widening the pattern to cover this is a security change to the
-            // logging rule, not a consolidation of it, so it is recorded here
-            // rather than folded into this refactor.
+            // This used to be a KNOWN GAP recorded here rather than folded into the
+            // consolidation that created this file: the unmasked value pattern stops
+            // at a delimiter, so a semicolon-delimited connection string leaked
+            // everything after its first ";", including "Pwd=" - the standard ADO.NET
+            // alias for "Password". The pattern now recognises the short alias, so the
+            // tail is masked with the head. Before this change the masked output ended
+            // at "<redacted>;Pwd=SENTINEL-CREDENTIAL".
             Assert.Equal(
-                "connectionstring=<redacted>;Pwd=hunter2",
-                LogRedaction.Redact("connectionstring=Server=db;Pwd=hunter2"));
+                "connectionstring=<redacted>;Pwd=<redacted>",
+                LogRedaction.Redact("connectionstring=Server=db;Pwd=SENTINEL-CREDENTIAL"));
         }
 
         [Fact]
-        public void ThePwdKeyIsStillNotRecognisedOnItsOwn()
+        public void ThePwdKeyIsRecognisedOnItsOwn()
         {
-            Assert.Equal("pwd=hunter2", LogRedaction.Redact("pwd=hunter2"));
+            // Renamed from ThePwdKeyIsStillNotRecognisedOnItsOwn when the pattern
+            // started recognising it. "Pwd" is the standard ADO.NET alias for
+            // "Password", so leaving it unmatched logged a real connection string
+            // credential intact - and the name documented the leak.
+            Assert.Equal("pwd=<redacted>", LogRedaction.Redact("pwd=SENTINEL-CREDENTIAL"));
         }
 
         [Fact]

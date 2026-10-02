@@ -25,9 +25,24 @@ namespace GxMcp.Gateway
         /// spell the key as one - <c>connectionstring=Server=db;Pwd=secret</c>
         /// has no key this pattern matches on its own, so without the
         /// <c>connectionstring</c> alternative the whole string is logged intact.
+        ///
+        /// The long keys carry a narrow prefix allowance of word characters plus
+        /// <c>.</c>, <c>[</c>, <c>]</c> and <c>-</c>, so a compound key whose
+        /// prefix is a letter matches: <c>KBDbPassword=</c>, <c>DbPassword=</c>
+        /// and <c>myToken=</c> all leak under a bare word-boundary key. The class
+        /// is deliberately narrow so the prefix cannot run across arbitrary text
+        /// into a key word.
+        ///
+        /// <c>pass</c> deliberately does NOT take that prefix, and must not: it is
+        /// a separate strict-boundary alternative. Folded into the prefixed group
+        /// it would match <c>bypass=1</c> as <c>by</c> + <c>pass</c> and redact an
+        /// ordinary diagnostic value, corrupting the message it was meant to
+        /// protect. <c>compassion=</c> and <c>aPass=</c> fail the same way. That is
+        /// the argument against a future edit "simplifying" the two groups into
+        /// one, and the reason the near-miss regression test exists.
         /// </summary>
         internal const string Pattern =
-            @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential|connectionstring)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)";
+            @"(?is)(?<key>(?:[A-Za-z0-9_.\[\]-]*(?:password|passwd|pwd|token|secret|api[-_]?key|authorization|credential|connectionstring)\b|\bpass\b))\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)";
 
         /// <summary>
         /// Replaces the value that follows any <see cref="Pattern"/> key with
