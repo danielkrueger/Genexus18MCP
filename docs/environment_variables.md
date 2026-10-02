@@ -7,6 +7,18 @@ config's `env` block for the server entry.
 
 All are optional. Unset means the documented default applies.
 
+**Scope.** This page is the complete set of environment variables the Gateway
+and Worker read, plus the harness and third-party names that reach them. Each
+section below is labelled with who sets the variables in it:
+**operator-facing** (a human may need to set it), **harness/test-only** (set by
+this repository's own scripts and tests — do not set them in production), or
+**third-party passthrough** (consumed by an external tool; this server does not
+interpret the value). Sections that predate this labelling are operator-facing
+by default.
+`src/GxMcp.Worker.Tests/EnvironmentVariableDocCoverageTests.cs` fails the test
+suite when a variable read under `src/` is missing from this page, so a new
+`GetEnvironmentVariable` call cannot land undocumented.
+
 ## Update / self-update
 
 | Variable | Purpose | Default |
@@ -103,6 +115,49 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_GAM_PASS` | GAM password. **Secret** — prefer the MCP-client config `env` block over a shell profile. | unset |
 | `GXMCP_GAM_LOGIN_URL` | GAM login URL override. | unset |
 
+## Team Development credentials (mutating server operations)
+
+**Operator-facing, secrets.** The mutating Team Development paths (apply update,
+lock, commit, resolve theirs/automerge) need a server URL plus credentials. Each
+value may come from the tool arguments or from these variables; the tool
+argument wins.
+
+Supply the secrets through the **environment** (the MCP-client config `env`
+block, or the shell that launches the client), not through tool arguments: an
+argument is echoed into agent transcripts and tool-call logs. These values are
+never written to a log line.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GXMCP_TEAMDEV_URL` | Team Development server URL. | unset → resolved from the KB's own server link |
+| `GXMCP_TEAMDEV_USER` | Username for the OAuth exchange. Not a secret on its own, but pair it with a secret and prefer `GXMCP_TEAMDEV_TOKEN` where the server issues one. | unset |
+| `GXMCP_TEAMDEV_PASSWORD` | Password used for the token exchange. **Secret.** | unset |
+| `GXMCP_TEAMDEV_TOKEN` | Pre-acquired OAuth token, used as-is instead of performing the user/password exchange. **Secret.** | unset |
+| `GXMCP_TEAMDEV_AUTHTYPE` | Authentication type prefixed to a bare username as `AUTHTYPE\user`, because the token endpoint splits on `\` and rejects a username without one. A username that already contains `\` is used unchanged. | `Local` |
+
+The GeneXus SDK authenticates server operations from an OAuth token, not from
+the inline user/password on the data objects: the headless Worker never logged
+in, so it performs the exchange itself through
+`TokenAuthorizationManager.GetToken`. Bad credentials surface as an
+authentication error on the mutating call.
+
+## Write safety (advisory owner lock and destination pins)
+
+**Operator-facing.** Two independent guards on mutating calls. Both fail
+closed: a lock that cannot be read is treated as "do not overwrite", never as
+permission.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GXMCP_WRITE_OWNER_ID` | Advisory write-lock owner for this session. When set, a write to an object held by a different, unexpired owner is rejected with the advisory-lock error. Leave unset to disable the advisory lock entirely. | unset (no advisory lock) |
+| `GXMCP_WRITE_FORCE` | Set to `1` to make the advisory lock above advisory in fact: the owner mismatch is logged and the write proceeds. **This destroys the protection the previous variable provides** — use it only to recover a KB left locked by an owner that no longer exists. | off |
+| `GXMCP_EXPECTED_KB_PATH` | Pins the KB the Worker may act on. When set, an SDK-reported KB path that differs from this value fails the write instead of being followed. The pin is *checked*, never *activated*: it does not open the KB. | unset |
+| `GXMCP_EXPECTED_KB_VERSION` | Pins the active KB version. When set, a mutating command is rejected if the KB's active version is not the pinned one (or is frozen). Only the explicit `kbversion action=set_active` recovery towards the pinned version is allowed through, and only with auto-update off. | unset |
+
+Both pins survive Worker and Gateway restarts because they live in the
+environment that launches the Worker, which is why they are the right place for
+a long-lived safety rail on a shared KB.
+
 ## Build path (`genexus_edit_and_build` / `genexus_run_object`)
 
 | Variable | Purpose | Default |
@@ -113,6 +168,7 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_BUILD_COMPILE_ONLY` | Compile without the full build pipeline (benchmark / opt-out lever). | off |
 | `GXMCP_BUILD_PROFILE` | Select a build profile. | unset |
 | `GXMCP_REAP_ORPHAN_MSBUILD` | Reap orphaned MSBuild processes after a build. | off |
+| `GXMCP_ALLOW_CONCURRENT_BUILDS` | Set to `1` to stop serializing builds per KB: the Gateway then admits a second lifecycle/build for the same Worker while one is already running, and the Worker stops rejecting the second one. Off by default because one STA Worker plus a shared MSBuild tree does not serialize safely. | off (one build at a time) |
 
 ## Live KB and release preflight
 
@@ -143,6 +199,10 @@ Backfill progress is exposed under `index.sourceStore` (and lifecycle status) as
 | `GXMCP_PREVIEW_BUDGET_MS` | Time budget for the headless preview render before it stops blocking. | see `PreviewService` |
 | `GXMCP_BUILD_TIMEOUT_SEC` | Wall-clock cap for a single `genexus_lifecycle` build/reorg task. On expiry the task is force-failed and any spawned MSBuild tree is killed, so a wedged deploy/reorg step can't leave the status stuck at `Running`. Clamped to `[60, 7200]`. | 900 (2400 for `rebuild`/RebuildAll) |
 | `GXMCP_BUILD_NOPROGRESS_SEC` | No-progress watchdog for a running build. Progress includes phase, current object, output-line count, target completion, and diagnostic counts; it is independent from the compact `status` long-poll ETag. On expiry the task is force-failed while preserving the pre-terminal phase in the envelope and message. `0` disables it; values are clamped to `[30, 3600]`. A larger value does not repair a false liveness signal. | 180 |
+| `GXMCP_INDEX_NO_PROGRESS_SEC` | No-progress watchdog for the **index build**, independent of the build watchdog above. `IndexBuildWatchdog` cancels the index build when no progress is recorded for this many seconds. Same clamp (`[30, 3600]`) and same caveat: a bigger value only buys more time, it does not repair a false liveness signal. Raise it for a very large first-time index on a slow disk. | `180` |
+| `GXMCP_ASYNC_JOB_WATCHDOG_S` | Gateway-side watchdog for an asynchronous edit/write job that never returns. Without it the bound is `max(600s, min(caller estimate x 8, 3600s))`. Set an explicit value in seconds to replace that bound; `0` or a negative value disables the watchdog, so a wedged job stays `running` indefinitely instead of becoming a terminal `stalled` state with recovery steps. | derived from the caller estimate |
+| `GXMCP_MTA_CONCURRENCY` | Number of commands the Worker may run concurrently on its **MTA** executor (used by the `com-gxpublic` legacy driver path). Only affects that driver; the native SDK stays single-threaded on the STA regardless. | `8` |
+| `GXMCP_MTA_QUEUE_CAPACITY` | Queue depth for the MTA executor above, bounding memory when a legacy-driver caller outruns it. | `256` |
 | `GXMCP_BUILD_TASK_CAP` | Maximum completed build statuses retained in the worker's `_tasks` registry. A sweep on every new build evicts terminal entries past the cap (oldest-completed first; never non-terminal, never anything completed <60s ago). Floored at 10 so the gateway's Take(10) task listing stays intact. | 50 |
 | `GXMCP_BUILD_TASK_TTL_MIN` | Age in minutes after which a terminal build status is evicted from `_tasks`, even under the cap. Floored at 60 so async pollers (up to 45min hard cap) keep resolving their taskId. | 180 |
 | `GXMCP_BUILD_FULLOUTPUT_KEEP_MIN` | Age in minutes after which a terminal build's in-memory `FullOutput` buffer is released. The status envelope keeps answering (counts, shaped output, errors, `fullLogPath`) — only the raw buffer is dropped. | 15 |
@@ -166,6 +226,12 @@ Backfill progress is exposed under `index.sourceStore` (and lifecycle status) as
 | `GXMCP_SYNC_LOG` | Set to `1` to also append every log line synchronously (crash forensics). | off |
 | `GXMCP_LEGACY_TOOL_ALIASES` | Set to `0` to opt out of legacy tool-name aliases (de-advertised tools reachable by old names). | aliases on |
 | `GXMCP_RESILIENT_SPEC` | Set to `1` to opt into the resilient specifier path (slower; opt-in). | off |
+| `GXMCP_VERBOSE_LOGS` | Set to `0` to drop the Gateway's per-request log lines (cache-invalidation and tool-latency entries), which otherwise pay a timestamp format, a lock and an `AutoFlush` disk write per request. Cold-start, lifecycle and error logs are unaffected — this is the first lever when Gateway log I/O shows up in a profile. | `1` (verbose on) |
+| `GXMCP_IDLE_GC` | Set to `0` to disable the Worker's idle-driven LOH compaction (one `CompactOnce` + collect per idle period, re-armed whenever activity resumes). Turn it off only when the x86 heap is *not* fragmenting; leaving it on is the point. | on |
+| `GXMCP_CRASH_LEDGER_PATH` | Absolute path of the JSONL file the Gateway appends Worker crash records to. Point it at a writable location when `%LOCALAPPDATA%` is not available or is not retained. | `%LOCALAPPDATA%\GenexusMCP\worker-crashes.jsonl` |
+| `GXMCP_SOURCE_ENCODING` | Encoding name (any name `System.Text.Encoding.GetEncoding` accepts) used to read and write GeneXus source. Only reachable on the legacy reflection/COM drivers; an unknown name is ignored and the detected encoding is used. | detected per KB and driver |
+| `GXMCP_SCREENSHOT_DIR` | Extra directory accepted as a source root by `screenshot_publish`. A file outside the OS temp dir, the open KB and this directory is refused with `SourceNotAllowed`. | unset (temp dir and open KB only) |
+| `GXMCP_WEBFORM_SAVE_DIAGNOSTICS` | Set to `1` to enable the WebForm save bypass experiments (`SaveModelEntityOutput`, `SaveHeader`, pre-save/bypass state dumps). Off by default: these are reflection-based diagnostics for one specific save bug, not a supported path. | off |
 | `GXMCP_OCR_ENGINE` | Set to `tesseract` to select the Tesseract OCR engine (requires the Tesseract.NET dependency). | unset |
 | `DOTNET_gcServer` | .NET runtime switch (not GxMcp-owned): set to `0` to run the Gateway on Workstation GC instead of the built-in Server GC. Measured 2026-09 on 90 steady-state JSON calls: no memory win either way (WS ~99 vs ~105MB, within noise) with latency parity, so the Server default stays; use `0` only on hard memory-constrained hosts. No rebuild needed. | `1` (Server, via csproj) |
 
@@ -184,6 +250,9 @@ Backfill progress is exposed under `index.sourceStore` (and lifecycle status) as
 | `GXMCP_TARGET_MAJOR` | Gateway-selected GeneXus major injected with the Worker driver; the Worker uses it for version-specific compatibility/provider behavior. Do not set by hand. |
 | `GXMCP_PROFILE_CONFIG_PATH` | The gateway injects the absolute profile path into the worker so preview `axiCli` values are resolved relative to the MCP profile instead of the process current directory. |
 | `GXMCP_OPERATIONAL_STATE_KEY` | The Gateway injects an opaque key for the current Worker operational state scope; Worker runtime roots hash it for per-scope separation. Do not set by hand. |
+| `GXMCP_KB_ID` | Stable physical-KB identity the Gateway injects on Worker spawn. Together with `GXMCP_KB_GENERATION` and `GXMCP_STATE_SCOPE_ID` it makes the edit-snapshot root authoritative, so two KB generations cannot share a snapshot directory. Setting it by hand does not open a KB. |
+| `GXMCP_KB_GENERATION` | Context generation counter for the current KB, injected by the Gateway and paired with `GXMCP_KB_ID`. A snapshot directory is reused only when all of scope, KB id and generation match. Do not set by hand. |
+| `GXMCP_STATE_SCOPE_ID` | Process/host scope id the Gateway injects on Worker spawn; the Worker refuses an SDK-reported KB path that does not match the `GX_KB_PATH` it was given for this scope. Do not set by hand. |
 | `GXMCP_SHARED_CHILD` | `SharedWorkerHost` injects `1` when it starts the shared Worker child. The child skips the stdin `ping` shortcut for literal `ping` (trimmed, case-insensitive), `"method":"ping"`, and `"action":"Ping"`: it emits no inline `Ready` envelope and queues those lines normally (a full queue may return `WorkerBusy`). Readiness still arrives via `notifications/worker/sdk_ready`; a queued `"method":"ping"` returns `Ok` (`Pong`) when dispatched. Do not set by hand. |
 
 In shared-host mode, `heartbeat_ack` acknowledges the Gateway↔host attachment; it is not a heartbeat response sent by the host on behalf of the child.
@@ -203,6 +272,122 @@ In shared-host mode, `heartbeat_ack` acknowledges the Gateway↔host attachment;
 | `GXMCP_RUNTIME_DIR` | Optional runtime/dependency directory searched for `chrome-devtools-axi` before the Worker/backend directories. Relative values are resolved from the Worker directory. | unset |
 | `GXMCP_DEPENDENCIES_DIR` | Optional dependency directory searched for `chrome-devtools-axi` before the Worker/backend directories. Relative values are resolved from the Worker directory. | unset |
 
-> **Maintenance note:** when you add a new `GXMCP_*` / `GENEXUS_MCP_*` variable,
-> add a row here. This table is the single reference operators are pointed at
-> from `AGENTS.md` and `TROUBLESHOOTING.md`.
+## Legacy structural environment overrides
+
+**Operator-facing, legacy configs only.** These four names change how the
+Gateway itself is wired, so they are only honoured for a legacy configuration
+document. Under a **strict** document each one is rejected as a structural
+override — with two exceptions, checked for *agreement* rather than refused:
+`GX_MCP_PORT` must equal `Server.HttpPort` and `GX_MCP_STDIO` must equal
+`Server.McpStdio`, or configuration loading fails with a conflict error. The
+same rejection applies to `GXMCP_PROFILE`, `GXMCP_NO_STRUCTURED_CONTENT`,
+`GXMCP_EMIT_STRUCTURED_CONTENT` and `GXMCP_TERSE`, documented under
+[HTTP endpoint](#http-endpoint).
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GX_MCP_STDIO` | Set to `true`/`false` to force `Server.McpStdio` on a legacy document. | config value |
+| `GX_MCP_PORT` | HTTP port for the legacy Streamable HTTP transport. Values `<= 0` are ignored. | `config.Server.HttpPort` |
+| `GXMCP_SHARED_GATEWAY` | Set to `1` to declare the shared (master) Gateway intent explicitly for a legacy transport document. | unset |
+| `GX_MCP_SHARED_GATEWAY` | Older spelling of the variable above; both are accepted and both count. | unset |
+
+## GeneXus install and KB path resolution
+
+**Operator-facing.** The install path is normally taken from `config.json` or
+the catalog. These names exist so a directly launched Worker — or a dev shell
+with no `config.json` — can find the same GeneXus installation and KB.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GX_PROGRAM_DIR` | GeneXus installation directory. Checked first by the Worker's SDK identity detection and by the legacy-driver bootstrap, so it wins over the value below. | unset → `GX_PATH`, then `config.json` |
+| `GX_PATH` | Conventional GeneXus build variable, honoured as the fallback for `GX_PROGRAM_DIR`. This is a GeneXus-owned name, not a GxMcp one. | unset |
+| `GX_KB_PATH` | Absolute KB path. The Gateway injects this on Worker spawn from the gateway-owned handle, so the Worker acts on the KB the Gateway chose; setting it for a directly launched Worker selects that KB instead. If the SDK reports a different path for a scoped Worker, the Worker refuses the command rather than following it. | Gateway-injected; unset for a direct launch |
+| `GX_KB_ALIAS` | Alias reported for the KB in the legacy Team Development sync responses. | unset → the KB directory name |
+
+## Worker transport (direct launch)
+
+**Operator-facing.** A Gateway-managed Worker speaks stdio to its parent and
+needs none of this.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GX_MCP_PIPE` | Name of a local named pipe the Worker connects to instead of using stdio, with a 30 s connect timeout. Used by the Gateway when it starts a Worker behind a pipe broker. | unset (stdio) |
+
+## Harness and test-only variables
+
+**Not operator-facing.** This repository's own scripts and test harnesses set
+these; they are listed so the set stays complete and nobody has to reverse
+engineer a failing live test. **Do not set them in production** — several
+enable experimental write paths or skip discovery guards.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GXMCP_LIVE_GATEWAY_EXE` | Absolute path to the `GxMcp.Gateway.exe` a live test harness drives. Must exist or the harness fails fast. | discovered next to the test assembly |
+| `GXMCP_LIVE_RPC_TIMEOUT_MS` | Per-RPC timeout for the live Gateway harness, in milliseconds. Accepted range `[1000, 7200000]`; out-of-range and non-numeric values fall back to the default. | `240000` |
+| `GXMCP_LIVE_SUMMARY_PATH` | File the live Gateway harness appends its timing/identity summary to, for evidence files. | unset (no summary written) |
+| `GXMCP_REQUIRE_WWP` | Set to `1` to un-skip the WorkWithPlus-licensed integration tests; unset or `0` skips them, so a contributor without that licence does not see licensing failures. | unset (skipped) |
+| `GXMCP_PARITY_IDE_NAME` | Name of a pre-seeded object patterned in the IDE, paired with the variable below for IDE-vs-MCP parity tests. Both must be set or the test skips. | unset |
+| `GXMCP_PARITY_MCP_NAME` | Name of the matching object patterned through MCP. | unset |
+| `GXMCP_DSO_NAME` | Name of an existing Design System with nonempty `Tokens` and `Styles` parts, for the read-only preview regression. Unset skips that live test. | unset |
+| `GXMCP_UPDATE_GOLDEN` | Set to `1` to overwrite the discovery golden fixture with the current `tools/list` response instead of asserting against it. Never set in CI. | unset |
+| `GX_MCP_SDK_PROBE` | Set to `1` to run the full SDK surface probe on every pattern apply. It walks every loaded SDK assembly and writes a multi-megabyte dump; it used to run unconditionally and cost 5–15 s per apply. `genexus_sdk_probe` remains the explicit way to get a dump. | off |
+| `GX_MCP_SDK_PROBE_DIR` | Output directory for that dump. An installed package under `node_modules` never receives generated diagnostics in its own tree. | `<repo>\docs\sdk-probe`, else the Worker temp root |
+| `GX_MCP_REPO_ROOT` | Repository root used to place the probe output under `docs\sdk-probe`. Honoured only when the directory exists. | unset (heuristic: a parent with a `docs` folder) |
+| `GX_MCP_PATTERN_DEBUG` | Set to `1` to dump in-memory pattern state around a pattern apply. | off |
+| `GX_MCP_PATTERN_DEBUG_DIR` | Directory for the pattern-debug dumps. | Worker temp root |
+| `GX_MCP_PATTERN_DELTA_EXPERIMENT` | Set to `1` to enable the pattern delta-attribute experiment. | off |
+| `GX_MCP_PATTERN_DIRECT_SAVE_EXPERIMENT` | Set to `1` to enable the direct-Save reflection experiment on apply. | off |
+| `GX_MCP_PATTERN_NATIVE_EXPERIMENT` | Set to `1` to enable the native pattern-mutation experiment. | off |
+| `GX_MCP_PATTERN_PRESAVE_EXPERIMENT` | Set to `1` to log the pre-save pattern baseline and run the pattern part hooks. | off |
+| `GX_MCP_PATTERN_SEMANTIC_EXPERIMENT` | Set to `1` to enable the semantic grid-variable save experiment. | off |
+
+## Third-party and OS passthrough
+
+**Not interpreted by this server.** These names are read and handed on, or are
+standard OS variables consulted while probing the host. Their values are
+consumed by an external tool, and GxMcp neither validates nor logs them.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `CHROME_DEVTOOLS_AXI_MCP_PATH` | Absolute path to the `chrome-devtools-axi` executable used by the preview browser driver. Used only when the file exists; otherwise the normal `GXMCP_RUNTIME_DIR` / `GXMCP_DEPENDENCIES_DIR` search runs. | unset (normal search) |
+| `MCP_PERF_PROFILE` | Set to `legacy` to turn off the v1 performance profile in the Gateway and in `genexus_list_objects`. Anything else (including unset) keeps it on. | v1 on |
+| `PATHEXT` | Windows OS variable listing the executable extensions the browser-driver detector probes on `PATH`. Read for discovery only. | `.EXE;.CMD;.BAT;.PS1` when unset |
+| `LOCALAPPDATA` | Windows OS variable consulted for the default root of the crash ledger and the Worker runtime directories. When unset or empty the equivalent `Environment.SpecialFolder` folder is used instead, so an unset value is safe. | OS special folder |
+
+---
+
+> **Maintenance note:** a new `GetEnvironmentVariable` read under `src/` must
+> appear here. That rule is enforced, not aspirational:
+> `src/GxMcp.Worker.Tests/EnvironmentVariableDocCoverageTests.cs` enumerates
+> every literal `GetEnvironmentVariable("<NAME>")` under `src/`, restricts the
+> set to the `GXMCP_` / `GENEXUS_MCP_` / `GX_MCP_` / `GX_` prefixes, and fails
+> when a name is missing from this page. A deliberately internal name goes on
+> the test's explicit allowlist *with its reason*, and an allowlisted name still
+> has to be documented here — under "Set internally (do not set by hand)", which
+> is where a Gateway-injected value belongs.
+>
+> The scan resolves two call shapes and states its limit rather than claiming
+> exhaustiveness. It sees every literal argument, plus every name held in a
+> `const` whose identifier ends in `EnvVar` / `Variable` — that second rule
+> exists because `WriteDestinationGuard.PathVariable`,
+> `ArtifactPathResolver.OutputDirectoryEnvironmentVariable` and the two
+> `SemanticCacheStore` cache caps are read that way. It does **not** see a name
+> passed as an argument to a helper that forwards it
+> (`Worker.ResolveQueueCapacity("GXMCP_MTA_CONCURRENCY", 8)` and three siblings),
+> a name read through a loop variable or a local array
+> (`Configuration.RejectStrictStructuralEnvironment`, whose six names are all
+> documented on this page anyway), or a name that arrives at runtime. A new call
+> site of one of those three shapes will not be caught automatically; probing
+> each variable at runtime instead would not reach an opt-in branch either.
+>
+> **Profile-driven credential references (no fixed name).** A `DataStoreAlias`
+> in the MCP profile can name the environment variable that holds its
+> credentials — `UserIdEnvironmentVariable`, `PasswordEnvironmentVariable` or
+> `ConnectionStringEnvironmentVariable`. The Worker reads whatever name the
+> profile declares, so there is no fixed variable to document: the name is
+> yours to choose. The rule is that it must be a variable *name* (a value
+> containing `=` or `;` is rejected), and it must live on the Worker host
+> rather than in `config.json`.
+>
+> This page is the single reference operators are pointed at from `AGENTS.md`
+> and `TROUBLESHOOTING.md`.
