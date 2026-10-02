@@ -1505,56 +1505,6 @@ namespace GxMcp.Worker.Services
                     string.Equals(Attr(el, "id"), controlName, StringComparison.OrdinalIgnoreCase));
         }
 
-        /// <summary>
-        /// Report layouts only: refuses a bare control name that matches more than one
-        /// control (the same label name in two print blocks). <see cref="FindControlElement"/>
-        /// would silently take the first, so the caller could not tell which one changed.
-        /// A path ("/Report/PrintBlock[2]/Control[1]", as emitted by get_tree 'p') bypasses
-        /// the check. Returns null when the name is unique or the layout is not a report.
-        /// </summary>
-        internal static string AmbiguousControlError(XDocument doc, string target, string controlName)
-        {
-            if (doc == null || string.IsNullOrWhiteSpace(controlName)
-                || controlName.StartsWith("/", StringComparison.Ordinal)
-                || !doc.Descendants("PrintBlock").Any())
-                return null;
-
-            var matches = doc.Descendants()
-                .Where(el =>
-                    string.Equals(Attr(el, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(Attr(el, "InternalName"), controlName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (matches.Count < 2) return null;
-
-            var paths = new JArray();
-            foreach (var m in matches)
-            {
-                var segments = new List<string>();
-                for (var cur = m; cur != null; cur = cur.Parent)
-                {
-                    int idx = cur.Parent == null ? 1 : cur.Parent.Elements(cur.Name).TakeWhile(x => x != cur).Count() + 1;
-                    // Same shape as get_tree 'p': the root carries no index.
-                    segments.Insert(0, cur.Parent == null ? cur.Name.LocalName : cur.Name.LocalName + "[" + idx + "]");
-                }
-                var block = m.Ancestors("PrintBlock").FirstOrDefault();
-                paths.Add(new JObject
-                {
-                    ["path"] = "/" + string.Join("/", segments),
-                    ["printBlock"] = block == null ? null : (Attr(block, "Name") ?? Attr(block, "ControlName"))
-                });
-            }
-
-            return Models.McpResponse.Err(
-                code: "AmbiguousControl",
-                message: "Control name '" + controlName + "' matches " + matches.Count
-                    + " controls in this report layout; refusing to guess which one to change. Matches: "
-                    + paths.ToString(Newtonsoft.Json.Formatting.None),
-                hint: "Pass the full path of the intended control (the 'p' value from get_tree, e.g. "
-                    + "/Report/PrintBlock[2]/Control[1]) as 'control' instead of the bare name.",
-                nextSteps: new JArray(LayoutGetTreeStep(target, "Lists every control with its path ('p') to disambiguate.")),
-                target: target);
-        }
-
         private static XElement FindElementByPath(XDocument doc, string path)
         {
             if (doc?.Root == null || string.IsNullOrWhiteSpace(path) || !path.StartsWith("/", StringComparison.Ordinal))
@@ -1612,6 +1562,56 @@ namespace GxMcp.Worker.Services
             }
 
             return current;
+        }
+
+        /// <summary>
+        /// Report layouts only: refuses a bare control name that matches more than one
+        /// control (the same label name in two print blocks). <see cref="FindControlElement"/>
+        /// would silently take the first, so the caller could not tell which one changed.
+        /// A path ("/Report/PrintBlock[2]/Control[1]", as emitted by get_tree 'p') bypasses
+        /// the check. Returns null when the name is unique or the layout is not a report.
+        /// </summary>
+        internal static string AmbiguousControlError(XDocument doc, string target, string controlName)
+        {
+            if (doc == null || string.IsNullOrWhiteSpace(controlName)
+                || controlName.StartsWith("/", StringComparison.Ordinal)
+                || !doc.Descendants("PrintBlock").Any())
+                return null;
+
+            var matches = doc.Descendants()
+                .Where(el =>
+                    string.Equals(Attr(el, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Attr(el, "InternalName"), controlName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matches.Count < 2) return null;
+
+            var paths = new JArray();
+            foreach (var m in matches)
+            {
+                var segments = new List<string>();
+                for (var cur = m; cur != null; cur = cur.Parent)
+                {
+                    int idx = cur.Parent == null ? 1 : cur.Parent.Elements(cur.Name).TakeWhile(x => x != cur).Count() + 1;
+                    // Same shape as get_tree 'p': the root carries no index.
+                    segments.Insert(0, cur.Parent == null ? cur.Name.LocalName : cur.Name.LocalName + "[" + idx + "]");
+                }
+                var block = m.Ancestors("PrintBlock").FirstOrDefault();
+                paths.Add(new JObject
+                {
+                    ["path"] = "/" + string.Join("/", segments),
+                    ["printBlock"] = block == null ? null : (Attr(block, "Name") ?? Attr(block, "ControlName"))
+                });
+            }
+
+            return Models.McpResponse.Err(
+                code: "AmbiguousControl",
+                message: "Control name '" + controlName + "' matches " + matches.Count
+                    + " controls in this report layout; refusing to guess which one to change. Matches: "
+                    + paths.ToString(Newtonsoft.Json.Formatting.None),
+                hint: "Pass the full path of the intended control (the 'p' value from get_tree, e.g. "
+                    + "/Report/PrintBlock[2]/Control[1]) as 'control' instead of the bare name.",
+                nextSteps: new JArray(LayoutGetTreeStep(target, "Lists every control with its path ('p') to disambiguate.")),
+                target: target);
         }
 
         private static string ResolveCanonicalAttributeName(XElement element, string requested)
