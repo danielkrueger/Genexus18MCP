@@ -3,6 +3,7 @@
 ## Unreleased
 
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+- `genexus_layout set_property` no longer leaves a rewritten control behind when its read-back misses. A Caption set on a default Transaction `gxButton` (identified by `ControlName`, no `id`) was committed, the SDK renamed the control and dropped its `Event`/`Class`, and the read-back answered a bare `LayoutReadBackFailed` without undoing anything. The write is now rolled back from the pre-write XML, the rollback is verified with the same lookup the write used, and the error reports `rolledBack`, `rollbackVerified`, `missingAfterSave` and `appearedAfterSave` (a rename shows up as one of each). Root cause: the typed-property writer logged `match=False` after `IWebTag.SetProperties` reset the value but still reported success and went on to re-serialize the button from the SDK model; a failed verify now aborts the typed path before the part is marked dirty, so the raw XML rewrite (which preserves every attribute) runs instead.
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
 ### Added
