@@ -131,6 +131,74 @@ namespace GxMcp.Worker.Tests
             Assert.True(engine.ContinueOnError);
         }
 
+        private static void LogMarker(InProcessBuildEngine engine, string message)
+        {
+            engine.LogMessageEvent(new BuildMessageEventArgs(message, null, "test", MessageImportance.Normal));
+        }
+
+        // BuildOne log of a target whose spec failed: the DeveloperMenu still compiles
+        // from the previously generated .cs and WebAppConfig then fails.
+        private static readonly string[] SpecFailedThenCompiledLog =
+        {
+            ">SSpecification:-:Specification",
+            ">O1spc0010: Type mismatch in assignment (Binary=File)|pos",
+            ">E0Specification:-:Specification",
+            ">SDefault (.NET Framework) Generation:-:Default (.NET Framework) Generation",
+            ">E1Default (.NET Framework) Generation:-:Default (.NET Framework) Generation",
+            ">SDeveloperMenu Compilation:-:DeveloperMenu Compilation",
+            ">E1DeveloperMenu Compilation:-:DeveloperMenu Compilation",
+            ">SWebAppConfig:-:Web configuration update",
+            ">E0Build One Task:-:Build One Task"
+        };
+
+        [Fact]
+        public void PartialSuccess_is_rejected_when_specification_section_failed()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            foreach (var line in SpecFailedThenCompiledLog) LogMarker(engine, line);
+
+            Assert.True(engine.CompileSucceeded);
+            Assert.True(engine.WebAppConfigStarted);
+            Assert.True(engine.PreCompileSectionFailed);
+            Assert.False(InProcessBuildRunner.IsLateStagePartialSuccess(engine));
+        }
+
+        [Fact]
+        public void PartialSuccess_is_rejected_when_generation_section_failed()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            LogMarker(engine, ">E1Specification:-:Specification");
+            LogMarker(engine, ">E0Default (.NET Framework) Generation:-:Default (.NET Framework) Generation");
+            LogMarker(engine, ">E1DeveloperMenu Compilation:-:DeveloperMenu Compilation");
+            LogMarker(engine, ">SWebAppConfig:-:Web configuration update");
+
+            Assert.False(InProcessBuildRunner.IsLateStagePartialSuccess(engine));
+        }
+
+        [Fact]
+        public void PartialSuccess_is_accepted_for_late_webappconfig_failure_after_clean_spec()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            LogMarker(engine, ">E1Specification:-:Specification");
+            LogMarker(engine, ">E1Default (.NET Framework) Generation:-:Default (.NET Framework) Generation");
+            LogMarker(engine, ">E1DeveloperMenu Compilation:-:DeveloperMenu Compilation");
+            LogMarker(engine, ">SWebAppConfig:-:Web configuration update");
+            LogMarker(engine, ">E0Build One Task:-:Build One Task");
+
+            Assert.False(engine.PreCompileSectionFailed);
+            Assert.True(InProcessBuildRunner.IsLateStagePartialSuccess(engine));
+        }
+
+        [Fact]
+        public void ResetSectionFlags_clears_precompile_failure()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            LogMarker(engine, ">E0Specification:-:Specification");
+            engine.ResetSectionFlags();
+
+            Assert.False(engine.PreCompileSectionFailed);
+        }
+
         [Fact]
         public void RebuildAll_with_multiple_targets_runs_targeted_specify_before_force_rebuild()
         {
@@ -283,6 +351,108 @@ namespace GxMcp.Worker.Tests
         public void Explicit_build_identity_is_key_resolved(string target, bool expected)
         {
             Assert.Equal(expected, InProcessBuildRunner.HasExplicitTargetIdentity(target));
+        }
+
+        private static bool InvokeWithTaskOutput(object kb, IBuildEngine engine, Func<bool> action)
+        {
+            var mi = typeof(InProcessBuildRunner).GetMethod("WithTaskOutput", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(mi);
+            try
+            {
+                return (bool)mi.MakeGenericMethod(typeof(bool)).Invoke(null, new object[] { kb, engine, action });
+            }
+            catch (TargetInvocationException ex)
+            {
+                throw ex.InnerException;
+            }
+        }
+
+        [Fact]
+        public void BL_call_runs_inside_the_task_output_subscription()
+        {
+            var specifyField = typeof(InProcessBuildRunner).GetField("_typeSpecifyOneOnly", BindingFlags.Static | BindingFlags.NonPublic);
+            object oldSpecify = specifyField.GetValue(null);
+            var engine = new InProcessBuildEngine((l, e) => { });
+            try
+            {
+                specifyField.SetValue(null, typeof(FakeOutputCarrierTask));
+                FakeOutputCarrierTask.Reset();
+
+                bool result = InvokeWithTaskOutput("kb", engine, () => { FakeOutputCarrierTask.Events.Add("action"); return true; });
+
+                Assert.True(result);
+                Assert.Equal(new[] { "subscribe", "action", "unsubscribe" }, FakeOutputCarrierTask.Events);
+                Assert.Same(engine, FakeOutputCarrierTask.LastEngine);
+                Assert.Equal("IDE", FakeOutputCarrierTask.LastOutput);
+            }
+            finally
+            {
+                specifyField.SetValue(null, oldSpecify);
+            }
+        }
+
+        [Fact]
+        public void Task_output_subscription_is_released_when_the_BL_call_throws()
+        {
+            var specifyField = typeof(InProcessBuildRunner).GetField("_typeSpecifyOneOnly", BindingFlags.Static | BindingFlags.NonPublic);
+            object oldSpecify = specifyField.GetValue(null);
+            try
+            {
+                specifyField.SetValue(null, typeof(FakeOutputCarrierTask));
+                FakeOutputCarrierTask.Reset();
+
+                Assert.Throws<InvalidOperationException>(() =>
+                    InvokeWithTaskOutput("kb", new InProcessBuildEngine((l, e) => { }), () => throw new InvalidOperationException("sdk")));
+
+                Assert.Equal(new[] { "subscribe", "unsubscribe" }, FakeOutputCarrierTask.Events);
+            }
+            finally
+            {
+                specifyField.SetValue(null, oldSpecify);
+            }
+        }
+
+        [Fact]
+        public void Environment_copy_older_than_the_design_object_is_stale()
+        {
+            var built = new DateTime(2026, 1, 1, 10, 0, 0);
+            Assert.True(InProcessBuildRunner.IsEnvironmentCopyStale(built.AddMinutes(5), built));
+            Assert.False(InProcessBuildRunner.IsEnvironmentCopyStale(built, built));
+            Assert.False(InProcessBuildRunner.IsEnvironmentCopyStale(built, built.AddMinutes(5)));
+        }
+
+        [Fact]
+        public void Object_missing_from_the_environment_copy_is_stale()
+        {
+            Assert.True(InProcessBuildRunner.IsEnvironmentCopyStale(new DateTime(2026, 1, 1), null));
+            Assert.False(InProcessBuildRunner.IsEnvironmentCopyStale(null, null));
+        }
+    }
+
+    public sealed class FakeOutputCarrierTask
+    {
+        public static List<string> Events { get; } = new List<string>();
+        public static IBuildEngine LastEngine { get; private set; }
+        public static string LastOutput { get; private set; }
+
+        public object KB { get; set; }
+        public IBuildEngine BuildEngine { get; set; }
+        public string Output { get; set; }
+
+        public void OutputSubscribe()
+        {
+            LastEngine = BuildEngine;
+            LastOutput = Output;
+            Events.Add("subscribe");
+        }
+
+        public void OutputUnsubscribe() => Events.Add("unsubscribe");
+
+        public static void Reset()
+        {
+            Events.Clear();
+            LastEngine = null;
+            LastOutput = null;
         }
     }
 

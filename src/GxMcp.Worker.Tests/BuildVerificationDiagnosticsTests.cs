@@ -165,6 +165,20 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void NativeFailureAfterItemizedDiagnosticsDoesNotClaimTheyWereLost()
+        {
+            var status = new BuildService.BuildTaskStatus();
+            typeof(BuildService).GetMethod("HandleLine", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .Invoke(new BuildService(), new object[] { status, ">O1spc0010: Type mismatch in assignment|<SourcePosition><Line>3</Line><FullName>Procedure 'SampleProc'</FullName></SourcePosition>", false });
+
+            BuildService.FailedNativeBuild(status);
+
+            Assert.Equal(2, status.ErrorCount);
+            Assert.Equal("NativeBuildFailed", status.ErrorsDetailed[1].code);
+            Assert.DoesNotContain("not captured", status.Errors[1]);
+        }
+
+        [Fact]
         public void InProcessBuildAllDoesNotInventMsBuildProcessExitCode()
         {
             var status = new BuildService.BuildTaskStatus { Action = "BuildAll", BuildPath = "inproc", ExitCode = 0 };

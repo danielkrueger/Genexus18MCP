@@ -88,5 +88,47 @@ namespace GxMcp.Worker.Tests
 
             Assert.Empty(diff["missing"] as JArray ?? new JArray());
         }
+
+        [Fact]
+        public void CompareGroupSupertypes_LinkNotPersisted_FlaggedWithActual()
+        {
+            // The Group part stores only the subtype id; when the subtype attribute's own
+            // SuperTypeKey is not saved the member is present but points at nothing.
+            var wrong = GroupStructureService.CompareGroupSupertypes(
+                JArray.Parse("[{\"name\":\"ChildId\",\"subtypeOf\":\"ParentId\"},{\"name\":\"ChildName\",\"subtypeOf\":\"ParentName\"}]"),
+                new System.Collections.Generic.Dictionary<string, string>
+                {
+                    ["ChildId"] = null,
+                    ["ChildName"] = "ParentName"
+                });
+
+            Assert.Single(wrong);
+            Assert.Equal("ChildId", wrong[0]!["name"]!.ToString());
+            Assert.Equal("ParentId", wrong[0]!["expected"]!.ToString());
+            Assert.Equal(JTokenType.Null, wrong[0]!["actual"]!.Type);
+        }
+
+        [Fact]
+        public void CompareGroupSupertypes_AllLinked_CaseInsensitive_Empty()
+        {
+            var wrong = GroupStructureService.CompareGroupSupertypes(
+                JArray.Parse("[{\"name\":\"childid\",\"subtypeOf\":\"PARENTID\"}]"),
+                new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
+                {
+                    ["ChildId"] = "ParentId"
+                });
+
+            Assert.Empty(wrong);
+        }
+
+        [Fact]
+        public void CompareGroupSupertypes_MemberAbsentOrNullInputs_NotReportedHere()
+        {
+            // Absent members are CompareGroupMembership's "missing", not a supertype mismatch.
+            Assert.Empty(GroupStructureService.CompareGroupSupertypes(
+                JArray.Parse("[{\"name\":\"ChildId\",\"subtypeOf\":\"ParentId\"}]"),
+                new System.Collections.Generic.Dictionary<string, string>()));
+            Assert.Empty(GroupStructureService.CompareGroupSupertypes(null, null));
+        }
     }
 }

@@ -358,15 +358,40 @@ namespace GxMcp.Worker.Helpers
         private static object ResolveDomain(object model, string name)
         {
             var objects = model.GetType().GetProperty("Objects")?.GetValue(model, null);
-            if (objects == null) return null;
-
-            var matches = objects.GetType()
-                .GetMethod("GetByName", new[] { typeof(string), typeof(string), typeof(string) })
-                ?.Invoke(objects, new object[] { null, null, name }) as System.Collections.IEnumerable;
+            var matches = InvokeGetByName(objects, name);
             if (matches == null) return null;
 
             foreach (var candidate in matches)
                 if (candidate is Artech.Genexus.Common.Objects.Domain domain) return domain;
+            return null;
+        }
+
+        /// <summary>
+        /// Calls <c>GetByName(module, type, name)</c> on a KB objects collection with no
+        /// module and no type filter. The SDK signature is
+        /// <c>GetByName(string, Guid?, string)</c>: looking it up as
+        /// <c>(string, string, string)</c> found nothing, so every DSL domain type
+        /// silently fell back to the attribute's default type. Matched by shape (string
+        /// first and last, a nullable middle) on the runtime type and its interfaces.
+        /// </summary>
+        internal static System.Collections.IEnumerable InvokeGetByName(object objects, string name)
+        {
+            if (objects == null) return null;
+            var type = objects.GetType();
+            var candidates = new List<Type> { type };
+            candidates.AddRange(type.GetInterfaces());
+            foreach (var t in candidates)
+            {
+                foreach (var method in t.GetMethods())
+                {
+                    if (method.Name != "GetByName") continue;
+                    var ps = method.GetParameters();
+                    if (ps.Length != 3 || ps[0].ParameterType != typeof(string) || ps[2].ParameterType != typeof(string)) continue;
+                    Type middle = ps[1].ParameterType;
+                    if (middle.IsValueType && Nullable.GetUnderlyingType(middle) == null) continue;
+                    return method.Invoke(objects, new object[] { null, null, name }) as System.Collections.IEnumerable;
+                }
+            }
             return null;
         }
     }
