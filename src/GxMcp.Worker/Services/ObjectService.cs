@@ -109,6 +109,75 @@ namespace GxMcp.Worker.Services
         private static string RecentDeletionKey(string type, string name) =>
             ((type ?? "") + ":" + (name ?? "")).ToLowerInvariant();
 
+        // KnowledgeBase.ObjectManager is typed as the event-less IKBObjectManager (and the
+        // reference facade may not expose it), so read it reflectively. Null = capture inactive.
+        private static object GetObjectManager(object kb)
+        {
+            try
+            {
+                return kb?.GetType().GetProperty("ObjectManager", BindingFlags.Public | BindingFlags.Instance)?.GetValue(kb, null);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("DeleteObject: ObjectManager unavailable: " + ex.Message);
+                return null;
+            }
+        }
+
+        // Guids of the indexes of a Table about to be deleted (empty for anything else).
+        private static IEnumerable<Guid> TableIndexGuids(object obj)
+        {
+            var tbl = obj as Artech.Genexus.Common.Objects.Table;
+            if (tbl == null) return new Guid[0];
+            var list = new List<Guid>();
+            foreach (var ti in tbl.TableIndexes.Indexes)
+            {
+                var idxObj = ti == null ? null : ti.Index;
+                if (idxObj != null && idxObj.Guid != Guid.Empty) list.Add(idxObj.Guid);
+            }
+            return list;
+        }
+
+        // Drops the objects the SDK removed in cascade (all captured guids except the target)
+        // from the search index and records them like the target. Returns {name,type,guid}
+        // for those that were indexed.
+        // The SDK deletes a Table's Indexes without raising an event for them, so those guids come
+        // from BeforeDeleteKBObject as candidates and are dropped only when isAbsent confirms them.
+        internal static JArray RemoveCascadedEntries(IndexCacheService idx, IEnumerable<Guid> captured, Guid target,
+            IEnumerable<Guid> candidates = null, Func<Guid, bool> isAbsent = null)
+        {
+            var also = new JArray();
+            if (idx == null || captured == null) return also;
+            var all = captured.ToList();
+            if (candidates != null && isAbsent != null)
+            {
+                foreach (var c in candidates.Distinct())
+                {
+                    if (c == Guid.Empty || all.Contains(c)) continue;
+                    bool absent = false;
+                    try { absent = isAbsent(c); } catch (Exception ex) { Logger.Error("DeleteObject: candidate check failed for " + c + ": " + ex.Message); }
+                    if (absent) all.Add(c);
+                }
+            }
+            foreach (var guid in all.Distinct())
+            {
+                if (guid == Guid.Empty || guid == target) continue;
+                string g = guid.ToString();
+                try
+                {
+                    var entry = idx.GetIndex()?.FindByGuid(g);
+                    if (entry != null)
+                    {
+                        _recentDeletions[RecentDeletionKey(entry.Type, entry.Name)] = DateTime.UtcNow;
+                        also.Add(new JObject { ["name"] = entry.Name, ["type"] = entry.Type, ["guid"] = g });
+                    }
+                    idx.RemoveEntryByGuid(g);
+                }
+                catch (Exception ex) { Logger.Error("DeleteObject: cascaded index RemoveEntry failed for " + g + ": " + ex.Message); }
+            }
+            return also;
+        }
+
         // v2.6.8 (review C8): crash-line detector. Anchored markers only —
         // bare "critical" inside a log message (e.g., "critical section",
         // "no critical errors") must NOT trip the matcher.
@@ -949,6 +1018,8 @@ namespace GxMcp.Worker.Services
             string objType = typeFilter;
             bool deleteStarted = false;
             bool transactionCommitted = false;
+            IReadOnlyList<Guid> cascadedGuids = new Guid[0];
+            IReadOnlyList<Guid> candidateGuids = new Guid[0];
             try
             {
                 var kb = _kbService.GetKB();
@@ -1128,7 +1199,15 @@ namespace GxMcp.Worker.Services
 
                         references = CollectIncomingReferences(current, kb, out referencesTruncated);
                         deleteStarted = true;
-                        current.Delete();
+                        // Delete() cascades inside the SDK (Transaction -> Table -> Index/attributes).
+                        // Capture the whole set so the search index can drop it too; otherwise the
+                        // cascaded objects stay listed and every read fails with IndexedObjectUnavailable.
+                        using (var capture = new DeletedObjectCapture(GetObjectManager(kb), (Func<object, IEnumerable<Guid>>)TableIndexGuids))
+                        {
+                            current.Delete();
+                            cascadedGuids = capture.Guids;
+                            candidateGuids = capture.Candidates;
+                        }
 
                         var afterDelete = ResolveByNativeIdentity(kb, objGuid, objType);
                         if (afterDelete.Status == NativeResolutionStatus.Failed)
@@ -1214,6 +1293,10 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception ex) { Logger.Error("DeleteObject: index RemoveEntry failed for " + objName + ": " + ex.Message); }
 
+                // Committed: mirror the SDK cascade in the index (never reached on rollback).
+                var alsoDeleted = RemoveCascadedEntries(_kbService?.GetIndexCache(), cascadedGuids, objGuid,
+                    candidateGuids, g => ResolveByNativeIdentity((KnowledgeBase)kb, g, null).Status == NativeResolutionStatus.Absent);
+
                 return McpResponse.Ok(target: objName, code: "ObjectDeleted", result: new JObject
                 {
                     ["deleted"] = objName,
@@ -1229,7 +1312,8 @@ namespace GxMcp.Worker.Services
                     ["rereadConfirmed"] = true,
                     ["versionBefore"] = versionBefore,
                     ["versionAfter"] = JValue.CreateNull(),
-                    ["implicitLifecycleActions"] = new JArray()
+                    ["implicitLifecycleActions"] = new JArray(),
+                    ["alsoDeleted"] = alsoDeleted
                 });
             }
             catch (Exception ex)
@@ -4101,8 +4185,20 @@ namespace GxMcp.Worker.Services
             // reported changed:false / WriteNoChange even though the diff and disk showed
             // the change. Resolve the part name the same way ReadObjectSource does.
             string resolvedPart = string.IsNullOrWhiteSpace(partName) ? null : ResolvePartName(obj, partName);
+            RemoveReadCacheEntries(obj.Guid, resolvedPart);
+
+            // SDK object cache invalidation is expensive; do it only after writes.
+            InvalidateCache(obj);
+        }
+
+        /// <summary>
+        /// Drops the managed read-cache entries of one object. A null
+        /// <paramref name="resolvedPart"/> drops every part of the object.
+        /// </summary>
+        internal static void RemoveReadCacheEntries(Guid objectGuid, string resolvedPart)
+        {
             string normalizedPart = string.IsNullOrWhiteSpace(resolvedPart) ? null : resolvedPart.Trim().ToLowerInvariant();
-            string objectPrefix = obj.Guid.ToString("N") + "|";
+            string objectPrefix = objectGuid.ToString("N") + "|";
             foreach (var kvp in _readCache)
             {
                 string key = kvp.Key;
@@ -4140,9 +4236,6 @@ namespace GxMcp.Worker.Services
                     continue;
                 _emptyRawSourceCache.TryRemove(key, out _);
             }
-
-            // SDK object cache invalidation is expensive; do it only after writes.
-            InvalidateCache(obj);
         }
 
         // PERFORMANCE (perf round 1): raw part-source getter used by SourceSearchService's

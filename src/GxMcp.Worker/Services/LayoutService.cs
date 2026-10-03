@@ -457,6 +457,8 @@ namespace GxMcp.Worker.Services
 
                 var doc = contextResult.Document;
                 string baselineXml = doc.ToString();
+                var ambiguous = AmbiguousControlError(doc, target, controlName);
+                if (ambiguous != null) return ambiguous;
                 var element = FindControlElement(doc, controlName);
                 if (element == null)
                     return Models.McpResponse.Err(
@@ -548,12 +550,52 @@ namespace GxMcp.Worker.Services
 
                 var persistedElement = FindControlElement(persistedContext.Document, controlName);
                 if (persistedElement == null)
+                {
+                    // The write was committed before this read, so a miss here means the
+                    // SDK rewrote the control (renamed it, dropped it, or lost attributes
+                    // such as Event/Class) - not that nothing was saved. Undo it from the
+                    // pre-write XML, prove the undo with the same lookup the write used,
+                    // and say what changed instead of a bare "not found".
+                    var diff = DescribeIdentityDrift(baselineXml, persistedContext.Document);
+                    bool rolledBack = false;
+                    bool rollbackVerified = false;
+                    if (!string.IsNullOrEmpty(baselineXml))
+                    {
+                        try
+                        {
+                            rolledBack = PersistVisualXml(obj, contextResult, target, baselineXml, baselineXml: null) == null;
+                            if (rolledBack)
+                            {
+                                var restoredObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
+                                var restoredContext = LoadVisualContext(restoredObject ?? obj, target, VisualSurface.Any);
+                                rollbackVerified = restoredContext.Error == null
+                                    && FindControlElement(restoredContext.Document, controlName) != null;
+                            }
+                        }
+                        catch (Exception rbEx)
+                        {
+                            Logger.Warn($"SetProperty: rollback after read-back failure failed: {rbEx.Message}");
+                        }
+                    }
+
+                    var extra = new JObject
+                    {
+                        ["rolledBack"] = rolledBack,
+                        ["rollbackVerified"] = rollbackVerified,
+                        ["control"] = controlName,
+                        ["missingAfterSave"] = diff["missing"],
+                        ["appearedAfterSave"] = diff["appeared"]
+                    };
                     return Models.McpResponse.Err(
                         code: "LayoutReadBackFailed",
-                        message: "Layout read-back failed: control not found after save.",
-                        hint: "The SDK may have renamed or dropped the control on save; use get_tree to verify the persisted layout.",
+                        message: "Layout read-back failed: control '" + controlName + "' was not found after save."
+                            + (rolledBack ? (rollbackVerified ? " The write was rolled back and the control is present again." : " A rollback was attempted but the control could not be confirmed afterwards.") : " The write could NOT be rolled back."),
+                        hint: "The SDK rewrote the control on save (see missingAfterSave / appearedAfterSave for renamed or dropped controls); use get_tree and compare with genexus_read part=WebForm to verify the persisted layout.",
                         nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the persisted layout to confirm the current control names.")),
-                        target: target);
+                        target: target,
+                        extra: extra,
+                        errorExtra: (JObject)extra.DeepClone());
+                }
 
                 string persistedValue;
                 if (string.Equals(attrName, "InnerText", StringComparison.Ordinal))
@@ -731,6 +773,8 @@ namespace GxMcp.Worker.Services
                             target: target);
                     }
 
+                    var ambiguous = AmbiguousControlError(doc, target, controlName);
+                    if (ambiguous != null) return ambiguous;
                     var element = FindControlElement(doc, controlName);
                     if (element == null)
                     {
@@ -1501,6 +1545,39 @@ namespace GxMcp.Worker.Services
                     string.Equals(Attr(el, "id"), controlName, StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>
+        /// The control identities (ControlName, else id, else InternalName) in a document.
+        /// </summary>
+        private static HashSet<string> ControlIdentities(XDocument doc)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (doc == null) return set;
+            foreach (var el in doc.Descendants())
+            {
+                string id = Attr(el, "ControlName") ?? Attr(el, "InternalName") ?? Attr(el, "id");
+                if (!string.IsNullOrEmpty(id)) set.Add(el.Name.LocalName + ":" + id);
+            }
+            return set;
+        }
+
+        /// <summary>
+        /// Which controls (as "element:identity") the baseline had that the persisted
+        /// document lost, and which the persisted document has that the baseline did not.
+        /// A rename on save shows up as one of each.
+        /// </summary>
+        internal static JObject DescribeIdentityDrift(string baselineXml, XDocument persisted)
+        {
+            XDocument baseline = null;
+            try { if (!string.IsNullOrWhiteSpace(baselineXml)) baseline = XDocument.Parse(baselineXml); } catch { }
+            var before = ControlIdentities(baseline);
+            var after = ControlIdentities(persisted);
+            return new JObject
+            {
+                ["missing"] = new JArray(before.Where(x => !after.Contains(x))),
+                ["appeared"] = new JArray(after.Where(x => !before.Contains(x)))
+            };
+        }
+
         private static XElement FindElementByPath(XDocument doc, string path)
         {
             if (doc?.Root == null || string.IsNullOrWhiteSpace(path) || !path.StartsWith("/", StringComparison.Ordinal))
@@ -1558,6 +1635,56 @@ namespace GxMcp.Worker.Services
             }
 
             return current;
+        }
+
+        /// <summary>
+        /// Report layouts only: refuses a bare control name that matches more than one
+        /// control (the same label name in two print blocks). <see cref="FindControlElement"/>
+        /// would silently take the first, so the caller could not tell which one changed.
+        /// A path ("/Report/PrintBlock[2]/Control[1]", as emitted by get_tree 'p') bypasses
+        /// the check. Returns null when the name is unique or the layout is not a report.
+        /// </summary>
+        internal static string AmbiguousControlError(XDocument doc, string target, string controlName)
+        {
+            if (doc == null || string.IsNullOrWhiteSpace(controlName)
+                || controlName.StartsWith("/", StringComparison.Ordinal)
+                || !doc.Descendants("PrintBlock").Any())
+                return null;
+
+            var matches = doc.Descendants()
+                .Where(el =>
+                    string.Equals(Attr(el, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Attr(el, "InternalName"), controlName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matches.Count < 2) return null;
+
+            var paths = new JArray();
+            foreach (var m in matches)
+            {
+                var segments = new List<string>();
+                for (var cur = m; cur != null; cur = cur.Parent)
+                {
+                    int idx = cur.Parent == null ? 1 : cur.Parent.Elements(cur.Name).TakeWhile(x => x != cur).Count() + 1;
+                    // Same shape as get_tree 'p': the root carries no index.
+                    segments.Insert(0, cur.Parent == null ? cur.Name.LocalName : cur.Name.LocalName + "[" + idx + "]");
+                }
+                var block = m.Ancestors("PrintBlock").FirstOrDefault();
+                paths.Add(new JObject
+                {
+                    ["path"] = "/" + string.Join("/", segments),
+                    ["printBlock"] = block == null ? null : (Attr(block, "Name") ?? Attr(block, "ControlName"))
+                });
+            }
+
+            return Models.McpResponse.Err(
+                code: "AmbiguousControl",
+                message: "Control name '" + controlName + "' matches " + matches.Count
+                    + " controls in this report layout; refusing to guess which one to change. Matches: "
+                    + paths.ToString(Newtonsoft.Json.Formatting.None),
+                hint: "Pass the full path of the intended control (the 'p' value from get_tree, e.g. "
+                    + "/Report/PrintBlock[2]/Control[1]) as 'control' instead of the bare name.",
+                nextSteps: new JArray(LayoutGetTreeStep(target, "Lists every control with its path ('p') to disambiguate.")),
+                target: target);
         }
 
         private static string ResolveCanonicalAttributeName(XElement element, string requested)

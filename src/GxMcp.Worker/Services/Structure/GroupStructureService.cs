@@ -59,6 +59,10 @@ namespace GxMcp.Worker.Services.Structure
 
                 var applied = new JArray();
                 var removed = new JArray();
+                // The Group part serializes only each member's subtype id; the supertype link
+                // lives on the subtype Attribute (SuperTypeKey), so those attributes need their
+                // own save or the link is lost when the Group is re-read.
+                var relinked = new System.Collections.Generic.List<Artech.Genexus.Common.Objects.Attribute>();
 
                 using (var sdkTrans = group.Model.KB.BeginTransaction())
                 {
@@ -97,7 +101,11 @@ namespace GxMcp.Worker.Services.Structure
                                     existing = new GroupMember(part) { Subtype = subtype };
                                     part.Members.Add(existing);
                                 }
-                                existing.Supertype = super; // writes Subtype.SuperType
+                                if (!SameKey(existing.Subtype.SuperTypeKey, super.Key))
+                                {
+                                    existing.Supertype = super; // writes Subtype.SuperType
+                                    relinked.Add(existing.Subtype);
+                                }
                                 applied.Add(new JObject { ["name"] = name, ["subtypeOf"] = superName });
                             }
                         }
@@ -119,6 +127,7 @@ namespace GxMcp.Worker.Services.Structure
                         }
 
                         group.EnsureSave();
+                        foreach (var att in relinked) att.EnsureSave();
                         sdkTrans.Commit();
                         WriteService.NotePerTargetWrite(groupName);
 
@@ -194,6 +203,31 @@ namespace GxMcp.Worker.Services.Structure
             return new JObject { ["missing"] = missing, ["unremoved"] = unremoved };
         }
 
+        // Compare each requested {name, subtypeOf} against the supertype the re-read attribute
+        // actually carries (null = no persisted supertype). Members absent from
+        // actualSupertypes are reported by CompareGroupMembership as missing, not here.
+        internal static JArray CompareGroupSupertypes(
+            JArray requestedMembers,
+            System.Collections.Generic.IDictionary<string, string> actualSupertypes)
+        {
+            var wrong = new JArray();
+            if (requestedMembers == null || actualSupertypes == null) return wrong;
+            foreach (var m in requestedMembers)
+            {
+                string name = m["name"]?.ToString();
+                string expected = m["subtypeOf"]?.ToString();
+                if (string.IsNullOrWhiteSpace(name) || !actualSupertypes.TryGetValue(name, out string actual)) continue;
+                if (string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) continue;
+                wrong.Add(new JObject { ["name"] = name, ["expected"] = expected, ["actual"] = actual == null ? JValue.CreateNull() : new JValue(actual) });
+            }
+            return wrong;
+        }
+
+        private static bool SameKey(Artech.Udm.Framework.EntityKey a, Artech.Udm.Framework.EntityKey b)
+        {
+            return a == null ? b == null : a.Equals(b);
+        }
+
         // issue #59 (plan 071) — post-save re-read of a Group's membership. Returns a
         // GroupUpdateNotPersisted envelope when the requested membership differs from the
         // persisted members, or null when the write is confirmed (or unverifiable — the
@@ -215,9 +249,16 @@ namespace GxMcp.Worker.Services.Structure
                 if (part == null) return null; // unverifiable
 
                 var actual = new System.Collections.Generic.List<string>();
+                var actualSupertypes = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var member in part.Members)
                 {
-                    if (member?.Subtype?.Name != null) actual.Add(member.Subtype.Name);
+                    if (member?.Subtype?.Name == null) continue;
+                    actual.Add(member.Subtype.Name);
+                    // Re-read the attribute itself: the member's Supertype getter falls back to
+                    // the subtype when SuperTypeKey did not persist.
+                    var att = Artech.Genexus.Common.Objects.Attribute.Get(fresh.Model, member.Subtype.Id);
+                    var sup = att?.SuperType;
+                    actualSupertypes[member.Subtype.Name] = sup == null || sup.Key.Equals(att.Key) ? null : sup.Name;
                 }
 
                 var requestedAdds = applied == null
@@ -231,11 +272,12 @@ namespace GxMcp.Worker.Services.Structure
                 var diff = CompareGroupMembership(requestedAdds, requestedRemovals, actual);
                 var missing = diff["missing"] as JArray ?? new JArray();
                 var unremoved = diff["unremoved"] as JArray ?? new JArray();
-                if (missing.Count == 0 && unremoved.Count == 0) return null;
+                var wrongSupertype = CompareGroupSupertypes(applied, actualSupertypes);
+                if (missing.Count == 0 && unremoved.Count == 0 && wrongSupertype.Count == 0) return null;
 
                 return Models.McpResponse.Err(
                     code: "GroupUpdateNotPersisted",
-                    message: $"The SDK saved the Group but the re-read did not confirm the requested membership ({missing.Count} member(s) missing, {unremoved.Count} removal(s) not applied).",
+                    message: $"The SDK saved the Group but the re-read did not confirm the requested membership ({missing.Count} member(s) missing, {unremoved.Count} removal(s) not applied, {wrongSupertype.Count} supertype link(s) not persisted).",
                     hint: "On this GeneXus build the Group-structure write may not have fully survived. Re-read with genexus_structure action=get_visual and fix any missing members in the IDE's Group editor if they recur.",
                     nextSteps: new JArray(Models.McpResponse.NextStep(
                         tool: "genexus_structure",
@@ -246,6 +288,7 @@ namespace GxMcp.Worker.Services.Structure
                     {
                         ["missing"] = missing,
                         ["unremoved"] = unremoved,
+                        ["wrongSupertype"] = wrongSupertype,
                         ["requested"] = new JArray(requestedAdds),
                         ["persisted"] = new JArray(actual),
                         ["saved"] = false

@@ -1917,14 +1917,32 @@ namespace GxMcp.Gateway
             return string.IsNullOrEmpty(msg) ? "Unknown error" : msg;
         }
 
+        // The SDK lists the reasons of a refusal as "\r\n* reason" lines under a header ending
+        // in ':' (KBObjectManager.NotifyDeleteErrors: "Object(s) could not be deleted:").
+        // Keeping only the header leaves the caller without the reason, so the bullets that
+        // directly follow such a header stay, on the same line. Anything else is still dropped.
+        internal static string TerseErrorMessage(string msg)
+        {
+            var lines = msg.Split('\n');
+            string head = lines[0].Trim();
+            if (!head.EndsWith(":", StringComparison.Ordinal)) return head;
+            var reasons = new List<string>();
+            for (int i = 1; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (!line.StartsWith("* ", StringComparison.Ordinal)) break;
+                reasons.Add(line.Substring(2).Trim());
+            }
+            return reasons.Count == 0 ? head : head + " " + string.Join("; ", reasons);
+        }
+
         internal static JObject TrimErrorEnvelope(JObject error, bool verbose)
         {
             if (verbose) return error; // pass-through
             var trimmed = new JObject();
-            // first line of message only
+            // first line of message only (plus the SDK's reason bullets, see TerseErrorMessage)
             var msg = ResolveErrorMessage(error);
-            var firstLine = msg.Split('\n')[0].Trim();
-            trimmed["message"] = firstLine;
+            trimmed["message"] = TerseErrorMessage(msg);
             var code = ResolveErrorField(error, "code");
             if (code != null) trimmed["code"] = code;
             var hint = ResolveErrorField(error, "hint");

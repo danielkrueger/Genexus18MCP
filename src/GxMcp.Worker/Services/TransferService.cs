@@ -211,18 +211,41 @@ namespace GxMcp.Worker.Services
                     message: "The SDK exposed XPZ entries but did not expose a stable object identity; no import was attempted.",
                     hint: "Use an XPZ produced by the GeneXus Export path supported by this Worker and retry inspect first.");
 
+            var result = new JObject
+            {
+                ["file"] = file,
+                ["objectCount"] = exportItems.Count,
+                ["actionCount"] = Math.Max(Count(actions), exportItems.Count),
+                ["packageActionCount"] = Count(actions),
+                ["objects"] = items,
+                ["wouldImport"] = isDryRunImport,
+                ["source"] = "sdk:IKnowledgeManagerService.ExploreExport"
+            };
+            if (isDryRunImport) AddImportPreviewGuidance(result, args);
+
             return McpResponse.Ok(
                 code: isDryRunImport ? "TransferImportPreview" : "TransferInspected",
-                result: new JObject
-                {
-                    ["file"] = file,
-                    ["objectCount"] = exportItems.Count,
-                    ["actionCount"] = Math.Max(Count(actions), exportItems.Count),
-                    ["packageActionCount"] = Count(actions),
-                    ["objects"] = items,
-                    ["wouldImport"] = isDryRunImport,
-                    ["source"] = "sdk:IKnowledgeManagerService.ExploreExport"
-                });
+                result: result);
+        }
+
+        /// <summary>
+        /// An import that ran as a preview (dryRun omitted or true) changed nothing. Say so,
+        /// and say how to really import; confirm=true alone does NOT import.
+        /// </summary>
+        internal static void AddImportPreviewGuidance(JObject result, JObject args)
+        {
+            bool confirm = args?["confirm"]?.ToObject<bool?>() ?? false;
+            bool dryRunExplicit = args?["dryRun"]?.Type == JTokenType.Boolean;
+            result["previewOnly"] = true;
+            result["imported"] = false;
+            result["nextAction"] = new JObject
+            {
+                ["tool"] = "genexus_transfer",
+                ["args"] = new JObject { ["action"] = "import", ["file"] = args?["file"] ?? args?["inputPath"], ["dryRun"] = false, ["confirm"] = true }
+            };
+            if (confirm && !dryRunExplicit)
+                result["warning"] = "confirm=true alone does NOT import: dryRun defaults to true, so this call was a preview and NOTHING was imported into the KB.";
+            result["hint"] = "Preview only; nothing was imported. To apply, re-issue action=import with dryRun=false and confirm=true.";
         }
 
         internal static JObject DescribeExportItem(object raw)
