@@ -102,6 +102,11 @@ namespace GxMcp.Worker.Services
         private bool _accountingTrusted;
         private long _accountingScans;
 
+        // Issue #363: files whose delete failed during eviction. They are no longer in the
+        // catalog and no longer counted, so they are invisible to every budget decision;
+        // the count is here so a stuck file is at least reportable.
+        private long _orphanedFileCount;
+
         // Issue #344. Trigram posting reclamation.
         //
         // Put added memberships for the new source and nothing else, so replacing a
@@ -1250,6 +1255,14 @@ namespace GxMcp.Worker.Services
                     // no longer exists. The FileInfo check would catch it, but leaving a
                     // dead entry behind makes the count meaningless as a diagnostic.
                     _certifications.TryRemove(key, out _);
+
+                    // Issue #363: the record left _records, so its bytes left the catalog
+                    // whichever way the delete goes. Only the local loop variable used to
+                    // absorb them, so _trackedBytes kept every evicted byte forever: the
+                    // next Put read a total that was still over budget, evicted again, and
+                    // the store drained progressively while each insert paid a full sort.
+                    ApplyAccountingDelta(-rec.FileBytes);
+
                     try
                     {
                         string fullPath = Path.Combine(_storeDirectory, rec.RelativeFilePath);
@@ -1258,12 +1271,12 @@ namespace GxMcp.Worker.Services
                     }
                     catch
                     {
-                        // The file could not be deleted, so the bytes are still on disk
-                        // even though the catalog no longer tracks them. Record the
-                        // removal for accounting, then give up on the counter rather
-                        // than let it drift away from the catalog.
-                        ApplyAccountingDelta(-rec.FileBytes);
-                        MarkAccountingUntrusted();
+                        // The bytes are still on disk but no longer tracked by the catalog,
+                        // so the counter stays consistent with what it describes. The
+                        // orphaned path is remembered for a later sweep instead of
+                        // invalidating the counter, which used to make every subsequent
+                        // budget check re-sum the whole catalog.
+                        Interlocked.Increment(ref _orphanedFileCount);
                     }
                 }
             }
@@ -1355,6 +1368,21 @@ namespace GxMcp.Worker.Services
 
         /// <summary>Catalog records whose bytes the counter currently accounts for.</summary>
         internal int RecordCount => _records.Count;
+
+        /// <summary>
+        /// Issue #363: evicted files whose delete failed. They survive on disk outside the
+        /// catalog and outside the byte budget, so this is the only trace of them.
+        /// </summary>
+        internal long OrphanedFileCount => Interlocked.Read(ref _orphanedFileCount);
+
+        /// <summary>
+        /// Issue #363: whether <see cref="_trackedBytes"/> still equals the sum of the
+        /// catalog it describes. The counter is supposed to drift only via
+        /// <see cref="MarkAccountingUntrusted"/>, so a trusted-but-divergent counter is a
+        /// defect rather than a pending reconciliation. Exposed for guards.
+        /// </summary>
+        internal bool TrackedBytesMatchCatalog()
+            => !_accountingTrusted || CurrentStorageBytes() == SumRecordBytes();
 
         private static string ComputeHash(string text)
         {

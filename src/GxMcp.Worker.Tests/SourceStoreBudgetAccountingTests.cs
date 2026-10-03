@@ -41,12 +41,14 @@ namespace GxMcp.Worker.Tests
 
         private static string GuidFor(int i) => i.ToString("D8") + "0000-0000-0000-000000000000";
 
-        private bool Put(int i, string code)
+        private bool Put(int i, string code) => Put(i, code, i);
+
+        private bool Put(int i, string code, int storedAtMinute)
         {
             string guid = GuidFor(i);
             _writtenGuids.Add(guid);
             return SourceStoreService.Instance.Put(guid, "Source", code,
-                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes(i), "v1");
+                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes(storedAtMinute), "v1");
         }
 
         /// <summary>
@@ -232,6 +234,137 @@ namespace GxMcp.Worker.Tests
             int before = SourceStoreService.Instance.RecordCount;
             for (int i = 0; i < 15; i++) Assert.True(Put(3000 + i, "// counted " + i));
             Assert.Equal(before + 15, SourceStoreService.Instance.RecordCount);
+        }
+
+        // ---- Issue #363: eviction never subtracted the evicted bytes from the counter.
+
+        /// <summary>
+        /// Roughly <paramref name="bytes"/> of incompressible ASCII. Bodies have to
+        /// survive gzip near their original size, otherwise 40 of them would not reach
+        /// a 1 MB budget and nothing would ever be evicted.
+        /// </summary>
+        private static string Incompressible(int seed, int bytes)
+        {
+            var random = new Random(seed);
+            const string alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .;";
+            var chars = new char[bytes];
+            for (int i = 0; i < bytes; i++) chars[i] = alphabet[random.Next(alphabet.Length)];
+            return new string(chars);
+        }
+
+        private static IDisposable BudgetMb(int megabytes)
+        {
+            string previous = Environment.GetEnvironmentVariable("GXMCP_SOURCE_STORE_MAX_MB");
+            Environment.SetEnvironmentVariable("GXMCP_SOURCE_STORE_MAX_MB", megabytes.ToString());
+            return new ActionOnDispose(() =>
+            {
+                Environment.SetEnvironmentVariable("GXMCP_SOURCE_STORE_MAX_MB", previous);
+            });
+        }
+
+        private sealed class ActionOnDispose : IDisposable
+        {
+            private readonly Action _action;
+            public ActionOnDispose(Action action) => _action = action;
+            public void Dispose() => _action();
+        }
+
+        [Fact]
+        public void Eviction_Leaves_The_Tracked_Total_Equal_To_The_Catalog()
+        {
+            using (BudgetMb(1))
+            {
+                // ~2.5 MiB against a 1 MiB budget: the first pass over the catalog.
+                for (int i = 0; i < 40; i++)
+                    Assert.True(Put(4000 + i, Incompressible(4000 + i, 64 * 1024)));
+
+                Assert.True(SourceStoreService.Instance.TrackedStorageBytes() <= 1L * 1024 * 1024,
+                    "the budget must actually have been enforced");
+                Assert.True(SourceStoreService.Instance.TrackedBytesMatchCatalog(),
+                    "the tracked total drifted away from the catalog during eviction");
+                Assert.Equal(ExhaustiveTotal(), SourceStoreService.Instance.TrackedStorageBytes());
+            }
+        }
+
+        [Fact]
+        public void Steady_State_Inserts_Evict_Only_What_They_Added()
+        {
+            using (BudgetMb(1))
+            {
+                for (int i = 0; i < 40; i++)
+                    Assert.True(Put(4100 + i, Incompressible(4100 + i, 64 * 1024)));
+
+                int settled = SourceStoreService.Instance.RecordCount;
+                Assert.True(settled > 0, "the store must retain something after the first pass");
+
+                // The second batch has to be the newest: eviction is LRU by StoredAtUtc,
+                // so a batch stamped older than the first would simply retire its own
+                // records and never exercise the settled state.
+                // With the counter drifting upward, every insert read a total that was
+                // still over budget and drained another slice of real records, so the
+                // store collapsed to a handful. A settled counter only fires once the
+                // store is genuinely over budget, and each pass returns it to 85%.
+                const int inserts = 20;
+                int retired = 0;
+                for (int i = 0; i < inserts; i++)
+                {
+                    int before = SourceStoreService.Instance.RecordCount;
+                    Assert.True(Put(4200 + i, Incompressible(4200 + i, 64 * 1024), 1000 + i));
+                    int after = SourceStoreService.Instance.RecordCount;
+
+                    Assert.True(SourceStoreService.Instance.TrackedBytesMatchCatalog());
+                    retired += Math.Max(0, before - after);
+                }
+
+                // A settled store returns to its 85% high-water mark each pass, so the
+                // inserts it retires are proportional to the inserts it accepted. A
+                // drifting counter keeps seeing a stale over-budget total and retires
+                // far more than it accepts.
+                Assert.True(retired <= inserts * 2,
+                    $"{inserts} inserts retired {retired} records; a settled store retires about one per insert");
+
+                // The signature of the defect: the count never recovers, because each
+                // insert evicts more real records than it adds.
+                int remaining = SourceStoreService.Instance.RecordCount;
+                Assert.True(remaining >= settled / 2,
+                    $"the store drained from {settled} to {remaining} records over {inserts} inserts");
+                Assert.Equal(ExhaustiveTotal(), SourceStoreService.Instance.TrackedStorageBytes());
+            }
+        }
+
+        [Fact]
+        public void Every_Insert_Keeps_The_Tracked_Total_Equal_To_The_Catalog()
+        {
+            using (BudgetMb(1))
+            {
+                for (int i = 0; i < 60; i++)
+                {
+                    Assert.True(Put(4300 + i, Incompressible(4300 + i, 64 * 1024)));
+                    Assert.True(SourceStoreService.Instance.TrackedBytesMatchCatalog(),
+                        $"the counter desynced at insert {i}");
+                    Assert.Equal(ExhaustiveTotal(), SourceStoreService.Instance.TrackedStorageBytes());
+                }
+            }
+        }
+
+        [Fact]
+        public void The_Store_Settles_Between_The_High_Water_Marks_Instead_Of_Draining()
+        {
+            using (BudgetMb(1))
+            {
+                for (int i = 0; i < 40; i++)
+                    Assert.True(Put(4400 + i, Incompressible(4400 + i, 64 * 1024)));
+
+                long budget = 1L * 1024 * 1024;
+                long tracked = SourceStoreService.Instance.TrackedStorageBytes();
+                Assert.True(tracked <= budget, $"tracked {tracked} is above the {budget} budget");
+                Assert.True(tracked >= budget * 0.5,
+                    $"tracked {tracked} fell below the 85% target; the store is draining instead of settling");
+
+                // Roughly budget / body records should survive, not a handful.
+                int remaining = SourceStoreService.Instance.RecordCount;
+                Assert.True(remaining >= 8, $"only {remaining} records survived; the store is being drained");
+            }
         }
     }
 }
