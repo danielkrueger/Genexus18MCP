@@ -1481,7 +1481,11 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 LogExceptionChain("SpecifyResolved", ex);
-                return false;
+                // Same contract as the probe above: an SDK member that is present but not
+                // callable means this path could not run, not that specification failed.
+                // Returning false here would defeat the caller's ?? ExecuteSpecifyOneOnly
+                // fallback and turn a recoverable shape mismatch into a hard failure.
+                return null;
             }
         }
 

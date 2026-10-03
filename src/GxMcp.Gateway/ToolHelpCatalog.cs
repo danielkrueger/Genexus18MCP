@@ -220,6 +220,7 @@ namespace GxMcp.Gateway
                 "Read source or metadata parts of one or more GeneXus objects.\n\n" +
                 "## Required\n" +
                 "- Either `name` (single) **or** `targets` (array). Never both.\n" +
+                "- `objectName` is accepted as an alias of `name`; `name` wins when both are present. A call that supplies no object identity at all (`name`/`objectName`/`targets`/`guid`/`entityKey`/`path`) is rejected as a `usage_error` and performs no lookup.\n" +
                 "- `parts`: array of part names. Common: `Source`, `Variables`, `Rules`, `Events`, `Structure`, `Layout`. Omitting `parts` returns the canonical default set for the object type.\n\n" +
                 "## Data Selectors\n" +
                 "- Use `type: 'DataSelector'` with `parameters`, `conditions`, `orders`, `definedBy`, `baseTransaction`, `baseTable`, or `structure`. The SDK order and complete expressions are preserved.\n" +
