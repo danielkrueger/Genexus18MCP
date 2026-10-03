@@ -628,7 +628,7 @@ function migrateLegacyConfig(sourcePath, targetPath, { rejectNonMigratable = fal
     }
 }
 
-function resolveConfigPathNoMutate(cwd) {
+function resolveConfigPathNoMutate(cwd, options) {
     const cwdConfigPath = path.join(cwd, 'config.json');
     // Match the Gateway: an explicit GX_CONFIG_PATH is authoritative even when
     // the file is missing, so diagnostics do not silently inspect an unrelated
@@ -638,6 +638,20 @@ function resolveConfigPathNoMutate(cwd) {
     }
     if (fs.existsSync(cwdConfigPath)) {
         return cwdConfigPath;
+    }
+    // The neutral user config is the last fallback, matching the Gateway and the
+    // zero-config launcher outside a KB folder. It is opt-in because this resolver
+    // is also reached from commands that WRITE to the resolved path (`clients add`
+    // patches it, `config migrate` reads it as `--from`). Falling back silently there
+    // would let a command run from any folder rewrite the shared user profile, so
+    // only the read-only diagnostics opt in and a mutating caller keeps resolving to
+    // the explicit path or the cwd config.
+    if (!options || options.allowUserProfile !== true) {
+        return null;
+    }
+    const userConfigPath = path.join(os.homedir(), '.genexus-mcp', 'config.json');
+    if (!directoryLooksLikeKnowledgeBase(cwd) && fs.existsSync(userConfigPath)) {
+        return userConfigPath;
     }
     return null;
 }

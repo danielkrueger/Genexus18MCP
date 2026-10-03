@@ -149,7 +149,7 @@ function operationalErrorEnvelope(message, exitCode, help = [], code = 'operatio
 }
 
 function buildStatusData(cwd) {
-    const configPath = resolveConfigPathNoMutate(cwd);
+    const configPath = resolveConfigPathNoMutate(cwd, { allowUserProfile: true });
     const gatewayExePath = getGatewayExePath();
     const gatewayExeFound = fs.existsSync(gatewayExePath);
     const configFound = !!(configPath && fs.existsSync(configPath));
@@ -165,7 +165,7 @@ function buildStatusData(cwd) {
     if (process.env.GX_CONFIG_PATH) {
         configSource = 'env';
     } else if (configFound) {
-        configSource = 'cwd';
+        configSource = path.resolve(configPath) === path.resolve(cwd, 'config.json') ? 'cwd' : 'neutral';
     }
 
     if (configFound) {
@@ -404,7 +404,7 @@ async function probeGatewaySpawn({ configPath = null } = {}) {
 }
 
 function resolveMcpSmokeTarget(cwd) {
-    const configPath = resolveConfigPathNoMutate(cwd);
+    const configPath = resolveConfigPathNoMutate(cwd, { allowUserProfile: true });
     const fallback = 'http://127.0.0.1:5000/mcp';
     if (!configPath) {
         return { applicable: true, status: null, detail: null, baseUrl: fallback };
@@ -1125,7 +1125,7 @@ async function handleDoctor(options, ctx) {
     const gxEnvCheck = process.env.GX_CONFIG_PATH
         ? { status: 'pass', detail: 'GX_CONFIG_PATH env var is set.' }
         : data.configFound
-            ? { status: 'not_applicable', detail: `GX_CONFIG_PATH is not set; using ${data.configPath} from the current directory.` }
+            ? { status: 'not_applicable', detail: `GX_CONFIG_PATH is not set; using ${data.configPath} ${data.configSource === 'neutral' ? 'from the user profile' : 'from the current directory'}.` }
             : { status: 'warn', detail: 'GX_CONFIG_PATH env var is not set and no config file was found.' };
     const kbCatalogEntries = Object.entries(data.kbCatalog?.kbs || {});
     const missingCatalogKbs = kbCatalogEntries.filter(([, declaredPath]) => !fs.existsSync(declaredPath));
@@ -1439,9 +1439,12 @@ async function handleConfigCreate(options, ctx) {
 }
 
 async function handleConfigMigrate(options, ctx) {
+    // No `allowUserProfile`: `--from` defaults to the config this command then reads,
+    // so resolving the shared user profile here would silently migrate it from any
+    // folder. `--from` stays the way to name it explicitly.
     const sourcePath = options.fromPath || resolveConfigPathNoMutate(ctx.cwd);
     if (!sourcePath) {
-        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --from <legacy-config> (or a config.json in the current directory).', ctx.EXIT_CODES.USAGE) };
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --from <legacy-config>, GX_CONFIG_PATH, or a config.json in the current directory.', ctx.EXIT_CODES.USAGE) };
     }
     const targetPath = options.output || `${sourcePath}.neutral.json`;
     if (path.resolve(sourcePath) === path.resolve(targetPath)) {
@@ -1484,7 +1487,7 @@ async function handleConfigMigrate(options, ctx) {
 }
 
 async function handleConfigShow(options, ctx) {
-    const configPath = resolveConfigPathNoMutate(ctx.cwd);
+    const configPath = resolveConfigPathNoMutate(ctx.cwd, { allowUserProfile: true });
     if (!configPath) {
         return {
             exitCode: ctx.EXIT_CODES.ERROR,
@@ -2618,12 +2621,15 @@ async function handleClients(subcommand, options, ctx) {
         }
 
         if (sub === 'add') {
+            // No `allowUserProfile`: the resolved path is patched in place, so falling
+            // back to the shared user config would let `clients add` rewrite it from any
+            // folder. Point the client at the user config with GX_CONFIG_PATH instead.
             const configPath = resolveConfigPathNoMutate(ctx.cwd);
             if (!configPath) {
                 return {
                     exitCode: ctx.EXIT_CODES.ERROR,
                     envelope: operationalErrorEnvelope(
-                        'No config.json found to point the clients at. Run `genexus-mcp init` first (or run from a KB folder).',
+                        'No config.json found to point the clients at. Run `genexus-mcp init` first, run from a KB folder, or set GX_CONFIG_PATH to the config to register.',
                         ctx.EXIT_CODES.ERROR
                     )
                 };
