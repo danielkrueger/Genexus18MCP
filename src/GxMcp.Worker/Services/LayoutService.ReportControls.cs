@@ -528,6 +528,12 @@ namespace GxMcp.Worker.Services
         private static string MissingReportControlName(string target)
             => Models.McpResponse.Err(code: "ReportControlNameRequired", message: "controlName is required.", target: target);
 
+        // The write path sets a label's text as Text, but the SDK's report layout
+        // serializer reads it back as Caption; accept either spelling so a persisted
+        // caption is not reported as changed.
+        private static bool ReportCaptionMatches(XElement control, string caption)
+            => string.Equals(Attr(control, "Caption") ?? Attr(control, "Text"), caption, StringComparison.OrdinalIgnoreCase);
+
         private string VerifyReportControl(string target, KBObject original, LayoutContextResult originalContext, string block, string name, string type, string binding, string caption, JObject args)
         {
             KBObject fresh = _objectService.FindObjectFreshByIdentity(original);
@@ -550,7 +556,7 @@ namespace GxMcp.Worker.Services
                 if (!string.Equals(actualBinding, binding, StringComparison.OrdinalIgnoreCase))
                     return "The SDK changed the report control binding during save.";
             }
-            if (!string.IsNullOrWhiteSpace(caption) && !string.Equals(Attr(control, "Text"), caption, StringComparison.OrdinalIgnoreCase)) return "The SDK changed the report control caption during save.";
+            if (!string.IsNullOrWhiteSpace(caption) && !ReportCaptionMatches(control, caption)) return "The SDK changed the report control caption during save.";
 
             if (!VerifyReportNumber(control, args, "left", "X")
                 || !VerifyReportNumber(control, args, "x", "X")

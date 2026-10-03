@@ -37,6 +37,36 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void TrimErrorEnvelope_KeepsSdkReasonBulletsUnderAColonHeader()
+        {
+            // The SDK refuses a delete with "header:\r\n* reason" (one bullet per object);
+            // keeping only the header left DeleteFailed without any reason.
+            var input = new JObject
+            {
+                ["code"] = "DeleteFailed",
+                ["message"] = "Object(s) could not be deleted:"
+                    + "\r\n* Attribute 'SampleId' is referenced at least by Index 'ISample'."
+                    + "\r\n* Attribute 'SampleName' is referenced at least by Transaction 'Sample'."
+            };
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            Assert.Equal(
+                "Object(s) could not be deleted: Attribute 'SampleId' is referenced at least by Index 'ISample'.; Attribute 'SampleName' is referenced at least by Transaction 'Sample'.",
+                (string)trimmed["message"]!);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_ColonHeaderWithoutBulletsStillDropsTheRest()
+        {
+            var input = new JObject
+            {
+                ["code"] = "internal",
+                ["message"] = "Unexpected failure:\n   at Sample.Method()\n* not a reason, after a stack frame"
+            };
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            Assert.Equal("Unexpected failure:", (string)trimmed["message"]!);
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_WriteNotPersisted_PreservesPatchReceipt()
         {
             var input = JObject.Parse(@"{

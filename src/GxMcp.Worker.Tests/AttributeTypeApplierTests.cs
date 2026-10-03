@@ -149,5 +149,51 @@ namespace GxMcp.Worker.Tests
             Assert.False(applied);
             Assert.Equal("ORIGINAL", fake.Type);
         }
+
+        // Same GetByName shape as the SDK's IKBModelObjects: (string module, Guid? type, string name).
+        public class FakeKbObjects
+        {
+            public string LastName;
+            public System.Collections.Generic.IEnumerable<object> GetByName(string module, Guid? type, string name)
+            {
+                LastName = name;
+                return new object[] { "match:" + name };
+            }
+        }
+
+        public interface IFakeKbObjects
+        {
+            System.Collections.Generic.IEnumerable<object> GetByName(string module, Guid? type, string name);
+        }
+
+        private sealed class ExplicitFakeKbObjects : IFakeKbObjects
+        {
+            System.Collections.Generic.IEnumerable<object> IFakeKbObjects.GetByName(string module, Guid? type, string name)
+                => new object[] { "explicit:" + name };
+        }
+
+        [Fact]
+        public void DomainLookupCallsTheSdkGetByNameShape()
+        {
+            var objects = new FakeKbObjects();
+            var matches = AttributeTypeApplier.InvokeGetByName(objects, "SampleDomain");
+            Assert.NotNull(matches);
+            Assert.Equal("SampleDomain", objects.LastName);
+            Assert.Contains("match:SampleDomain", System.Linq.Enumerable.Cast<object>(matches));
+        }
+
+        [Fact]
+        public void DomainLookupFindsAnExplicitInterfaceImplementation()
+        {
+            var matches = AttributeTypeApplier.InvokeGetByName(new ExplicitFakeKbObjects(), "SampleDomain");
+            Assert.NotNull(matches);
+            Assert.Contains("explicit:SampleDomain", System.Linq.Enumerable.Cast<object>(matches));
+        }
+
+        [Fact]
+        public void DomainLookupOnNullObjectsIsNull()
+        {
+            Assert.Null(AttributeTypeApplier.InvokeGetByName(null, "SampleDomain"));
+        }
     }
 }

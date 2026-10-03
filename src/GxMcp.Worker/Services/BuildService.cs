@@ -284,6 +284,50 @@ namespace GxMcp.Worker.Services
             @"^>S(?<name>[A-Za-z][A-Za-z0-9 _]*?)(?:[: ]|$)", RegexOptions.Compiled);
         private static readonly Regex _rxSectionFail = new Regex(
             @"^>E0(?<name>[A-Za-z][A-Za-z0-9 _]*?)(?:[: ]|$)", RegexOptions.Compiled);
+        // The same in-process protocol carries specifier/generator diagnostics as
+        //   >O1<code>: <message>|<SourcePosition type>;<SourcePosition xml>   (error)
+        //   >O2<code>: <message>|...                                        (warning)
+        // with no "error"/"warning" word, so _rxError/_rxWarning never matched them and
+        // a build whose Specification section failed reported 0 errors.
+        private static readonly Regex _rxInProcessDiagnostic = new Regex(
+            @"^>O(?<sev>[12])(?<code>[A-Za-z]{2,4}\d+)\s*:\s*(?<msg>[^|]*)(?:\|(?<pos>.*))?$",
+            RegexOptions.Compiled | RegexOptions.Singleline);
+        private static readonly Regex _rxSourcePositionLine = new Regex(@"<Line>(?<line>\d+)</Line>", RegexOptions.Compiled);
+        private static readonly Regex _rxSourcePositionObject = new Regex(
+            @"<FullName>[^<']*'(?<obj>[^']+)'[^<]*</FullName>", RegexOptions.Compiled);
+
+        // Rewrites an in-process ">O1"/">O2" diagnostic into the "error <code>: ..." /
+        // "warning <code>: ..." text the MSBuild.exe path produces, so both paths share
+        // the same counting, classification and SpecificationDiagnostics parsing.
+        // Returns null for any other line.
+        internal static string NormalizeInProcessDiagnostic(string line, out string objectName)
+        {
+            objectName = null;
+            if (line == null) return null;
+            var m = _rxInProcessDiagnostic.Match(line.TrimEnd('\r', '\n'));
+            if (!m.Success) return null;
+
+            string text = (m.Groups["sev"].Value == "1" ? "error " : "warning ")
+                + m.Groups["code"].Value + ": " + m.Groups["msg"].Value.Trim();
+            string pos = m.Groups["pos"].Value;
+            if (!string.IsNullOrEmpty(pos))
+            {
+                var obj = _rxSourcePositionObject.Match(pos);
+                if (obj.Success) objectName = obj.Groups["obj"].Value;
+                var ln = _rxSourcePositionLine.Match(pos);
+                int lineNo = 0;
+                if (ln.Success) int.TryParse(ln.Groups["line"].Value, out lineNo);
+                if (objectName != null || lineNo > 0)
+                {
+                    text += " ["
+                        + (objectName ?? string.Empty)
+                        + (objectName != null && lineNo > 0 ? ", " : string.Empty)
+                        + (lineNo > 0 ? "line " + lineNo : string.Empty)
+                        + "]";
+                }
+            }
+            return text;
+        }
 
         // Map a GeneXus build section name to a lifecycle phase. Unknown sections
         // (and the outer "Build" wrapper) return null so we don't churn the phase.
@@ -437,8 +481,12 @@ namespace GxMcp.Worker.Services
 
         internal static InProcessBuildOutcome FailedNativeBuild(BuildTaskStatus status)
         {
+            // The batch route now forwards the SDK output, so only claim missing
+            // diagnostics when none were itemized.
             RecordVerificationFailure(status, "NativeBuildFailed",
-                "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.", "native");
+                status.ErrorCount > 0
+                    ? "The native SDK build failed; see the diagnostics above. No automatic retry was performed."
+                    : "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.", "native");
             return InProcessBuildOutcome.FailedWithDiagnostics;
         }
 
@@ -4290,6 +4338,13 @@ namespace GxMcp.Worker.Services
                 status.LineCount++;
                 status.LastLine = line;
                 status.FullOutput.AppendLine(line);
+
+                string normalizedDiagnostic = NormalizeInProcessDiagnostic(line, out string diagnosticObject);
+                if (normalizedDiagnostic != null)
+                {
+                    line = normalizedDiagnostic;
+                    if (!string.IsNullOrEmpty(diagnosticObject)) status.CurrentObject = diagnosticObject;
+                }
 
                 if (line.IndexOf("[GXMCP-BUILD-ALL] KB opened", StringComparison.OrdinalIgnoreCase) >= 0)
                     status.KbOpened = true;
