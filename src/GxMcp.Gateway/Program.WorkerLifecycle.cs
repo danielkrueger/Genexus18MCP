@@ -290,30 +290,59 @@ namespace GxMcp.Gateway
         /// <para>
         /// The object name is invalidated by target as well, so derived entries -
         /// listings, analyses - that do not name the mutated object in their arguments
-        /// cannot survive it. An unknown or blank alias falls back to the empty scope,
-        /// the store's whole-KB invalidation, because a change we cannot attribute to a
-        /// KB is not safe to attribute to a narrower one.
+        /// cannot survive it.
+        /// </para>
+        ///
+        /// <para>
+        /// Issue #379. A blank alias used to map to the empty scope, and the store treats
+        /// the empty scope as "clear everything": one notification this Gateway could not
+        /// attribute wiped every other open KB's entries and reset their revisions. A
+        /// missing alias is now counted and reported as the defect it is, and the
+        /// narrowing fallback is the set of KBs the store actually knows about - still
+        /// correct (a change we cannot attribute to a KB is not safe to attribute to a
+        /// narrower one) without discarding an unrelated KB's whole warm cache.
         /// </para>
         /// </summary>
         internal static long InvalidateCacheScopeForResourceUpdate(string? kbAlias, string? objectName)
         {
-            string scope = string.IsNullOrWhiteSpace(kbAlias) ? string.Empty : kbAlias!.Trim();
-            long revision = _semanticCache.InvalidateScope(scope, out int removed);
+            bool unattributed = string.IsNullOrWhiteSpace(kbAlias);
+            if (unattributed) Interlocked.Increment(ref _unattributedResourceUpdates);
 
-            if (!string.IsNullOrWhiteSpace(scope) && !string.IsNullOrWhiteSpace(objectName))
+            long revision;
+            if (unattributed)
             {
-                // InvalidateScope already cleared this KB's direct reads. This pass
-                // exists for the derived entries that survive a scoped clear.
-                int derived = _semanticCache.RemoveByTarget(scope, objectName!);
-                Log($"[Gateway] resource-updated '{objectName}' invalidated KB scope '{scope}': {removed} direct + {derived} derived entries, revision -> {revision}.");
+                Log($"[Gateway] resource-updated '{objectName}' arrived without a KB alias "
+                    + "(defect; every other KB's cache is still invalidated).");
+                revision = _semanticCache.InvalidateEveryKnownScope(out int total, out int scopes);
+                Log($"[Gateway] resource-updated '{objectName}' invalidated {scopes} known KB scope(s): {total} entries, revision -> {revision}.");
             }
             else
             {
-                Log($"[Gateway] resource-updated '{objectName}' invalidated scope '{scope}': {removed} entries, revision -> {revision}.");
+                string scope = kbAlias!.Trim();
+                revision = _semanticCache.InvalidateScope(scope, out int removed);
+                if (!string.IsNullOrWhiteSpace(objectName))
+                {
+                    // InvalidateScope already cleared this KB's direct reads. This pass
+                    // exists for the derived entries that survive a scoped clear.
+                    int derived = _semanticCache.RemoveByTarget(scope, objectName!);
+                    Log($"[Gateway] resource-updated '{objectName}' invalidated KB scope '{scope}': {removed} direct + {derived} derived entries, revision -> {revision}.");
+                }
+                else
+                {
+                    Log($"[Gateway] resource-updated '{objectName}' invalidated scope '{scope}': {removed} entries, revision -> {revision}.");
+                }
             }
 
             return revision;
         }
+
+        /// <summary>
+        /// Issue #379: resource-updated notifications that reached the handler without a
+        /// KB alias. Each one is a missed attribution, so this belongs in diagnostics.
+        /// </summary>
+        internal static long UnattributedResourceUpdates => Interlocked.Read(ref _unattributedResourceUpdates);
+
+        private static long _unattributedResourceUpdates;
 
         internal static JObject RewriteProgressTokenForClient(JObject workerEnvelope, JToken clientProgressToken)
         {

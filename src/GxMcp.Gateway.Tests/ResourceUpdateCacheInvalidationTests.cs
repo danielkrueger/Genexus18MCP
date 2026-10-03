@@ -176,5 +176,95 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("updatedRevision", broadcastWindow, StringComparison.Ordinal);
             Assert.DoesNotContain("_semanticCache.GetRevision", broadcastWindow, StringComparison.Ordinal);
         }
+
+        // ---- Issue #379: an unattributable notification wiped every KB's cache.
+
+        [Fact]
+        public void An_Unattributable_Update_Clears_Every_Scope_Without_Resetting_Revisions()
+        {
+            var store = new SemanticCacheStore(64, TimeSpan.FromMinutes(30));
+            Seed(store, "kbalpha", "genexus_read", "{\"name\":\"A\"}", new JObject { ["result"] = 1 });
+            Seed(store, "kbbeta", "genexus_read", "{\"name\":\"B\"}", new JObject { ["result"] = 2 });
+
+            long alphaBefore = store.GetRevision("kbalpha");
+            long betaBefore = store.GetRevision("kbbeta");
+
+            store.InvalidateEveryKnownScope(out int removed, out int scopes);
+
+            // Correctness first: nothing stale may survive, whatever the alias was.
+            Assert.Equal(2, removed);
+            Assert.False(store.TryGet("kbalpha|genexus_read:{\"name\":\"A\"}", out JObject _));
+            Assert.False(store.TryGet("kbbeta|genexus_read:{\"name\":\"B\"}", out JObject _));
+
+            // The defect: Clear() drops the revision map, so each KB's generation went
+            // back to zero and a client comparing revisions could not tell anything moved.
+            Assert.True(store.GetRevision("kbalpha") > alphaBefore);
+            Assert.True(store.GetRevision("kbbeta") > betaBefore);
+            // Two KB scopes plus the empty scope, which is always advanced.
+            Assert.Equal(3, scopes);
+        }
+
+        [Fact]
+        public void An_Unattributable_Update_Still_Covers_The_Empty_Scope()
+        {
+            var store = new SemanticCacheStore(64, TimeSpan.FromMinutes(30));
+            Seed(store, "kbalpha", "genexus_read", "{\"name\":\"A\"}", new JObject { ["result"] = 1 });
+
+            store.InvalidateEveryKnownScope(out _, out _);
+
+            // A second notification must not be able to reuse the first one's generation.
+            long after = store.GetRevision(string.Empty);
+            store.InvalidateEveryKnownScope(out _, out _);
+            Assert.True(store.GetRevision(string.Empty) > after);
+        }
+
+        [Fact]
+        public void The_Handler_Counts_An_Unattributable_Update_Instead_Of_Wiping_Silently()
+        {
+            // The handler is the boundary where the alias is optional, so a missing one is
+            // a defect worth surfacing: it means some delivery path did not carry the KB
+            // identity of the connection the frame came from.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Gateway", "Program.WorkerLifecycle.cs");
+
+            int start = source.IndexOf("InvalidateCacheScopeForResourceUpdate", StringComparison.Ordinal);
+            Assert.True(start > 0, "the invalidation helper was not found");
+            int end = source.IndexOf("RewriteProgressTokenForClient", start, StringComparison.Ordinal);
+            Assert.True(end > start, "could not delimit InvalidateCacheScopeForResourceUpdate");
+            string body = source.Substring(start, end - start);
+
+            Assert.Contains("UnattributedResourceUpdates", body, StringComparison.Ordinal);
+            Assert.Contains("InvalidateEveryKnownScope", body, StringComparison.Ordinal);
+            // The old mapping is what turned "unknown" into "every KB, generation reset".
+            Assert.DoesNotContain("string.Empty : kbAlias", body, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void The_Empty_Scope_Is_Why_The_Handler_Cannot_Use_It()
+        {
+            // The reason the unattributable path needs its own method rather than a call to
+            // InvalidateScope(""): the empty scope clears every entry but then throws the
+            // revision map away and restores only its own generation. Every other KB's
+            // revision goes back to zero, so a client comparing revisions sees nothing
+            // move - the exact failure #336 was opened for, reintroduced globally.
+            var store = new SemanticCacheStore(64, TimeSpan.FromMinutes(30));
+            Seed(store, "kbalpha", "genexus_read", "{\"name\":\"A\"}", new JObject { ["result"] = 1 });
+            Seed(store, "kbbeta", "genexus_read", "{\"name\":\"B\"}", new JObject { ["result"] = 2 });
+            store.InvalidateScope("kbalpha", out _);
+            store.InvalidateScope("kbbeta", out _);
+
+            long alphaBefore = store.GetRevision("kbalpha");
+            long betaBefore = store.GetRevision("kbbeta");
+            Assert.True(alphaBefore > 0 && betaBefore > 0, "precondition: both scopes have generations");
+
+            store.InvalidateScope(string.Empty, out _);
+
+            Assert.False(store.TryGet("kbalpha|genexus_read:{\"name\":\"A\"}", out JObject _));
+            Assert.False(store.TryGet("kbbeta|genexus_read:{\"name\":\"B\"}", out JObject _));
+            Assert.Equal(0, store.GetRevision("kbalpha"));
+            Assert.Equal(0, store.GetRevision("kbbeta"));
+            Assert.NotEqual(alphaBefore, store.GetRevision("kbalpha"));
+            Assert.NotEqual(betaBefore, store.GetRevision("kbbeta"));
+        }
     }
 }

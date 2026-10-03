@@ -164,6 +164,75 @@ namespace GxMcp.Gateway
             return revision;
         }
 
+        /// <summary>
+        /// Advances every scope the store currently holds and clears them all, without
+        /// the single empty-scope generation that <see cref="Clear"/> would leave behind.
+        ///
+        /// <para>
+        /// Issue #379. This exists because a change that cannot be attributed to one KB is
+        /// still not safe to attribute to a narrower one, but the previous fallback -
+        /// the empty scope - also threw away KBs that had nothing to do with the change,
+        /// resetting their revisions and keeping their caches cold. Per-scope invalidation
+        /// removes every entry (each key belongs to exactly one scope) while keeping every
+        /// revision monotonically advanced, so a client comparing revisions still learns
+        /// that something moved.
+        /// </para>
+        /// </summary>
+        public long InvalidateEveryKnownScope(out int removed, out int scopes)
+        {
+            // A scope can hold entries without ever having been invalidated - the legacy
+            // string-key Set writes a "scope|tool:args" key with no generation behind it -
+            // so the scopes have to come from the entries as well as from the revisions.
+            var live = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var scope in _scopeRevisions.Keys) live.Add(scope);
+            foreach (var key in _entries.Keys)
+            {
+                if (StateScopedCacheKey.TryParse(key, out var scopedKey))
+                {
+                    if (!string.IsNullOrWhiteSpace(scopedKey.KbId)) live.Add(scopedKey.KbId);
+                    continue;
+                }
+                int separator = key.IndexOf('|');
+                // A key with no scope prefix at all belongs to the empty scope.
+                live.Add(separator >= 0 ? key.Substring(0, separator) : string.Empty);
+            }
+
+            removed = 0;
+            scopes = 0;
+            long revision = 0;
+
+            foreach (var scope in live)
+            {
+                if (string.IsNullOrEmpty(scope)) continue;
+                scopes++;
+                revision = Math.Max(revision, AdvanceScopeGeneration(scope));
+                removed += ClearScopeEntries(scope);
+            }
+
+            // The empty scope owns an entry that carries no scope prefix at all. Nothing
+            // writes that shape today, but it is advanced unconditionally so its
+            // generation stays monotonic: an empty-scope revision captured before this
+            // call must not still match a later entry.
+            revision = Math.Max(revision, AdvanceScopeGeneration(string.Empty));
+            removed += ClearScopeEntries(string.Empty);
+            scopes++;
+
+            return revision;
+        }
+
+        /// <summary>
+        /// Advances one scope's generation without clearing anything. Paired with
+        /// <see cref="ClearScopeEntries"/> so the empty scope stops being a synonym for
+        /// <see cref="Clear"/>: routing it through <see cref="InvalidateScope"/> wiped the
+        /// revision map - including every other scope's generation - which is exactly the
+        /// "unattributable change resets everyone" behaviour issue #379 removed.
+        /// </summary>
+        private long AdvanceScopeGeneration(string kbScope)
+        {
+            string scope = NormalizeScope(kbScope);
+            return _scopeRevisions.AddOrUpdate(scope, 1L, (_, current) => checked(current + 1L));
+        }
+
         /// <summary>Clear only entries belonging to one KB scope.</summary>
         public int ClearScope(string kbScope)
         {
