@@ -31,7 +31,23 @@ namespace GxMcp.Gateway.Tests
         public void Dispose()
         {
             Program.WarmupProbeRetryDelayMsForTest = null;
+            Program.FirstTouchWarmAmbientKbForTest = null;
+            Program.FirstTouchWarmDefaultKbForTest = null;
+            Program.FirstTouchWarmGenerationForTest = null;
             Program.ResetFirstTouchWarmForTest();
+        }
+
+        /// <summary>
+        /// Stand in for the two ambient sources the production resolver reads: the KB
+        /// context the bootstrap just set, and the configured default. Generations are
+        /// per alias so a key computed against the wrong alias is unmistakable.
+        /// </summary>
+        private static void AmbientKb(string? ambient, string? configuredDefault)
+        {
+            Program.FirstTouchWarmAmbientKbForTest = ambient;
+            Program.FirstTouchWarmDefaultKbForTest = configuredDefault;
+            Program.FirstTouchWarmGenerationForTest = alias =>
+                string.Equals(alias, "KbBeta", StringComparison.OrdinalIgnoreCase) ? "genB" : "genA";
         }
 
         private static string Key(string alias, string? generation = null) =>
@@ -181,6 +197,85 @@ namespace GxMcp.Gateway.Tests
                 () => Task.FromResult<string?>("Probe"), () => Interlocked.Increment(ref waits),
                 _ => Task.CompletedTask);
             Assert.Equal(0, waits);
+        }
+
+        // ---- Issue #365: the resolver never consulted the KB it was warming.
+
+        [Fact]
+        public void The_Scope_Key_Follows_The_Kb_Being_Warmed_Not_The_Configured_Default()
+        {
+            // The defect: with a default of KbAlpha, bootstrapping KbBeta resolved
+            // KbAlpha's alias and KbAlpha's generation, so a warmed Alpha suppressed
+            // Beta's pass.
+            AmbientKb("KbBeta", "KbAlpha");
+
+            Assert.Equal(Key("KbBeta", "genB"), Program.CurrentFirstTouchWarmScopeKey());
+        }
+
+        [Fact]
+        public void An_Explicit_Kb_Overrides_The_Ambient_Context()
+        {
+            AmbientKb("KbBeta", "KbAlpha");
+
+            Assert.Equal(Key("KbGamma", "genA"), Program.CurrentFirstTouchWarmScopeKey("KbGamma"));
+        }
+
+        [Fact]
+        public void The_Configured_Default_Is_Used_Only_When_No_Kb_Context_Exists()
+        {
+            AmbientKb(null, "KbAlpha");
+
+            Assert.Equal(Key("KbAlpha", "genA"), Program.CurrentFirstTouchWarmScopeKey());
+        }
+
+        [Fact]
+        public async Task Each_Kb_Warms_Once_Even_Under_A_Configured_Default()
+        {
+            // The end-to-end shape of the defect, through the real resolver: Alpha warms,
+            // then Beta's bootstrap resolves a key that must not collide with Alpha's.
+            int alpha = 0, beta = 0;
+            AmbientKb("KbAlpha", "KbAlpha");
+            string alphaScope = Program.CurrentFirstTouchWarmScopeKey();
+            AmbientKb("KbBeta", "KbAlpha");
+            string betaScope = Program.CurrentFirstTouchWarmScopeKey();
+
+            Assert.NotEqual(alphaScope, betaScope);
+
+            await Program.RunFirstTouchWarmOnceAsync(alphaScope,
+                () => Task.FromResult<string?>("ProbeAlpha"), null,
+                _ => { Interlocked.Increment(ref alpha); return Task.CompletedTask; });
+            await Program.RunFirstTouchWarmOnceAsync(betaScope,
+                () => Task.FromResult<string?>("ProbeBeta"), null,
+                _ => { Interlocked.Increment(ref beta); return Task.CompletedTask; });
+
+            Assert.Equal(1, alpha);
+            // Before the fix this was 0: Beta reused Alpha's claim and returned early.
+            Assert.Equal(1, beta);
+        }
+
+        [Fact]
+        public void Recycling_One_Kb_Re_Warms_Only_That_Kb()
+        {
+            int generation = 1;
+            Program.FirstTouchWarmDefaultKbForTest = "KbAlpha";
+            Program.FirstTouchWarmGenerationForTest = alias =>
+            {
+                int g = string.Equals(alias, "KbBeta", StringComparison.OrdinalIgnoreCase) ? 1 : generation;
+                return "g" + g;
+            };
+
+            string alphaG1 = Program.CurrentFirstTouchWarmScopeKey("KbAlpha");
+            string betaG1 = Program.CurrentFirstTouchWarmScopeKey("KbBeta");
+
+            generation = 2;
+            string alphaG2 = Program.CurrentFirstTouchWarmScopeKey("KbAlpha");
+            string betaG2 = Program.CurrentFirstTouchWarmScopeKey("KbBeta");
+
+            Assert.Equal("KBALPHA|G1", alphaG1);
+            Assert.Equal("KBBETA|G1", betaG1);
+            Assert.Equal("KBALPHA|G2", alphaG2);
+            // Beta's Worker was not recycled, so it keeps the claim it already made.
+            Assert.Equal(betaG1, betaG2);
         }
     }
 }

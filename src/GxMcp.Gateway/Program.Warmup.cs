@@ -123,7 +123,7 @@ namespace GxMcp.Gateway
                     // read/inspect/edit calls. Now that the index has been kicked (or was
                     // already warm), wait for a listable object here and warm.
                     await RunFirstTouchWarmOnceAsync(
-                        CurrentFirstTouchWarmScopeKey(),
+                        CurrentFirstTouchWarmScopeKey(bootstrapKey),
                         ResolveWarmupProbeObjectAsync,
                         () => Log("[Warmup] Probe object not listable yet (index still building); waiting before the first-touch warm pass."));
                 }
@@ -578,7 +578,7 @@ namespace GxMcp.Gateway
             + "|" + (string.IsNullOrWhiteSpace(workerGeneration) ? "-" : workerGeneration.Trim().ToUpperInvariant());
 
         /// <summary>
-        /// The scope for the currently active KB context and its Worker generation.
+        /// The scope for the KB being warmed and its Worker generation.
         ///
         /// <para>
         /// The generation is part of the key on purpose. Without it, a Worker that is
@@ -587,22 +587,31 @@ namespace GxMcp.Gateway
         /// those two happens is invisible. Including it means each generation warms at
         /// most once.
         /// </para>
+        ///
+        /// <para>
+        /// Issue #365. The alias is resolved in this order: the KB the caller says it is
+        /// warming, the ambient KB context, the configured default, then whichever KB is
+        /// open. It used to start at the configured default and never consulted the KB
+        /// context, so with a default of KbAlpha the bootstrap for KbBeta computed
+        /// KbAlpha's key and - if Alpha had already warmed - skipped Beta's pass entirely.
+        /// That is the #340 defect again, in the multi-KB case the fix was meant to cover.
+        /// Callers that know which KB they are warming now pass it; the fallbacks only
+        /// decide what a caller with no KB context at all gets.
+        /// </para>
         /// </summary>
-        private static string CurrentFirstTouchWarmScopeKey()
+        internal static string CurrentFirstTouchWarmScopeKey(string? kbAlias = null)
         {
-            string? alias = null;
-            try { alias = _activeConfig?.Environment?.DefaultKb; } catch { }
-            if (string.IsNullOrWhiteSpace(alias))
-            {
-                // Fall back to whichever KB is open, so a second KB gets its own scope
-                // even when it is not the configured default.
-                try
+            string? alias = NormalizeKbAlias(kbAlias);
+            if (alias == null)
+                alias = NormalizeKbAlias(FirstTouchWarmAmbientKbForTest ?? SafeAlias(() => _currentKb.Value?.NormalizedAlias));
+            if (alias == null)
+                alias = NormalizeKbAlias(FirstTouchWarmDefaultKbForTest ?? SafeAlias(() => _activeConfig?.Environment?.DefaultKb));
+            if (alias == null)
+                alias = NormalizeKbAlias(SafeAlias(() =>
                 {
                     var open = _workerPool?.ListOpen();
-                    alias = open != null && open.Count > 0 ? open[0].NormalizedAlias : null;
-                }
-                catch { }
-            }
+                    return open != null && open.Count > 0 ? open[0].NormalizedAlias : null;
+                }));
 
             string? generation = null;
             try
@@ -612,12 +621,29 @@ namespace GxMcp.Gateway
                 // from "a Worker that replaced the previous one", which is all this key
                 // has to distinguish. When neither is available the alias alone is used,
                 // which degrades to warming that alias at most once per process.
-                var worker = alias == null ? null : _workerPool?.TryGetWorker(alias);
-                generation = worker?.WorkerGeneration?.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    ?? worker?.Pid?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var generationForTest = FirstTouchWarmGenerationForTest;
+                if (generationForTest != null) generation = generationForTest(alias);
+                else
+                {
+                    var worker = alias == null ? null : _workerPool?.TryGetWorker(alias);
+                    generation = worker?.WorkerGeneration?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        ?? worker?.Pid?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
             }
             catch { }
             return FirstTouchWarmScopeKey(alias, generation);
+        }
+
+        // Ambient sources for CurrentFirstTouchWarmScopeKey, so a guard can reproduce the
+        // multi-KB resolution the production path performs without standing up a pool.
+        internal static string? FirstTouchWarmAmbientKbForTest { get; set; }
+        internal static string? FirstTouchWarmDefaultKbForTest { get; set; }
+        internal static Func<string?, string?>? FirstTouchWarmGenerationForTest { get; set; }
+
+        private static string? SafeAlias(Func<string?> read)
+        {
+            try { return read(); }
+            catch { return null; }
         }
 
         internal static async Task RunFirstTouchWarmOnceAsync(Func<Task<string?>> resolveProbe, Action? onWaitingForProbe, Func<string, Task>? warmPass = null)
