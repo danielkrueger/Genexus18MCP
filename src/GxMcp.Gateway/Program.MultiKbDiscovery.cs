@@ -207,6 +207,24 @@ namespace GxMcp.Gateway
             // fan-out leg has to reach a specific Worker rather than the session's.
             workerCommand["kbAlias"] = target.Alias;
 
+            // Issue #377. The plan checked this KB had a live Worker, but the leg below
+            // reaches it through the ordinary acquiring path, which spawns a Worker when
+            // the KB was closed or evicted in between - and spawning can evict the KB the
+            // caller is actually working in. Discovery never opens a KB implicitly, so
+            // re-check the handle the plan captured and report notOpen instead of
+            // letting the acquisition decide. The remaining acquire/evict race is the one
+            // #367 closes by taking the reservation inside the pool.
+            var planPool = _workerPool;
+            if (planPool == null || planPool.TryGetWorker(target.Alias) == null)
+            {
+                return new MultiKbDiscovery.Outcome
+                {
+                    Status = MultiKbDiscovery.StatusNotOpen,
+                    Detail = MultiKbDiscovery.DescribeStatus(MultiKbDiscovery.StatusNotOpen),
+                    Complete = false
+                };
+            }
+
             int timeoutMs = (int)Math.Max(1, ResolveMultiKbPerKbTimeout(toolArgs).TotalMilliseconds);
             JObject? response;
             try
@@ -264,14 +282,22 @@ namespace GxMcp.Gateway
             }
 
             var results = payload["results"] as JArray;
+            string? nextCursor = payload["nextCursor"]?.ToString();
+            bool workerTruncated = string.Equals(payload["truncated"]?.ToString(), "true", StringComparison.OrdinalIgnoreCase)
+                || (payload["resultsTruncated"]?.Type == JTokenType.Boolean && payload["resultsTruncated"]!.Value<bool>());
             return new MultiKbDiscovery.Outcome
             {
                 Status = MultiKbDiscovery.StatusOk,
                 Payload = payload,
-                NextCursor = payload["nextCursor"]?.ToString(),
+                NextCursor = nextCursor,
                 Returned = results?.Count ?? payload["count"]?.ToObject<int?>() ?? 0,
                 Total = payload["total"]?.ToObject<int?>() ?? results?.Count ?? 0,
-                Complete = true
+                // Issue #377: a Worker that returned a cursor has more pages, so this KB
+                // was not covered to completion. Claiming otherwise produced an entry
+                // with complete=true next to hasMore=true, and a federation-level
+                // coverage.complete=true while results were missing. A truncated page is
+                // incomplete for the same reason.
+                Complete = string.IsNullOrEmpty(nextCursor) && !workerTruncated
             };
         }
     }

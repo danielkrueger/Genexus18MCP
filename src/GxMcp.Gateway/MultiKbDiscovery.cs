@@ -209,6 +209,13 @@ namespace GxMcp.Gateway
             internal string? Detail { get; set; }
             internal JObject? Payload { get; set; }
             internal string? NextCursor { get; set; }
+            /// <summary>Results of this KB's page that the federation budget dropped.</summary>
+            internal int DroppedByBudget { get; set; }
+            /// <summary>
+            /// True when a budget cut withdrew a cursor that pointed past the trimmed
+            /// remainder of the Worker's page, making those items unreachable.
+            /// </summary>
+            internal bool BudgetCutStrandedPageRemainder { get; set; }
             internal int Returned { get; set; }
             internal int Total { get; set; }
             internal int ElapsedMs { get; set; }
@@ -234,6 +241,29 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrEmpty(NextCursor)) entry["nextCursor"] = null;
                 else entry["nextCursor"] = NextCursor;
                 if (!string.IsNullOrEmpty(Detail)) entry["detail"] = Detail;
+
+                // Issue #377. A cut that drops part of the Worker's own page cannot be
+                // resumed with that page's cursor: the cursor points past the whole page,
+                // so the items trimmed off it are unreachable in this call. Rather than
+                // hand out a cursor that skips them - which is how a caller following
+                // every returned cursor silently lost results - the cut is reported as
+                // what it is and no cursor is offered.
+                if (DroppedByBudget > 0)
+                {
+                    bool stranded = BudgetCutStrandedPageRemainder;
+                    entry["droppedByBudget"] = DroppedByBudget;
+                    entry["budgetCut"] = new JObject
+                    {
+                        ["dropped"] = DroppedByBudget,
+                        // True when the remainder of this page is unreachable, as opposed
+                        // to merely not being fetched yet.
+                        ["resumeSkipsPageRemainder"] = stranded,
+                        ["reason"] = "The federation-wide maxTotalResults budget was reached before this KB's page was fully returned. "
+                            + (stranded
+                                ? "This KB has more pages; the dropped items belong to the page just returned and cannot be fetched with its nextCursor. Repeat with a higher maxTotalResults to collect them."
+                                : "The dropped items are the end of this KB's result set.")
+                    };
+                }
 
                 var results = Payload?["results"] as JArray ?? new JArray();
                 entry["results"] = results.Count <= truncatedTo
@@ -262,7 +292,7 @@ namespace GxMcp.Gateway
             StatusWarming => "The KB's Worker is still starting; its SDK was not ready. Repeat once genexus_whoami reports it ready.",
             StatusError => "The KB's search failed. Its own error is reported under error; other KBs in the selection are unaffected.",
             StatusTimeout => "This KB did not answer within the per-KB deadline. It may still be searchable on its own.",
-            StatusBudgetExceeded => "The federation-wide result budget was reached before this KB was read in full. Its partial results are present and its nextCursor resumes the rest.",
+            StatusBudgetExceeded => "The federation-wide result budget was reached before this KB was read in full. Its partial results are present; any nextCursor resumes only whole pages the Worker can still serve.",
             StatusCanceled => "The call was cancelled before this KB completed. Other KBs' results are still valid.",
             _ => "No matches in this KB (search completed)."
         };
@@ -396,6 +426,7 @@ namespace GxMcp.Gateway
                     searched.Add(outcome.Alias);
                     if (outcome.Returned > allowance)
                     {
+                        outcome.DroppedByBudget = outcome.Returned - allowance;
                         outcome.Returned = allowance;
                         // A budget cut makes this KB's answer partial, whatever the
                         // Worker said about completeness.
@@ -403,6 +434,16 @@ namespace GxMcp.Gateway
                         outcome.Status = StatusBudgetExceeded;
                         outcome.Detail = DescribeStatus(StatusBudgetExceeded);
                         anyTruncated = true;
+
+                        // Issue #377. The Worker's cursor is positioned after the whole
+                        // page it returned, so the items trimmed off this page are not
+                        // reachable through it. Offering it would look resumable while
+                        // skipping results, which is worse than saying so.
+                        if (outcome.DroppedByBudget > 0 && !string.IsNullOrEmpty(outcome.NextCursor))
+                        {
+                            outcome.BudgetCutStrandedPageRemainder = true;
+                            outcome.NextCursor = null;
+                        }
                     }
                 }
                 if (!outcome.Complete) incomplete.Add(outcome.Alias);

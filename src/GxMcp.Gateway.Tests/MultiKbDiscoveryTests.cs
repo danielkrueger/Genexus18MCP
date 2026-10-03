@@ -49,6 +49,19 @@ namespace GxMcp.Gateway.Tests
             };
         }
 
+        /// <summary>
+        /// A KB whose Worker returned a cursor, mirroring what the dispatcher now
+        /// produces: more pages exist, so the KB is not covered to completion.
+        /// </summary>
+        private static MultiKbDiscovery.Outcome Paged(string alias, string cursor, params string[] names)
+        {
+            var outcome = Matches(alias, names);
+            outcome.Payload!["nextCursor"] = cursor;
+            outcome.NextCursor = cursor;
+            outcome.Complete = false;
+            return outcome;
+        }
+
         private static List<MultiKbDiscovery.Target> Plan(params MultiKbDiscovery.Target[] targets) => targets.ToList();
 
         private static async Task<List<MultiKbDiscovery.Outcome>> RunAsync(
@@ -378,16 +391,11 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public async Task BudgetCut_MarksTheAffectedKbIncomplete_AndKeepsItsCursor()
+        public async Task BudgetCut_MarksTheAffectedKbIncomplete_AndDoesNotOfferASkippingCursor()
         {
             var outcomes = await RunAsync(
                 Plan(Ok("KbAlpha"), Ok("KbBeta")),
-                (target, _) =>
-                {
-                    var outcome = Matches(target.Alias, "A", "B", "C", "D");
-                    outcome.NextCursor = "cursor-" + target.Alias;
-                    return Task.FromResult(outcome);
-                });
+                (target, _) => Task.FromResult(Paged(target.Alias, "cursor-" + target.Alias, "A", "B", "C", "D")));
 
             var envelope = MultiKbDiscovery.BuildEnvelope(
                 new List<string> { "KbAlpha", "KbBeta" }, outcomes,
@@ -402,9 +410,84 @@ namespace GxMcp.Gateway.Tests
             // The KB that lost its tail is the one that says so.
             Assert.Equal(MultiKbDiscovery.StatusBudgetExceeded, beta["status"]!.ToString());
             Assert.False(beta["complete"]!.Value<bool>());
-            Assert.Equal("cursor-KbBeta", beta["nextCursor"]!.ToString());
             Assert.True(envelope["budget"]!["truncated"]!.Value<bool>());
             Assert.Equal(5, envelope["coverage"]!["matchedTotal"]!.Value<int>());
+
+            // Issue #377. Beta's Worker cursor points past all four items of the page it
+            // returned, so the three trimmed off are not reachable through it. Handing it
+            // out claimed the rest was resumable while skipping results.
+            Assert.Equal(JTokenType.Null, beta["nextCursor"]!.Type);
+            Assert.Equal(3, beta["droppedByBudget"]!.Value<int>());
+            Assert.True(beta["budgetCut"]!["resumeSkipsPageRemainder"]!.Value<bool>());
+            // Alpha kept its page and is not complete either: it has more pages.
+            Assert.False(alpha["complete"]!.Value<bool>());
+            Assert.True(alpha["hasMore"]!.Value<bool>());
+            Assert.Equal("cursor-KbAlpha", alpha["nextCursor"]!.ToString());
+            Assert.False(envelope["coverage"]!["complete"]!.Value<bool>());
+        }
+
+        [Fact]
+        public async Task A_Budget_Cut_On_A_Last_Page_Reports_No_Cursor_And_No_Skip()
+        {
+            // The worker's page was its last one, so there is nothing to resume anyway;
+            // the dropped items are simply the end of this KB's result set.
+            var outcomes = await RunAsync(
+                Plan(Ok("KbAlpha")),
+                (target, _) =>
+                {
+                    var outcome = Matches(target.Alias, "A", "B", "C", "D");
+                    outcome.NextCursor = null;
+                    return Task.FromResult(outcome);
+                });
+
+            var envelope = MultiKbDiscovery.BuildEnvelope(
+                new List<string> { "KbAlpha" }, outcomes,
+                maxTotalResults: 2, concurrency: 4, perKbTimeout: TimeSpan.FromSeconds(30),
+                elapsedMs: 10, cancelled: false);
+
+            var alpha = (JObject)envelope["results"]![0]!;
+            Assert.Equal(2, alpha["results"]!.Count());
+            Assert.Equal(2, alpha["droppedByBudget"]!.Value<int>());
+            Assert.False(alpha["budgetCut"]!["resumeSkipsPageRemainder"]!.Value<bool>());
+        }
+
+        [Fact]
+        public async Task A_Paged_Kb_Is_Never_Reported_Complete()
+        {
+            // The defect this guards: DispatchOneKbAsync set Complete = true for every
+            // successful per-KB response, so the entry carried complete=true next to
+            // hasMore=true and coverage.complete could be true while results were missing.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Gateway", "Program.MultiKbDiscovery.cs");
+
+            int start = source.IndexOf("var results = payload[\"results\"] as JArray;", StringComparison.Ordinal);
+            Assert.True(start > 0, "the per-KB outcome projection was not found");
+            int end = source.IndexOf("};", start, StringComparison.Ordinal);
+            string body = source.Substring(start, end - start);
+
+            Assert.Contains("string.IsNullOrEmpty(nextCursor)", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("Complete = true", body, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_Paged_Outcome_Built_Directly_Is_Not_Complete()
+        {
+            // A workerTruncated page is incomplete for the same reason a cursor is.
+            var outcome = new MultiKbDiscovery.Outcome
+            {
+                Alias = "KbAlpha",
+                Status = MultiKbDiscovery.StatusOk,
+                Payload = new JObject { ["results"] = new JArray(1, 2), ["nextCursor"] = "c2" },
+                NextCursor = "c2",
+                Returned = 2,
+                Total = 9,
+                Complete = false
+            };
+
+            var entry = outcome.ToEntry(2);
+            Assert.False(entry["complete"]!.Value<bool>());
+            Assert.True(entry["hasMore"]!.Value<bool>());
+            Assert.Equal("c2", entry["nextCursor"]!.ToString());
         }
 
         [Fact]
