@@ -669,7 +669,7 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `export` — create an XPZ export, optionally including dependency closure.\n" +
                 "- `inspect` — inspect an XPZ manifest without importing it.\n" +
-                "- `import` — import the package into the active KB after validating its manifest.\n\n" +
+                "- `import` — import the package into the active KB after validating its manifest. `dryRun` defaults to true (preview only, nothing imported); to actually import pass `dryRun:false` AND `confirm:true` - `confirm:true` alone only previews.\n\n" +
                 "`export` writes the requested XPZ artifact, `inspect` is read-only, and `import` mutates the KB. Review the output path and conflicts, and use a disposable or explicitly selected target KB for untrusted packages.\n",
 
             ["genexus_deploy"] =

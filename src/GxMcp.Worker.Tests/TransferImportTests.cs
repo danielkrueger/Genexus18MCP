@@ -37,6 +37,42 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ImportPreview_WithConfirmButNoDryRunFalse_SaysNothingWasImportedAndHowToImport()
+        {
+            var result = new JObject();
+            TransferService.AddImportPreviewGuidance(result, JObject.Parse("{\"action\":\"import\",\"file\":\"C:/x/Sample.xpz\",\"confirm\":true}"));
+
+            Assert.True(result["previewOnly"].Value<bool>());
+            Assert.False(result["imported"].Value<bool>());
+            Assert.Contains("dryRun=false", result["hint"].ToString());
+            Assert.Contains("confirm=true alone does NOT import", result["warning"].ToString());
+            Assert.False(result["nextAction"]["args"]["dryRun"].Value<bool>());
+            Assert.True(result["nextAction"]["args"]["confirm"].Value<bool>());
+            Assert.Equal("C:/x/Sample.xpz", result["nextAction"]["args"]["file"].ToString());
+        }
+
+        [Fact]
+        public void ImportPreview_PlainPreview_HasHintButNoConfirmWarning()
+        {
+            var result = new JObject();
+            TransferService.AddImportPreviewGuidance(result, JObject.Parse("{\"action\":\"import\",\"file\":\"C:/x/Sample.xpz\",\"dryRun\":true}"));
+
+            Assert.True(result["previewOnly"].Value<bool>());
+            Assert.Contains("dryRun=false", result["hint"].ToString());
+            Assert.Null(result["warning"]);
+        }
+
+        [Fact]
+        public void InspectPreviewPath_AttachesTheGuidance()
+        {
+            // Inspect needs a live SDK service, so pin the wiring at source level.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "TransferService.cs");
+
+            Assert.Contains("if (isDryRunImport) AddImportPreviewGuidance(result, args);", source, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void SilentImportOptions_DefaultsToLosslessOverwrite()
         {
             Assert.Equal("Overwrite", TransferService.ResolveImportThemeBehavior(new JObject()));

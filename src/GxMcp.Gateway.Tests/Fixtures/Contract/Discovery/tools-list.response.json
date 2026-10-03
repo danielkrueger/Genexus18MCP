@@ -4263,7 +4263,7 @@
             "type": "boolean"
           },
           "dryRun": {
-            "description": "import: true (default) previews; false…",
+            "description": "import: true (default) previews and…",
             "type": "boolean"
           },
           "file": {
