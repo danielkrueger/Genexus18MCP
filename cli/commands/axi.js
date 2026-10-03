@@ -23,7 +23,7 @@ const {
     readGeneXusKbIdentity,
     compareGeneXusKbAndInstallation,
     getGeneXusVersionCatalog,
-    discoverGeneXusInstallation,
+    discoverGeneXusInstallationForKb,
     discoverKnowledgeBase,
     discoverKnowledgeBases,
     readKbCatalog,
@@ -1798,7 +1798,7 @@ async function runInteractiveInit(ctx) {
         }
 
         const kbIdentity = readGeneXusKbIdentity(finalKb);
-        const defaultGx = discoverGeneXusInstallation(kbIdentity.major)
+        const defaultGx = discoverGeneXusInstallationForKb(kbIdentity)
             || primary?.defaultInstallPath
             || catalog.supportedMajors[0]?.defaultInstallPath
             || '';
@@ -1824,7 +1824,7 @@ async function runInteractiveInit(ctx) {
         const gxExecutable = finalGx && ['genexus.exe', 'gx.exe', 'gxw32.exe']
             .find((name) => fs.existsSync(path.join(finalGx, name)));
         if (!gxExecutable) {
-            const suggested = discoverGeneXusInstallation(kbIdentity.major);
+            const suggested = discoverGeneXusInstallationForKb(kbIdentity);
             const help = [`Path checked: ${finalGx}`];
             if (suggested && suggested.toLowerCase() !== finalGx.toLowerCase()) {
                 help.push(`Detected a matching GeneXus${kbIdentity.major ? ` ${kbIdentity.major}` : ''} install at: ${suggested}`);
@@ -2002,7 +2002,7 @@ async function handleInit(options, ctx) {
         : { version: null, major: null, source: 'unavailable', reason: 'missing-kb-path' };
 
     if (!resolution.gx.value) {
-        const fromDisco = discoverGeneXusInstallation(discoveredKbIdentity.major);
+        const fromDisco = discoverGeneXusInstallationForKb(discoveredKbIdentity);
         if (fromDisco) {
             resolution.gx.value = fromDisco;
             resolution.gx.source = 'auto-discovery';
@@ -2050,7 +2050,7 @@ async function handleInit(options, ctx) {
             `Source: --${resolution.gx.source === 'flag' ? 'gx flag' : resolution.gx.source}`
         ];
         const suggested = resolution.gx.source === 'flag'
-            ? discoverGeneXusInstallation(discoveredKbIdentity.major)
+            ? discoverGeneXusInstallationForKb(discoveredKbIdentity)
             : null;
         if (suggested && suggested.toLowerCase() !== resolution.gx.value.toLowerCase()) {
             help.push(`Detected a working GeneXus install at: ${suggested}`);
