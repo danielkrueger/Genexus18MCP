@@ -209,7 +209,7 @@ namespace GxMcp.Worker.Services
                         WebFormCompositionRepair.TryRepair(obj, kbPath, compositionRepairToken, preSaveMaxEntityVersionId);
                     }
 
-                    _objectService.MarkReadCacheDirty(obj, context.PartName ?? "Layout");
+                    _objectService.MarkReadCacheDirty(obj, ReadCachePartToInvalidate(context.Surface == VisualSurface.WebForm, context.PartName));
                     // Build-path bookkeeping, distinct from the read-cache invalidation
                     // above. Every visual XML write - set_property, set_properties and
                     // the report control mutations in LayoutService.ReportControls.cs -
@@ -377,6 +377,19 @@ namespace GxMcp.Worker.Services
 
             sourcePart.Source = updated;
             return true;
+        }
+
+        /// <summary>
+        /// Part whose cached reads a committed visual write must drop. The WebForm
+        /// context carries no part name, and the WebForm body is readable as both
+        /// <c>part=WebForm</c> and <c>part=Layout</c>, each cached under its own key.
+        /// Marking only "Layout" left the "WebForm" entry serving the pre-write body,
+        /// so a WebForm write returns null: every cached part of the object is dropped.
+        /// </summary>
+        internal static string ReadCachePartToInvalidate(bool webFormSurface, string partName)
+        {
+            if (webFormSurface) return null;
+            return partName ?? "Layout";
         }
 
         private static string GetProcedureSourceSnapshot(KBObject obj)
