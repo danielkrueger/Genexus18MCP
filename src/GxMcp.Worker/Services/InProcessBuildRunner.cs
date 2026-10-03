@@ -164,14 +164,19 @@ namespace GxMcp.Worker.Services
                     {
                         lineSink("[BUILD-INPROCESS] specifyOnly=true — running SpecifyOneOnly (Spec+Gen) only; Compile and deploy are SKIPPED. Use this for a fast spec check, not to produce runnable output.", false);
                         engine.ResetSectionFlags();
-                        bool specOk = ExecuteSpecifyOneOnly(kbHandle, targets, engine);
+                        bool specOk = ExecuteSpecifyResolved(kbHandle, targets, engine, lineSink)
+                            ?? ExecuteSpecifyOneOnly(kbHandle, targets, engine);
                         // Success here means "spec pass ran"; spec errors (if any) were emitted to
                         // the sink and counted. Report Succeeded so the caller surfaces the spec
                         // result rather than falling back to a full MSBuild.exe spawn. If the spec
                         // pass produced nothing at all, CouldNotRun lets RunBuild's specifyOnly
                         // guard report "spec-check unavailable" (it still never runs a full build).
-                        return (specOk || status.ErrorCount > 0)
-                            ? InProcessBuildOutcome.Succeeded
+                        if (specOk || status.ErrorCount > 0)
+                            return InProcessBuildOutcome.Succeeded;
+                        // The spec pass ran and closed a section with E0 but no itemized
+                        // line was parsed: that is a spec failure, not "could not run".
+                        return engine.PreCompileSectionFailed
+                            ? InProcessBuildOutcome.FailedWithDiagnostics
                             : InProcessBuildOutcome.CouldNotRun;
                     }
 
@@ -239,7 +244,7 @@ namespace GxMcp.Worker.Services
                         }
 
                         engine.ResetSectionFlags();
-                        var explicitIdentityResult = ExecuteBuildWithTheseOnly(kbHandle, targets, lineSink);
+                        var explicitIdentityResult = ExecuteBuildWithTheseOnly(kbHandle, targets, engine, lineSink);
                         if (explicitIdentityResult == BatchOutcome.Unverified)
                             return BuildService.UnverifiedNativeBuild(status);
                         if (explicitIdentityResult == BatchOutcome.Success)
@@ -313,7 +318,7 @@ namespace GxMcp.Worker.Services
                         if (targets.Count > 1 && isIncludeCalleesNone && _miBuildWithTheseOnly != null)
                         {
                             engine.ResetSectionFlags();
-                            var withTheseOnlyResult = ExecuteBuildWithTheseOnly(kbHandle, targets, lineSink);
+                            var withTheseOnlyResult = ExecuteBuildWithTheseOnly(kbHandle, targets, engine, lineSink);
                             if (withTheseOnlyResult == BatchOutcome.Unverified)
                                 return BuildService.UnverifiedNativeBuild(status);
                             if (withTheseOnlyResult == BatchOutcome.Success)
@@ -435,7 +440,7 @@ namespace GxMcp.Worker.Services
                                 // stage was post-compile, treat as PartialSuccess and skip
                                 // the costly MSBuild.exe fallback. Net wall-clock drops from
                                 // ~6min to ~56s for single-target builds.
-                                if (engine.CompileSucceeded && engine.WebAppConfigStarted)
+                                if (IsLateStagePartialSuccess(engine))
                                 {
                                     lineSink("[BUILD-INPROCESS] BuildOne late-stage failure after compile OK — accepting as PARTIAL SUCCESS (DLL written, web.config step skipped).", false);
                                     Logger.Info("[BUILD-INPROCESS] PartialSuccess: compile OK for '" + t + "'; web.config / deploy step failed but DLL is in place.");
@@ -715,7 +720,7 @@ namespace GxMcp.Worker.Services
         // Issue #96: Batch build without callees using IBuildServiceBL.BuildWithTheseOnly.
         // Runs a single shared Specify + Generate + MSBuild compilation pipeline for all
         // supplied targets, amortizing fixed overhead across the batch.
-        private static BatchOutcome ExecuteBuildWithTheseOnly(object kbHandle, List<string> objectNames, Action<string, bool> lineSink)
+        private static BatchOutcome ExecuteBuildWithTheseOnly(object kbHandle, List<string> objectNames, IBuildEngine engine, Action<string, bool> lineSink)
         {
             try
             {
@@ -794,8 +799,8 @@ namespace GxMcp.Worker.Services
                     // GX18 U16 BuildWithTheseOnly is void and discards BuildProcess's bool.
                     // The public Build overload with options=0 invokes the same pipeline
                     // with the same keys, while preserving its result (no BuildCalled flag).
-                    var verifiedResult = InvokeVerifiedBuild(_miBuildBuild, buildService, workingSet,
-                        typedList, _typeBuildOptions, cts.Token);
+                    var verifiedResult = WithTaskOutput(kbHandle, engine, () => InvokeVerifiedBuild(_miBuildBuild, buildService, workingSet,
+                        typedList, _typeBuildOptions, cts.Token));
                     if (verifiedResult.HasValue)
                     {
                         lineSink("[BUILD-INPROCESS] native Build(options=0) returned " + verifiedResult.Value + ".", false);
@@ -804,11 +809,11 @@ namespace GxMcp.Worker.Services
 
                     lineSink("[BUILD-INPROCESS] batch BuildWithTheseOnly: " + typedList.Count + " keys → BL.BuildWithTheseOnly (shared spec/gen/compile).", false);
                     var sw = System.Diagnostics.Stopwatch.StartNew();
-                    _miBuildWithTheseOnly.Invoke(buildService, new object[] { workingSet, typedList, cts.Token });
+                    WithTaskOutput(kbHandle, engine, () => _miBuildWithTheseOnly.Invoke(buildService, new object[] { workingSet, typedList, cts.Token }));
                     sw.Stop();
                     Logger.Info("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly(" + string.Join(",", keysList) + ") completed in " + sw.ElapsedMilliseconds + "ms");
-                    // This BL route does not receive the MSBuild engine/output sink.
-                    // A non-throwing Invoke is not proof that compilation succeeded.
+                    // BuildWithTheseOnly is void: its diagnostics reach the sink, but a
+                    // non-throwing Invoke is not proof that compilation succeeded.
                     return BatchOutcome.Unverified;
                 }
             }
@@ -834,6 +839,16 @@ namespace GxMcp.Worker.Services
                 || !parameters[2].ParameterType.IsInstanceOfType(keys))
                 return null;
             return (bool)method.Invoke(service, new[] { workingSet, Enum.ToObject(optionsType, 0), keys, (object)token });
+        }
+
+        // A failed Specification/Generation section means the compile that followed
+        // used the previously generated .cs, so the DLL is not the requested object.
+        internal static bool IsLateStagePartialSuccess(InProcessBuildEngine engine)
+        {
+            return engine != null
+                && engine.CompileSucceeded
+                && engine.WebAppConfigStarted
+                && !engine.PreCompileSectionFailed;
         }
 
         // Fast per-object build (IDE F5 parity). Returns true on Execute returning
@@ -1340,6 +1355,157 @@ namespace GxMcp.Worker.Services
                 }
 
                 return true;
+            }
+        }
+
+        // GenexusBLServices calls made outside an ArtechTask write their >S/>E/>O
+        // protocol to CommonServices.Output, which nothing forwards to the engine, so
+        // their diagnostics were lost. Borrow a task instance only for its
+        // OutputSubscribe/OutputUnsubscribe pair, as ArtechTask.Execute does.
+        private static T WithTaskOutput<T>(object kbHandle, IBuildEngine engine, Func<T> action)
+        {
+            object carrier = null;
+            MethodInfo unsubscribe = null;
+            try
+            {
+                if (engine != null && _typeSpecifyOneOnly != null)
+                {
+                    carrier = Activator.CreateInstance(_typeSpecifyOneOnly);
+                    SetProp(carrier, "KB", kbHandle);
+                    SetProp(carrier, "BuildEngine", engine);
+                    // Same output type BuildOne runs with, so diagnostics arrive in the
+                    // >S/>E/>O protocol HandleLine itemizes.
+                    SetProp(carrier, "Output", "IDE");
+                    var subscribe = _typeSpecifyOneOnly.GetMethod("OutputSubscribe", BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                    var unsub = _typeSpecifyOneOnly.GetMethod("OutputUnsubscribe", BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                    if (subscribe != null && unsub != null)
+                    {
+                        subscribe.Invoke(carrier, null);
+                        unsubscribe = unsub;
+                    }
+                    else
+                    {
+                        Logger.Warn("[BUILD-INPROCESS] OutputSubscribe/OutputUnsubscribe not found; BL diagnostics will not reach the build status");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogExceptionChain("OutputSubscribe", ex);
+            }
+
+            try
+            {
+                return action();
+            }
+            finally
+            {
+                if (unsubscribe != null)
+                {
+                    try { unsubscribe.Invoke(carrier, null); }
+                    catch (Exception ex) { LogExceptionChain("OutputUnsubscribe", ex); }
+                }
+            }
+        }
+
+        // SpecifyOneOnly resolves ObjectNames with ObjectNameHelper.GetKey, which returns
+        // null for a Transaction that shares its name with its Table and for any
+        // "Type:Name" target; the task then specifies nothing and still returns true.
+        // Resolve the keys with the homonym-safe resolver the build path uses and make
+        // the same Specifier call SpecifyOneOnly.Specify makes. Returns null when the SDK
+        // members are unavailable, so the caller can run the task as before.
+        private static bool? ExecuteSpecifyResolved(object kbHandle, List<string> targets, IBuildEngine engine, Action<string, bool> lineSink)
+        {
+            try
+            {
+                if (_typeGenexusBLServices == null || _typeBuildOptions == null || targets == null || targets.Count == 0)
+                    return null;
+
+                object designModel = kbHandle?.GetType().GetProperty("DesignModel", BindingFlags.Public | BindingFlags.Instance)?.GetValue(kbHandle);
+                if (designModel == null) return null;
+                object environment = designModel.GetType().GetProperty("Environment", BindingFlags.Public | BindingFlags.Instance)?.GetValue(designModel);
+                object targetModel = environment?.GetType().GetProperty("TargetModel", BindingFlags.Public | BindingFlags.Instance)?.GetValue(environment);
+                object model = targetModel ?? designModel;
+
+                object specifier = _typeGenexusBLServices.GetProperty("Specifier", Compatibility.SdkMemberProbe.Static)?.GetValue(null);
+                MethodInfo specifyObjects = specifier?.GetType().GetMethods()
+                    .FirstOrDefault(m => m.Name == "SpecifyObjects"
+                        && m.ReturnType == typeof(bool)
+                        && m.GetParameters().Length == 3
+                        && m.GetParameters()[0].ParameterType.IsInstanceOfType(model)
+                        && m.GetParameters()[1].ParameterType.IsGenericType
+                        && m.GetParameters()[2].ParameterType == _typeBuildOptions);
+                if (specifyObjects == null)
+                {
+                    Logger.Warn("[BUILD-INPROCESS] Specifier.SpecifyObjects(model, keys, options) not found; using SpecifyOneOnly");
+                    return null;
+                }
+
+                Type entityKeyType = specifyObjects.GetParameters()[1].ParameterType.GetGenericArguments()[0];
+                var keys = (System.Collections.IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(entityKeyType));
+                var unresolved = new List<string>();
+                var staleCopies = new List<string>();
+                foreach (var target in targets)
+                {
+                    object kbObject = ResolveTargetKBObject(designModel, target);
+                    object key = kbObject?.GetType().GetProperty("Key", BindingFlags.Public | BindingFlags.Instance)?.GetValue(kbObject);
+                    if (key == null)
+                    {
+                        unresolved.Add(target);
+                        continue;
+                    }
+                    keys.Add(key);
+                    if (targetModel != null && !ReferenceEquals(targetModel, designModel)
+                        && IsEnvironmentCopyStale(ReadLastUpdate(kbObject), ReadLastUpdate(ResolveTargetKBObject(targetModel, target))))
+                        staleCopies.Add(target);
+                }
+
+                if (keys.Count == 0)
+                {
+                    lineSink("error : none of the requested target(s) resolved to a KBObject: " + string.Join(", ", unresolved) + ". Nothing was specified.", true);
+                    return false;
+                }
+                if (unresolved.Count > 0)
+                    lineSink("warning : " + unresolved.Count + " requested target(s) not found and not specified: " + string.Join(", ", unresolved), false);
+                // The specifier reads the environment's copy of each object, and only a
+                // build refreshes that copy (CopyModel, after its reorganization check).
+                // Copying it here could hide a pending reorganization, so say it instead.
+                if (staleCopies.Count > 0)
+                    lineSink("warning : changed since the last build: " + string.Join(", ", staleCopies)
+                        + ". GeneXus specifies the environment's copy of an object, which only a build refreshes, so this result reflects the source as of the last build.", false);
+
+                object options = Enum.ToObject(_typeBuildOptions, 0);
+                return WithTaskOutput(kbHandle, engine,
+                    () => (bool)specifyObjects.Invoke(specifier, new[] { model, keys, options }));
+            }
+            catch (Exception ex)
+            {
+                LogExceptionChain("SpecifyResolved", ex);
+                // Same contract as the probe above: an SDK member that is present but not
+                // callable means this path could not run, not that specification failed.
+                // Returning false here would defeat the caller's ?? ExecuteSpecifyOneOnly
+                // fallback and turn a recoverable shape mismatch into a hard failure.
+                return null;
+            }
+        }
+
+        // A target missing from the environment model was never built, so its copy is
+        // as stale as one whose design object changed after the last build.
+        internal static bool IsEnvironmentCopyStale(DateTime? designUpdate, DateTime? environmentUpdate)
+        {
+            if (designUpdate == null) return false;
+            return environmentUpdate == null || designUpdate.Value > environmentUpdate.Value;
+        }
+
+        private static DateTime? ReadLastUpdate(object kbObject)
+        {
+            try
+            {
+                return kbObject?.GetType().GetProperty("LastUpdate", BindingFlags.Public | BindingFlags.Instance)?.GetValue(kbObject) as DateTime?;
+            }
+            catch
+            {
+                return null;
             }
         }
 

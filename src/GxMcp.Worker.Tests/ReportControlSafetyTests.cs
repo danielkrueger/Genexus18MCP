@@ -122,6 +122,22 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void CaptionVerificationAcceptsTheCaptionSpellingOfTheReadBack()
+        {
+            // add_report_control writes Text; the SDK layout read-back carries Caption.
+            var method = typeof(LayoutService).GetMethod("ReportCaptionMatches",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+
+            var readBack = XElement.Parse("<Control TypeName=\"ReportLabel\" Name=\"lblTotal\" Caption=\"Total\" />");
+            Assert.True((bool)method.Invoke(null, new object[] { readBack, "Total" })!);
+            Assert.False((bool)method.Invoke(null, new object[] { readBack, "Subtotal" })!);
+
+            var written = XElement.Parse("<Control TypeName=\"ReportLabel\" Name=\"lblTotal\" Text=\"Total\" />");
+            Assert.True((bool)method.Invoke(null, new object[] { written, "Total" })!);
+        }
+
+        [Fact]
         public void RemoveVerificationIgnoresSameNamedControlInAnotherPrintBlock()
         {
             var document = XDocument.Parse(

@@ -125,10 +125,23 @@ namespace GxMcp.Gateway.Routers
             {
                 case "genexus_read":
                 {
+                    // genexus_search_source and genexus_refactor name the object `objectName`; agents carry that
+                    // spelling over to genexus_read, where it used to be dropped silently (empty-name lookup).
+                    if (string.IsNullOrEmpty(nameArg))
+                    {
+                        string? objectNameArg = args?["objectName"]?.ToString();
+                        if (!string.IsNullOrEmpty(objectNameArg))
+                        {
+                            nameArg = objectNameArg;
+                            target = objectNameArg;
+                        }
+                    }
                     var targetsTokRead = args?["targets"];
                     bool hasTargetsRead = targetsTokRead is JArray;
                     bool hasNameRead = !string.IsNullOrEmpty(nameArg) || !string.IsNullOrEmpty(args?["path"]?.ToString())
                         || !string.IsNullOrEmpty(args?["entityKey"]?.ToString()) || !string.IsNullOrEmpty(args?["guid"]?.ToString());
+                    if (!hasNameRead && !hasTargetsRead)
+                        throw new UsageException("usage_error", "genexus_read requires an object identity: pass 'name' (alias 'objectName'), 'guid', 'entityKey' or 'path', or 'targets' for a batch read. No lookup was performed.");
                     if (hasNameRead && hasTargetsRead)
                         throw new UsageException("usage_error", "name and targets are mutually exclusive");
                     if (hasTargetsRead)
@@ -273,6 +286,25 @@ namespace GxMcp.Gateway.Routers
                                 $"operation='{editOperation}' is a mode=patch parameter and cannot be combined with mode={mode}. "
                                 + "Omit mode (or set mode=patch) for Replace/Insert_After/Append; use mode=full only to replace the entire part with `content`.");
                         // mode was null/empty → reinterpret as patch so operation is honored.
+                        mode = "patch";
+                    }
+
+                    // Same data-loss shape as `operation` above: a `patch` payload without mode
+                    // fell through to the full-write branch, which only reads `content` — so
+                    // {patch:{find,replace}} wrote the whole part EMPTY and reported success.
+                    // A supplied patch implies patch semantics; combining it with a full-write
+                    // mode is contradictory and rejected rather than silently discarding the patch.
+                    JToken? patchPayload = args?["patch"];
+                    bool hasPatchPayload = patchPayload != null && patchPayload.Type != JTokenType.Null;
+                    if (hasPatchPayload && !string.Equals(mode, "patch", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(mode, "ops", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(mode, "xml", StringComparison.OrdinalIgnoreCase))
+                            throw new UsageException(
+                                "usage_error",
+                                $"`patch` is a mode=patch parameter and cannot be combined with mode={mode}. "
+                                + "Omit mode (or set mode=patch) to apply it; use mode=full only to replace the entire part with `content`.");
                         mode = "patch";
                     }
 
@@ -422,6 +454,15 @@ namespace GxMcp.Gateway.Routers
                     }
                     else
                     {
+                        // A full write with no `content` key would persist an empty part. An explicit
+                        // empty string stays allowed (intentional clear); only absent/null is rejected.
+                        JToken? fullContent = args?["content"];
+                        if (fullContent == null || fullContent.Type == JTokenType.Null)
+                            throw new UsageException(
+                                "ContentRequired",
+                                "A full-part write needs `content` (use content=\"\" to clear the part on purpose). "
+                                + "To edit part of the text send mode=patch with patch={find,replace}. No write was attempted.");
+
                         // issue #60 — forward validationMode/rollbackOnFailure so the worker's
                         // SaveSpecifyOrchestrator can run the inline Specify pass after the
                         // write (see CommandDispatcher.Handle_Write). Also pass `validate`

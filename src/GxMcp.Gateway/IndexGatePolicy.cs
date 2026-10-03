@@ -71,8 +71,11 @@ namespace GxMcp.Gateway
                 || HasNonEmptyArgument(args, "path")
                 || HasNonEmptyArgument(args, "name");
 
-            if (string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(toolName, "genexus_inspect", StringComparison.OrdinalIgnoreCase))
+            // genexus_read accepts objectName as an alias of name (ObjectRouter), so the gate must too.
+            if (string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase))
+                return hasObjectIdentity || HasNonEmptyArgument(args, "objectName");
+
+            if (string.Equals(toolName, "genexus_inspect", StringComparison.OrdinalIgnoreCase))
                 return hasObjectIdentity;
 
             if (string.Equals(toolName, "genexus_navigation", StringComparison.OrdinalIgnoreCase))
