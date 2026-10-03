@@ -133,6 +133,12 @@ namespace GxMcp.Worker.Tests
         [Theory]
         [InlineData("Artech.Genexus.Common.Parts.ReportPart")]
         [InlineData("Artech.Genexus.Common.Parts.LayoutPart")]
+        // The exclusion matches on the runtime type name, so it has to hold for the
+        // naming variants GeneXus emits for a report part, not only the two canonical
+        // spellings. `ReportLayoutPart` is the shape a Procedure's print layout
+        // carries when it sits under a report namespace.
+        [InlineData("Artech.Genexus.Common.Parts.Report.ReportPart")]
+        [InlineData("Artech.Genexus.Common.Parts.Report.ReportLayoutPart")]
         public void IsWebFormFidelityCandidate_SkipsProcedurePrintLayout(string partClass)
         {
             Assert.False(TransferService.IsWebFormFidelityCandidate(partClass));
@@ -141,6 +147,10 @@ namespace GxMcp.Worker.Tests
         [Theory]
         [InlineData("Artech.Genexus.Common.Parts.WebFormPart")]
         [InlineData("Artech.Genexus.Common.Parts.WebForm.WebFormPart")]
+        // A WebPanel is not a WebForm, but its visual part is still a WebForm payload
+        // the fidelity check must keep guarding. If the exclusion ever widened to this
+        // shape, issue #102's guard would go silently dead for WebPanels.
+        [InlineData("Artech.Genexus.Common.Parts.WebPanel.WebPanelPart")]
         public void IsWebFormFidelityCandidate_KeepsRealWebFormParts(string partClass)
         {
             Assert.True(TransferService.IsWebFormFidelityCandidate(partClass));
@@ -153,24 +163,27 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void ReadExportWebForms_IgnoresProcedureLayoutSerializedOutsideSource()
+        public void ReadExportWebForms_CandidateWithoutSourcePayloadHasNoBaseline()
         {
-            // A Procedure's print layout is a direct <Layout> child of <Part>, never a <Source> CDATA,
-            // so no WebForm payload exists for it; import fidelity must not demand one.
-            string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-proc-" + Guid.NewGuid().ToString("N") + ".xpz");
+            // The invariant the Procedure exclusion must not weaken: a WebForm candidate
+            // with no raw payload has nothing to verify against, so the fidelity check
+            // refuses the import instead of trusting the SDK projection. Pinned here on
+            // the same package shape that motivated the exclusion - a Transaction whose
+            // WebForm part carries a <Properties> child and no <Source> CDATA.
+            string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-nopayload-" + Guid.NewGuid().ToString("N") + ".xpz");
             try
             {
                 using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
                 using (var writer = new StreamWriter(archive.CreateEntry("export.xml").Open()))
                 {
                     writer.Write("<ExportFile><Objects>"
-                        + "<Object name=\"SampleProc\">"
-                        + "<Part type=\"c414ed00-8cc4-4f44-8820-4baf93547173\"><Layout><Bands><PrintBlock name=\"Detail\" /></Bands></Layout></Part>"
+                        + "<Object name=\"SampleTransaction\">"
                         + "<Part type=\"00000000-0000-0000-0000-000000000000\"><Properties /></Part>"
                         + "</Object></Objects></ExportFile>");
                 }
 
-                Assert.Empty(TransferService.ReadExportWebForms(path));
+                Assert.False(TransferService.ReadExportWebForms(path)
+                    .TryGetValue("SampleTransaction", out string _));
             }
             finally
             {
