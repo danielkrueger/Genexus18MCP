@@ -78,6 +78,82 @@ namespace GxMcp.Gateway.Tests
             Assert.False(Program.IsLiveToolForCache("genexus_query", null));
         }
 
+        // ---- Issue #376: a cached notModified outlived the edit it claimed had not happened.
+
+        private static string? ReadKey(JObject args) => Program.CreateSemanticCacheKey(
+            "kb1", "genexus_read", args, false, false, 1, null, null);
+
+        [Fact]
+        public void A_Conditional_Read_Never_Reaches_The_Semantic_Cache()
+        {
+            // The Worker's revision stamp is what makes `notModified` provable. Answering
+            // it from the Gateway cache skips that check, so an edit this Gateway never
+            // observed left a stale "unchanged" in place for the whole 30-minute TTL.
+            Assert.Null(ReadKey(new JObject
+            {
+                ["name"] = "SyntheticOrder",
+                ["part"] = "Source",
+                ["ifUnchangedSince"] = "content-token-T"
+            }));
+        }
+
+        [Fact]
+        public void An_Unconditional_Read_Keeps_Its_Cache_Entry()
+        {
+            Assert.NotNull(ReadKey(new JObject { ["name"] = "SyntheticOrder", ["part"] = "Source" }));
+        }
+
+        [Fact]
+        public void An_Empty_Or_Absent_Token_Leaves_The_Read_Cacheable()
+        {
+            // The classifier keys on "this call carries a token", so a client that sends
+            // an empty string still gets the ordinary cached behaviour rather than
+            // silently losing its cache.
+            Assert.NotNull(ReadKey(new JObject { ["name"] = "SyntheticOrder", ["part"] = "Source", ["ifUnchangedSince"] = "" }));
+            Assert.NotNull(ReadKey(new JObject { ["name"] = "SyntheticOrder", ["part"] = "Source", ["ifUnchangedSince"] = JValue.CreateNull() }));
+        }
+
+        [Fact]
+        public void A_Token_On_Another_Tool_Is_Not_A_Conditional_Read()
+        {
+            // Only genexus_read defines this shape; a same-named argument elsewhere is not
+            // evidence that the caller is asking for a provable freshness claim.
+            Assert.NotNull(Program.CreateSemanticCacheKey(
+                "kb1", "genexus_query", new JObject { ["ifUnchangedSince"] = "token" },
+                false, false, 1, null, null));
+        }
+
+        [Fact]
+        public void The_Legacy_Key_Builder_Applies_The_Same_Rule()
+        {
+            // The 5-arg overload feeds the classifier tests; a rule that lived only in the
+            // dispatch overload would leave that path able to key a conditional read.
+            Assert.Null(Program.CreateSemanticCacheKey(
+                "kb1", "genexus_read", new JObject { ["ifUnchangedSince"] = "token" }, false, false));
+            Assert.NotNull(Program.CreateSemanticCacheKey(
+                "kb1", "genexus_read", new JObject { ["name"] = "SyntheticOrder" }, false, false));
+        }
+
+        [Fact]
+        public void A_Conditional_Read_Answered_By_A_Cached_Unconditional_Read_Still_Cannot_Claim_Not_Modified()
+        {
+            // An unconditional read is still cached, and it hands back a contentToken
+            // describing the revision it actually served. Replaying it is safe precisely
+            // because that token stops matching: the next conditional read reaches the
+            // Worker, mismatches, and returns the fresh body. Documented here so the
+            // choice is a decision rather than an omission.
+            string? key = ReadKey(new JObject { ["name"] = "SyntheticOrder", ["part"] = "Source" });
+            Assert.NotNull(key);
+
+            var store = new SemanticCacheStore(8, TimeSpan.FromMinutes(30));
+            store.Set(key!, new JObject { ["source"] = "// stale", ["contentToken"] = "token-for-stale-revision" });
+            Assert.True(store.TryGet(key!, out var cached));
+
+            // The replayed token is the stale revision's, so it cannot certify anything.
+            Assert.Equal("token-for-stale-revision", cached!["contentToken"]!.ToString());
+            Assert.True(Program.IsConditionalRead("genexus_read", new JObject { ["ifUnchangedSince"] = "token-for-stale-revision" }));
+        }
+
         [Fact]
         public void CanonicalKey_PreservesArrayOrder()
         {

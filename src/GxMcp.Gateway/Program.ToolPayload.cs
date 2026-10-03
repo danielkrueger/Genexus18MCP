@@ -504,6 +504,36 @@ namespace GxMcp.Gateway
                 || IsSettings(((string?)args?["name"])?.Split(':')[0]) || untypedIdentity;
         }
 
+        /// <summary>
+        /// A <c>genexus_read</c> carrying <c>ifUnchangedSince</c>.
+        ///
+        /// <para>
+        /// Issue #376. The Worker side of a conditional read is conservative: it
+        /// recomputes the object's revision stamp and only omits the body when the token
+        /// still matches. The Gateway semantic cache sat in front of that, keyed on the
+        /// arguments, so a request that once produced <c>notModified</c> was replayed from
+        /// the cache for the next 30 minutes without the Worker ever being consulted. An
+        /// edit made outside this Gateway that produced no resource-updated notification
+        /// therefore left a cached <c>notModified</c> in place, and an agent polling with
+        /// the same token kept hearing "unchanged" while the source had changed.
+        /// </para>
+        ///
+        /// <para>
+        /// A TTL is not evidence that an external edit did not happen. A missed or
+        /// untrusted freshness signal has to fail conservatively, not as
+        /// <c>notModified</c>, so a conditional read is never looked up in and never
+        /// stored into the cache. The Worker's revision check is cheap - it is the whole
+        /// point of the feature.
+        /// </para>
+        /// </summary>
+        internal static bool IsConditionalRead(string toolName, JObject? args)
+        {
+            if (!string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)) return false;
+            var token = args?["ifUnchangedSince"];
+            return token != null && token.Type != JTokenType.Null
+                && !string.IsNullOrWhiteSpace(token.ToString());
+        }
+
         // Record reads and previews are live database observations. Neither an empty
         // query nor an earlier successful mutation may bypass a fresh worker call.
         // The action classifier is also the cache safety boundary: action-dependent
@@ -514,7 +544,8 @@ namespace GxMcp.Gateway
         {
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
-                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args))
+                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args)
+                || IsConditionalRead(toolName, args))
                 return null;
             return $"{kbScope}|{toolName}:{args?.ToString(Newtonsoft.Json.Formatting.None)}";
         }
@@ -544,7 +575,8 @@ namespace GxMcp.Gateway
         {
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
-                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args))
+                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args)
+                || IsConditionalRead(toolName, args))
                 return null;
 
             var canonicalArgs = CanonicalizeJson(args ?? new JObject());
