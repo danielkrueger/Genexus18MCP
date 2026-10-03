@@ -62,10 +62,9 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void ModifyVariable_NullType_ReturnsUnknownTypeError()
+        public void ModifyVariable_NoTypeAndNoDescription_ReturnsMissingParameter()
         {
-            // Unlike AddVariable (which has a legacy "no type — use injector default"
-            // path when typeName==null), ModifyVariable requires an explicit new type.
+            // Nothing to change: a clear usage error, not UnknownType.
             var ws = BuildIsolatedWriteService();
             string json;
             try
@@ -77,8 +76,79 @@ namespace GxMcp.Worker.Tests
 
             var obj = JObject.Parse(json);
             Assert.Equal("error", obj["status"]?.ToString());
-            Assert.Equal("UnknownType", obj["error"]?["code"]?.ToString());
+            Assert.Equal("MissingParameter", obj["error"]?["code"]?.ToString());
         }
+
+        [Fact]
+        public void ModifyVariable_NoTypeWithTypeShapeArg_ReturnsMissingParameter()
+        {
+            var ws = BuildIsolatedWriteService();
+            string json;
+            try
+            {
+                json = ws.ModifyVariable("TestProc", "X", null, length: 10, description: "Sample");
+            }
+            catch (System.IO.FileNotFoundException) { return; }
+            catch (System.TypeLoadException) { return; }
+
+            var obj = JObject.Parse(json);
+            Assert.Equal("MissingParameter", obj["error"]?["code"]?.ToString());
+        }
+
+        // Set-vs-clear is the distinction the description-only path exists to express, and it is
+// invisible to a test that stops at the argument gate. `ResolveEffectiveDescription` is the
+// shared rule for both the variable and the Business Component modify path, so it is
+// pinned directly rather than inferred from an error code.
+[Theory]
+[InlineData(null, "kept", "kept")]   // not supplied: a retype must not clear it
+[InlineData("", "kept", "")]         // explicit empty: an intentional clear
+[InlineData("new text", "kept", "new text")]
+[InlineData("new text", null, "new text")]
+[InlineData(null, null, null)]
+[InlineData("", null, "")]
+public void ResolveEffectiveDescription_DistinguishesUnsuppliedFromCleared(
+    string requested, string preserved, string expected)
+{
+    Assert.Equal(expected, WriteService.ResolveEffectiveDescription(requested, preserved));
+}
+
+// The defect was that the Business Component path had no way to receive a description at
+// all: the dispatcher did not forward it and the method had no parameter for it, so the
+// call returned success and changed nothing. Pinned on the signature, which fails for the
+// original reason and needs no KB to observe.
+[Fact]
+public void ChangeBusinessComponentVariable_AcceptsAnOptionalDescription()
+{
+    var method = typeof(WriteService).GetMethod("ChangeBusinessComponentVariable");
+    Assert.NotNull(method);
+    var parameters = method.GetParameters();
+    var last = parameters[parameters.Length - 1];
+    Assert.Equal("description", last.Name);
+    Assert.Equal(typeof(string), last.ParameterType);
+    // Optional, so the existing `add` call site keeps compiling unchanged.
+    Assert.True(last.HasDefaultValue);
+    Assert.Null(last.DefaultValue);
+}
+
+[Fact]
+public void ModifyVariable_DescriptionOnly_DoesNotRequireType()
+{
+    // description without a type must pass the type gate (no UnknownType /
+    // MissingParameter) and reach the object-resolution path.
+    var ws = BuildIsolatedWriteService();
+    string json;
+    try
+    {
+        json = ws.ModifyVariable("NonExistentObj_" + System.Guid.NewGuid().ToString("N"), "X", null, description: "Sample description");
+    }
+    catch (System.IO.FileNotFoundException) { return; }
+    catch (System.TypeLoadException) { return; }
+
+    var obj = JObject.Parse(json);
+    string code = obj["error"]?["code"]?.ToString();
+    Assert.NotEqual("UnknownType", code);
+    Assert.NotEqual("MissingParameter", code);
+}
 
         [Fact]
         public void ModifyVariable_ObjectNotFound_ReturnsError()

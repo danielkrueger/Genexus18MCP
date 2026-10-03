@@ -2125,7 +2125,8 @@ namespace GxMcp.Worker.Services
                         args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
                         args?["collection"]?.ToObject<bool?>(),
                        args?["dimensions"]?.ToObject<int?>(),
-                       args?["dimensionSizes"] as JArray);
+                       args?["dimensionSizes"] as JArray,
+                       args?["description"]?.ToObject<string>());
                 }
                 var modResp = _writeService.ModifyVariable(
                     target,
@@ -2140,7 +2141,8 @@ namespace GxMcp.Worker.Services
                     args?["collection"]?.ToObject<bool?>(),
                     args?["basedOnAttribute"]?.ToObject<string>(),
                     args?["dimensions"]?.ToObject<int?>(),
-                    args?["dimensionSizes"] as JArray);
+                    args?["dimensionSizes"] as JArray,
+                    args?["description"]?.ToObject<string>());
                  return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(modResp, target, args, "Variables");
             }
             if (action == "ValidatePayload")

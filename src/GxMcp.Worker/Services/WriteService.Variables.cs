@@ -2065,7 +2065,7 @@ namespace GxMcp.Worker.Services
         // can roll back if obj.Save() throws.
         public string ModifyVariable(string target, string varName, string newTypeName, string basedOn = null, bool dryRun = false,
             int? length = null, int? decimals = null, bool? collection = null, string basedOnAttribute = null,
-            int? dimensions = null, JArray dimensionSizes = null)
+            int? dimensions = null, JArray dimensionSizes = null, string description = null)
         {
             string dimensionValidationError = DimensionValidationFailure(dimensions, dimensionSizes, collection, target);
             if (dimensionValidationError != null) return dimensionValidationError;
@@ -2085,6 +2085,7 @@ namespace GxMcp.Worker.Services
                             ["target"] = target,
                             ["varName"] = varName,
                             ["newTypeName"] = newTypeName,
+                            ["description"] = description,
                             ["basedOn"] = basedOn,
                             ["basedOnAttribute"] = basedOnAttribute,
                             ["length"] = length,
@@ -2095,38 +2096,45 @@ namespace GxMcp.Worker.Services
                         }
                     });
             }
-            var raw = ModifyVariableInternal(target, varName, newTypeName, basedOn, length, decimals, collection, basedOnAttribute, dimensions, dimensionSizes);
+            var raw = ModifyVariableInternal(target, varName, newTypeName, basedOn, length, decimals, collection, basedOnAttribute, dimensions, dimensionSizes, description);
             MarkDirtyIfSuccess(raw, target);
             return WrapWithPersistedState(raw, target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
         }
 
         private string ModifyVariableInternal(string target, string varName, string newTypeName, string basedOn,
             int? length = null, int? decimals = null, bool? collection = null, string basedOnAttribute = null,
-            int? dimensions = null, JArray dimensionSizes = null)
+            int? dimensions = null, JArray dimensionSizes = null, string description = null)
         {
+            // No type supplied: keep the variable's current type and apply only the
+            // description (null = leave untouched, "" = clear). Anything else needs a type.
+            if (string.IsNullOrEmpty(newTypeName))
+            {
+                bool typeShapeArgs = !string.IsNullOrWhiteSpace(basedOn) || !string.IsNullOrWhiteSpace(basedOnAttribute)
+                    || length.HasValue || decimals.HasValue || collection.HasValue
+                    || dimensions.HasValue || dimensionSizes != null;
+                if (description == null || typeShapeArgs)
+                {
+                    return McpResponse.Err(
+                        code: "MissingParameter",
+                        message: typeShapeArgs
+                            ? "newTypeName (or typeName) is required when modify changes basedOn, basedOnAttribute, length, decimals, collection or dimensions."
+                            : "genexus_variable modify needs something to change: pass newTypeName (or typeName) and/or description.",
+                        hint: "Pass a type such as Character(40), Numeric(8.0), Date, DateTime, Boolean, VarChar(N) or a Domain name to retype, or description alone to change only the description (\"\" clears it).",
+                        nextSteps: new JArray(McpResponse.NextStep(
+                            tool: "genexus_variable",
+                            args: new JObject { ["action"] = "modify", ["name"] = target, ["varName"] = varName, ["description"] = "<new description>" },
+                            why: "Example description-only modify; the variable keeps its current type.")),
+                        target: target);
+                }
+                return ModifyVariableDescriptionOnly(target, varName, description);
+            }
+
             // Gate 1 — resolve newTypeName up front, before any SDK / KB call.
             // Mirrors AddVariable's Task 4.2 envelope shape exactly.
             GxMcp.Worker.Helpers.TypeResolution resolution = null;
             string resolvedTypeForSdk = newTypeName;
             int? resolvedLength = null;
             int? resolvedDecimals = null;
-            if (string.IsNullOrEmpty(newTypeName))
-            {
-                return McpResponse.Err(
-                    code: "UnknownType",
-                    message: "newTypeName is required for genexus_modify_variable.",
-                    hint: "Pass a valid type such as Character(40), Numeric(8.0), Date, DateTime, Boolean, VarChar(N), or a Domain name.",
-                    nextSteps: new JArray(McpResponse.NextStep(
-                        tool: "genexus_modify_variable",
-                        args: new JObject { ["target"] = target, ["varName"] = varName, ["newTypeName"] = "Character(40)" },
-                        why: "Example retry with Character(40).")),
-                    target: target,
-                    extra: new JObject
-                    {
-                        ["suggestion"] = "Character(40)",
-                        ["accepted"] = new JArray { "Character(N)", "Numeric(N.D)", "Date", "DateTime", "Boolean", "VarChar(N)", "<DomainName>" }
-                    });
-            }
 
             resolution = GxMcp.Worker.Helpers.VariableTypeResolver.Resolve(newTypeName);
             if (!resolution.Recognized)
@@ -2420,9 +2428,10 @@ namespace GxMcp.Worker.Services
 
                     var newVar = new global::Artech.Genexus.Common.Variable(varPart);
                     newVar.Name = varName;
-                    if (!string.IsNullOrEmpty(preservedDescription))
+                    string effectiveDescription = ResolveEffectiveDescription(description, preservedDescription);
+                    if (!string.IsNullOrEmpty(effectiveDescription))
                     {
-                        try { newVar.Description = preservedDescription; } catch { /* best-effort */ }
+                        try { newVar.Description = effectiveDescription; } catch { /* best-effort */ }
                     }
 
                     if (string.Equals(resolution.CanonicalType, "AttributeReference", StringComparison.OrdinalIgnoreCase))
@@ -2696,16 +2705,108 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // modify without a type: change only the description in place (no delete+add), so the
+        // variable keeps its type, binding, collection and dimensions untouched.
+        private string ModifyVariableDescriptionOnly(string target, string varName, string description)
+        {
+            try
+            {
+                var err = ResolveVariableTarget(target, ref varName, out var obj, out var varPart, out var existing);
+                if (err != null) return err;
+                if (existing == null)
+                {
+                    return McpResponse.Err(
+                        code: "VariableNotFound",
+                        message: $"Variable '&{varName}' not found on '{target}'.",
+                        hint: "Read the Variables part to see which variables exist on this object.",
+                        nextSteps: new JArray(McpResponse.NextStep(
+                            tool: "genexus_read",
+                            args: new JObject { ["name"] = target, ["part"] = "Variables" },
+                            why: "Lists all declared variables on the object.")),
+                        target: target);
+                }
+                if (GxMcp.Worker.Helpers.FrameworkManagedVariables.IsManaged(varName))
+                {
+                    return McpResponse.Err(
+                        code: "FrameworkManagedVariable",
+                        message: "Framework-managed variable",
+                        hint: "Variable '&" + varName + "' is managed by " + GxMcp.Worker.Helpers.FrameworkManagedVariables.GetManagedBy(varName) + " and will be re-injected on save. Do not modify it.",
+                        target: target);
+                }
+
+                string previousDescription = null;
+                try { previousDescription = existing.Description; } catch { }
+                try
+                {
+                    existing.Description = description;
+                    ForceSaveVariableOwner(obj);
+                    ScheduleFlush(force: true);
+
+                    string verifyName = varName;
+                    ResolveVariableTarget(target, ref verifyName, out _, out _, out var persisted);
+                    if (persisted == null)
+                        throw new InvalidOperationException("Variable '&" + varName + "' was not present after reload.");
+                    string persistedDescription = null;
+                    try { persistedDescription = persisted.Description; } catch { }
+                    if (!string.Equals(persistedDescription ?? string.Empty, description, StringComparison.Ordinal))
+                        throw new InvalidOperationException("Variable '&" + varName + "' reloaded with a different description than requested.");
+
+                    return McpResponse.Ok(
+                        target: target,
+                        code: "VariableDescriptionUpdated",
+                        result: new JObject
+                        {
+                            ["persistedDescription"] = persistedDescription ?? string.Empty,
+                            ["details"] = $"Variable '&{varName}' description updated; type unchanged."
+                        });
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        existing.Description = previousDescription;
+                        obj.EnsureSave();
+                        ScheduleFlush();
+                    }
+                    catch { /* swallow - rollback is best-effort */ }
+                    return McpResponse.Err(
+                        code: "ModifyVariableFailed",
+                        message: ex.Message,
+                        hint: "The description update failed; the previous description was restored.",
+                        nextSteps: new JArray(McpResponse.NextStep(
+                            tool: "genexus_read",
+                            args: new JObject { ["name"] = target, ["part"] = "Variables" },
+                            why: "Verifies the variable state after the rollback.")),
+                        target: target);
+                }
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "ModifyVariableFailed",
+                    message: ex.Message,
+                    hint: "Verify the object and variable names.",
+                    target: target);
+            }
+        }
+
         /// <summary>
         /// Adds or retypes a variable using a native Business Component object reference.
         /// This path deliberately does not pass a module-qualified display string through the
         /// Domain resolver: it resolves the Transaction first, binds its EntityKey, and verifies
         /// the same GUID from a fresh VariablesPart read after commit.
         /// </summary>
-        public string ChangeBusinessComponentVariable(string action, string target, string varName,
+        // An explicit description wins over the preserved one. null means "not supplied", so a
+// retype alone must not clear it; an empty string is an explicit clear. Shared by the
+// variable and Business Component modify paths so the two agree on that distinction.
+internal static string ResolveEffectiveDescription(string requested, string preserved)
+    => requested ?? preserved;
+
+public string ChangeBusinessComponentVariable(string action, string target, string varName,
             string objectName, string moduleName, bool dryRun, string expectedVersion,
             bool rollbackOnFailure = true, bool? collection = null,
-            int? dimensions = null, JArray dimensionSizes = null)
+            int? dimensions = null, JArray dimensionSizes = null,
+            string description = null)
         {
             string dimensionValidationError = DimensionValidationFailure(dimensions, dimensionSizes, collection, target);
             if (dimensionValidationError != null) return dimensionValidationError;
@@ -2901,18 +3002,23 @@ namespace GxMcp.Worker.Services
                             ?? throw new InvalidOperationException("Variables part not found during the atomic save.");
                         var currentVariable = currentPart.Variables.FirstOrDefault(v =>
                             string.Equals(v.Name, normalizedName, StringComparison.OrdinalIgnoreCase));
-                        string description = null;
+                        string preservedDescription = null;
                         if (currentVariable != null)
                         {
-                            try { description = currentVariable.Description; } catch { }
+                            try { preservedDescription = currentVariable.Description; } catch { }
                             currentPart.Variables.Remove(currentVariable);
                         }
+
+                        // An explicit description wins over the preserved one; null means
+                        // "not supplied", so the retype alone must not clear it. An empty
+                        // string is an explicit clear.
+                        string effectiveDescription = ResolveEffectiveDescription(description, preservedDescription);
 
                         var replacement = new global::Artech.Genexus.Common.Variable(currentPart)
                         {
                             Name = normalizedName
                         };
-                        try { replacement.Description = description; } catch { }
+                        try { replacement.Description = effectiveDescription; } catch { }
                         VariableInjector.BindVariableToBC(replacement, bc);
                         try { replacement.IsCollection = effectiveIsCollection; } catch { }
                         if (effectiveDimensions.HasValue

@@ -15,7 +15,7 @@ namespace GxMcp.Worker.Services
         string AddVariables(string target, JArray variables, bool dryRun = false);
         string DeleteVariable(string target, string varName, bool dryRun = false);
         string DeleteVariables(string target, IEnumerable<string> varNames);
-        string ModifyVariable(string target, string varName, string newTypeName, string basedOn = null, bool dryRun = false, int? length = null, int? decimals = null, bool? collection = null, string basedOnAttribute = null, int? dimensions = null, JArray dimensionSizes = null);
+        string ModifyVariable(string target, string varName, string newTypeName, string basedOn = null, bool dryRun = false, int? length = null, int? decimals = null, bool? collection = null, string basedOnAttribute = null, int? dimensions = null, JArray dimensionSizes = null, string description = null);
         void InjectFromSource(KBObject obj, string sourceCode, SearchIndex index = null);
     }
 
@@ -67,10 +67,10 @@ namespace GxMcp.Worker.Services
             return _writeService.DeleteVariables(target, varNames);
         }
 
-        public string ModifyVariable(string target, string varName, string newTypeName, string basedOn = null, bool dryRun = false, int? length = null, int? decimals = null, bool? collection = null, string basedOnAttribute = null, int? dimensions = null, JArray dimensionSizes = null)
+        public string ModifyVariable(string target, string varName, string newTypeName, string basedOn = null, bool dryRun = false, int? length = null, int? decimals = null, bool? collection = null, string basedOnAttribute = null, int? dimensions = null, JArray dimensionSizes = null, string description = null)
         {
             if (_writeService == null) return McpResponse.Err(code: "ServiceUnavailable", message: "WriteService not configured.");
-            return _writeService.ModifyVariable(target, varName, newTypeName, basedOn, dryRun, length, decimals, collection, basedOnAttribute, dimensions, dimensionSizes);
+            return _writeService.ModifyVariable(target, varName, newTypeName, basedOn, dryRun, length, decimals, collection, basedOnAttribute, dimensions, dimensionSizes, description);
         }
 
         public void InjectFromSource(KBObject obj, string sourceCode, SearchIndex index = null)
