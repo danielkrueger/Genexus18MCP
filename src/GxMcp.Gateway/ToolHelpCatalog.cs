@@ -109,6 +109,7 @@ namespace GxMcp.Gateway
                 "## Required\n" +
                 "- Either `name` (single object) **or** `targets` (array) — never both.\n" +
                 "- `mode`: `full` (replace whole part) or `patch` (Replace/Insert_After/Append over a context anchor).\n" +
+                "- Sending `patch` or `operation` without `mode` implies `mode=patch`; combining them with `mode=full` is a `usage_error`. A full write without `content` is rejected with `ContentRequired` (`content=\"\"` clears the part on purpose).\n" +
                 "- `mode: 'ops'` applies semantic operations; for modular objects pass `module` to select the Transaction module.\n" +
                 "- `dryRun: true` first for either mode. A preview is synchronous, never calls Save, and never starts a lifecycle action.\n" +
                 "- `patch={find,replace}` is the abbreviated textual replace form; it is also the only form that accepts the two opt-in protections below. Combining either protection with `operation`, `mode=ops`, `targets[]`, `parts[]`, `Insert_After` or `Append` is rejected before anything is normalized (`ScopeUnsupportedPatchForm` / `IndentationUnsupportedPatchForm`) — a protection is never silently ignored.\n\n" +
@@ -219,6 +220,7 @@ namespace GxMcp.Gateway
                 "Read source or metadata parts of one or more GeneXus objects.\n\n" +
                 "## Required\n" +
                 "- Either `name` (single) **or** `targets` (array). Never both.\n" +
+                "- `objectName` is accepted as an alias of `name`; `name` wins when both are present. A call that supplies no object identity at all (`name`/`objectName`/`targets`/`guid`/`entityKey`/`path`) is rejected as a `usage_error` and performs no lookup.\n" +
                 "- `parts`: array of part names. Common: `Source`, `Variables`, `Rules`, `Events`, `Structure`, `Layout`. Omitting `parts` returns the canonical default set for the object type.\n\n" +
                 "## Data Selectors\n" +
                 "- Use `type: 'DataSelector'` with `parameters`, `conditions`, `orders`, `definedBy`, `baseTransaction`, `baseTable`, or `structure`. The SDK order and complete expressions are preserved.\n" +
@@ -668,7 +670,7 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `export` — create an XPZ export, optionally including dependency closure.\n" +
                 "- `inspect` — inspect an XPZ manifest without importing it.\n" +
-                "- `import` — import the package into the active KB after validating its manifest.\n\n" +
+                "- `import` — import the package into the active KB after validating its manifest. `dryRun` defaults to true (preview only, nothing imported); to actually import pass `dryRun:false` AND `confirm:true` - `confirm:true` alone only previews.\n\n" +
                 "`export` writes the requested XPZ artifact, `inspect` is read-only, and `import` mutates the KB. Review the output path and conflicts, and use a disposable or explicitly selected target KB for untrusted packages.\n",
 
             ["genexus_deploy"] =

@@ -505,7 +505,7 @@ left untouched, and the saved conditions are re-read and verified.
 - `genexus_kb_version` — model version/branch management (Create/Activate/Revert)
 - `genexus_versioning` — versioning umbrella (git-style history over the KB)
 - `genexus_gxserver` — GXserver / Team Development sync, incl. `pipeline_*` (CI pipelines via `IContinuousIntegrationService`)
-- `genexus_transfer` — real XPZ export/import (`IKnowledgeManagerService`, dependency-aware): `export` / `inspect` / `import`
+- `genexus_transfer` — real XPZ export/import (`IKnowledgeManagerService`, dependency-aware): `export` / `inspect` / `import` (`import` previews by default: pass `dryRun:false` and `confirm:true` to actually import)
 - `genexus_memory` — per-KB fact store for the agent
 
 **Security provisioning, IO & meta**

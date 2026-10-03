@@ -135,6 +135,10 @@ ALLOWED_UNDECLARED_ROUTER_PARAMETERS = frozenset(
         # fence forces an authoritative read. Deliberately NOT a published schema
         # property — a caller must not be able to request it.
         ("ObjectRouter.cs", "genexus_read", "_requireAuthoritativeRead"),
+        # Tolerated misspelling: genexus_search_source/genexus_refactor call the
+        # object `objectName`, and agents carry it over. `name` stays the published
+        # field; the alias is read only when `name` is absent.
+        ("ObjectRouter.cs", "genexus_read", "objectName"),
         ("ObjectRouter.cs", "genexus_edit_and_build", "path"),
         ("ObjectRouter.cs", "genexus_edit_and_build", "entityKey"),
         ("ObjectRouter.cs", "genexus_edit_and_build", "guid"),

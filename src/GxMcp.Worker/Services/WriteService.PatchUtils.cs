@@ -306,6 +306,9 @@ namespace GxMcp.Worker.Services
             }
 
             if (requestedContent != null)
+                requestedContent = CanonicalizeStructureDomainTypes(requestedContent, finalSource, target, partName, typeFilter);
+
+            if (requestedContent != null)
                 parsed = ApplyTextVerificationReceipt(parsed, target, partName, priorSource,
                     requestedContent, finalSource, finalVersionToken, verificationReadTruncated,
                     verificationReadFailure, verifyMode, isDryRun, requireObjectSave);
@@ -346,6 +349,31 @@ namespace GxMcp.Worker.Services
             }
 
             return parsed.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        // A Structure DSL line `Attr : SomeDomain` persists and re-reads as `Attr : CHARACTER(10)`.
+        // Treat that as equivalent only when the persisted attribute really is based on the
+        // requested domain; the lookup is the model's global Attribute and its DomainBasedOn.
+        private string CanonicalizeStructureDomainTypes(string requested, string persisted, string target, string partName, string typeFilter)
+        {
+            if (!string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrEmpty(requested) || string.IsNullOrEmpty(persisted) || _objectService == null)
+                return requested;
+            try
+            {
+                var obj = _objectService.FindObject(target, typeFilter);
+                if (!(obj is global::Artech.Genexus.Common.Objects.Transaction)
+                    && !(obj is global::Artech.Genexus.Common.Objects.Table))
+                    return requested;
+                var model = obj.Model;
+                return StructureDomainEquivalence.Canonicalize(requested, persisted,
+                    name => DomainPropertyApplier.GetDomainBasedOnName(VariableInjector.FindAttribute(model, name)));
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[STRUCTURE-DOMAIN-EQUIV] skipped for " + target + ": " + ex.Message);
+                return requested;
+            }
         }
 
         // Pure receipt construction keeps the physical save result independent of
