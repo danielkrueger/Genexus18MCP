@@ -153,7 +153,11 @@ namespace GxMcp.Worker.Tests
             byte[] bytes = File.ReadAllBytes(file);
             for (int i = bytes.Length / 2; i < bytes.Length; i++) bytes[i] = 0xFF;
             File.WriteAllBytes(file, bytes);
-            File.SetLastWriteTimeUtc(file, DateTime.UtcNow);
+
+            // Move the stamp by a fixed amount instead of re-reading the clock: on net48
+            // UtcNow advances in ~15.6 ms steps, so a warm-JIT body can finish inside one
+            // clock tick and leave mtime (and size) identical to the certification.
+            File.SetLastWriteTimeUtc(file, File.GetLastWriteTimeUtc(file).AddSeconds(1));
 
             Assert.False(store.IsStoredAndFreshCached(entry, "source"));
         }
