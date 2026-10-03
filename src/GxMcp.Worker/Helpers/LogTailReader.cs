@@ -44,6 +44,14 @@ namespace GxMcp.Worker.Helpers
         /// </summary>
         internal const int BlockSize = 64 * 1024;
 
+        /// <summary>
+        /// Issue #370. How far back a filtered scan will read before giving up, so a
+        /// no-match search on a multi-gigabyte log cannot turn a diagnostic call into a
+        /// full-file read. Generous: the point is to bound the pathological case, not to
+        /// make a legitimate deep search fail.
+        /// </summary>
+        internal const long DefaultMaxScanBytes = 256L * 1024 * 1024;
+
         private readonly List<string> _lines = new List<string>();
 
         /// <summary>The retained lines, oldest first.</summary>
@@ -60,6 +68,16 @@ namespace GxMcp.Worker.Helpers
         /// afterwards saw only part of the log.
         /// </summary>
         public bool Truncated => TruncatedFromStart > 0;
+
+        /// <summary>
+        /// Issue #370. False when the scan stopped on its byte budget rather than because
+        /// it reached the start of the file or ran out of relevant lines. A caller must be
+        /// able to tell "no match in the log" from "no match in the part we read".
+        /// </summary>
+        public bool ScanComplete { get; private set; } = true;
+
+        /// <summary>How many bytes the scan actually read.</summary>
+        public long ScannedBytes { get; private set; }
 
         /// <summary>
         /// Reads the last <paramref name="tail"/> lines of <paramref name="path"/>.
@@ -82,8 +100,157 @@ namespace GxMcp.Worker.Helpers
             {
                 result.TotalLines = CountLines(fs);
                 result.ReadBackwards(fs, retain);
+                result.ScanComplete = true;
             }
             return result;
+        }
+
+        /// <summary>
+        /// Reads the last <paramref name="tail"/> lines of <paramref name="path"/> that
+        /// match <paramref name="isMatch"/>, scanning backwards from the end of the file.
+        ///
+        /// <para>
+        /// Issue #370. <see cref="Read"/> retains a window and the caller filters it
+        /// afterwards, so <c>grep</c>, <c>filterCorrelation</c>, <c>objectFilter</c> and
+        /// <c>since</c> could only ever match inside that window: asking for the last ten
+        /// lines matching a correlation id from ten minutes ago returned nothing on a busy
+        /// log. Here the predicate is applied to each complete line as it is decoded, so a
+        /// match anywhere in the scanned range is found, while retained memory stays
+        /// bounded by the requested number of matches.
+        /// </para>
+        ///
+        /// <para>
+        /// <param name="isOutOfScope">Evaluated after the line is offered to
+        /// <paramref name="isMatch"/>; returning true from it stops the scan and marks it
+        /// complete, because walking backwards means every earlier line is also out of
+        /// scope. That is how <c>since=&lt;timestamp&gt;</c> bounds its work and how
+        /// <c>since=crash</c> stops at the marker. The line that ends the scan is dropped
+        /// unless <paramref name="keepOutOfScopeLine"/> is set: a <c>since=</c> cutoff must
+        /// not smuggle in the line it just excluded, while the crash search must keep the
+        /// marker itself. <paramref name="maxScanBytes"/> bounds the rest; when it stops the
+        /// scan, <see cref="ScanComplete"/> is false.
+        /// </para>
+        /// </summary>
+        public static LogTailReader ReadFiltered(
+            string path,
+            int tail,
+            Func<string, bool> isMatch,
+            Func<string, bool> isOutOfScope = null,
+            long maxScanBytes = DefaultMaxScanBytes,
+            bool keepOutOfScopeLine = false)
+        {
+            if (tail < 1) tail = 1;
+            var result = new LogTailReader();
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                result.TotalLines = CountLines(fs);
+                if (fs.Length == 0) return result;
+                result.ScanComplete = result.ReadBackwardsFiltered(
+                    fs, tail, isMatch, isOutOfScope, maxScanBytes, keepOutOfScopeLine);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Walks backwards applying <paramref name="isMatch"/> per line, keeping the newest
+        /// <paramref name="tail"/> matches. Returns false when the byte budget stopped it.
+        /// </summary>
+        private bool ReadBackwardsFiltered(
+            FileStream fs, int tail, Func<string, bool> isMatch, Func<string, bool> isOutOfScope,
+            long maxScanBytes, bool keepOutOfScopeLine)
+        {
+            bool endsWithNewline = LastByteIsNewline(fs);
+            var window = new List<byte>(BlockSize * 2);
+            byte[] block = new byte[BlockSize];
+            long position = fs.Length;
+            long budget = maxScanBytes > 0 ? maxScanBytes : long.MaxValue;
+            bool firstExtraction = true;
+
+            // Newest-first. Take(line) keeps the newest `tail` matches: once it holds
+            // `tail`, dropping the head of a newest-first list discards the oldest match.
+            Action<string> keep = line =>
+            {
+                if (_lines.Count >= tail) return;
+                _lines.Add(line);
+            };
+
+            while (position > 0)
+            {
+                int want = (int)Math.Min(BlockSize, position);
+                position -= want;
+                fs.Seek(position, SeekOrigin.Begin);
+                int read = 0;
+                while (read < want)
+                {
+                    int n = fs.Read(block, read, want - read);
+                    if (n <= 0) break;
+                    read += n;
+                }
+                if (read <= 0) break;
+                ScannedBytes += read;
+                window.InsertRange(0, block.AsSpan(0, read).ToArray());
+
+                while (true)
+                {
+                    int lastBreak = window.LastIndexOf((byte)'\n');
+                    if (lastBreak < 0) break;
+                    int segmentStart = lastBreak + 1;
+                    int segmentLength = window.Count - segmentStart;
+                    bool emit = !(firstExtraction && endsWithNewline && segmentLength == 0);
+                    string line = emit ? Decode(window, segmentStart, segmentLength) : null;
+                    firstExtraction = false;
+                    window.RemoveRange(lastBreak, window.Count - lastBreak);
+                    if (!emit) continue;
+
+                    bool outOfScope = isOutOfScope != null && isOutOfScope(line);
+                    if ((isMatch == null || isMatch(line)) && (keepOutOfScopeLine || !outOfScope)) keep(line);
+                    if (outOfScope)
+                    {
+                        _lines.Reverse();
+                        return true;
+                    }
+                    if (_lines.Count >= tail)
+                    {
+                        _lines.Reverse();
+                        return true;
+                    }
+                }
+
+                if (ScannedBytes >= budget)
+                {
+                    _lines.Reverse();
+                    return false;
+                }
+            }
+
+            // Reached the head of the file: whatever is buffered is a run of complete
+            // lines, not one partial line.
+            if (window.Count > 0)
+            {
+                int segmentStart = 0;
+                for (int i = 0; i < window.Count; i++)
+                {
+                    if (window[i] != (byte)'\n') continue;
+                    string line = Decode(window, segmentStart, i - segmentStart);
+                    bool outOfScope = isOutOfScope != null && isOutOfScope(line);
+                    if ((isMatch == null || isMatch(line)) && (keepOutOfScopeLine || !outOfScope)) keep(line);
+                    if (outOfScope)
+                    {
+                        _lines.Reverse();
+                        return true;
+                    }
+                    segmentStart = i + 1;
+                }
+                if (segmentStart < window.Count)
+                {
+                    string line = Decode(window, segmentStart, window.Count - segmentStart);
+                    bool lastOutOfScope = isOutOfScope != null && isOutOfScope(line);
+                    if ((isMatch == null || isMatch(line)) && (keepOutOfScopeLine || !lastOutOfScope)) keep(line);
+                }
+            }
+
+            _lines.Reverse();
+            return true;
         }
 
         /// <summary>

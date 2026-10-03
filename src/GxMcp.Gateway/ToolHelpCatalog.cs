@@ -654,7 +654,9 @@ namespace GxMcp.Gateway
                 "Inspect MCP execution telemetry and maintain the explicit friction log.\n\n" +
                 "## Actions\n" +
                 "`executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, and `profile_correlate` read telemetry or profiling data.\n\n" +
-                "`friction_append` writes a new observation to the per-KB friction log. Keep the append payload concise and free of credentials or personal data.\n",
+                "`friction_append` writes a new observation to the per-KB friction log. Keep the append payload concise and free of credentials or personal data.\n\n" +
+                "## `action=logs` reading\n" +
+                "`grep`, `filterCorrelation`, `objectFilter` and `since` are applied to each line as the log is read backwards from its end, so a match anywhere in the scanned range is found and retained memory stays bounded by the number of matches returned - they are not restricted to the last `lines` lines. The scan itself is bounded (`GXMCP_LOG_SCAN_MAX_MB`): when that budget stops it the response carries `scanComplete:false` with `scannedBytes` and a hint, and an empty `matched` is NOT evidence that no matching line exists further back. `totalLines` is the file's line count.\n",
 
             ["genexus_memory"] =
                 "# genexus_memory\n\n" +

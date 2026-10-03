@@ -766,104 +766,93 @@ namespace GxMcp.Worker.Services
                 // list, and only then take the last N - so asking for the last ten
                 // lines of a large log allocated the whole log, on the diagnostic route
                 // that runs precisely when something has gone wrong and memory is least
-                // welcome. LogTailReader retains at most the requested window plus the
-                // context the crash search needs, and still counts the whole file so
-                // `totalLines` keeps meaning what it always meant.
+                // welcome. LogTailReader retains at most the requested window and still
+                // counts the whole file so `totalLines` keeps meaning what it always meant.
                 //
-                // The honest consequence is that a filter can no longer reach lines
-                // before the retained window. That is surfaced in the response rather
-                // than hidden, because a caller asking "since yesterday" and receiving
-                // only the tail must be able to tell that it got a tail.
-                int retainContext = 0;
-                if (string.Equals(sinceMode, "crash", StringComparison.OrdinalIgnoreCase))
-                    retainContext = LogTailReader.MaxRetainedLines - lines; // search the whole window
-                var tailRead = GxMcp.Worker.Helpers.LogTailReader.Read(logPath, lines, retainContext);
-                var allLines = tailRead.Lines;
-
-                IEnumerable<string> filtered = allLines;
-
-                // v2.6.8: since=crash slices the log starting at the most recent
-                // [ERROR]/[CRITICAL] line — the agent (and the user reporting a
-                // crash) gets the stack + immediate context without having to
-                // hunt for it manually.
+                // Issue #370: that bounded read also changed what the filters mean. The
+                // retained window was filtered *afterwards*, so grep/correlation/object/
+                // since could only ever match inside it - `lines=10, grep="X"` became
+                // "the last 10 lines that contain X" instead of "the last 10 matching
+                // lines from anywhere in the log", and a diagnostic search for a
+                // correlation id from a few minutes ago came back empty. The predicates are
+                // now applied to each line as it is decoded while scanning backwards, so a
+                // match anywhere in the scanned range is found and retained memory stays
+                // bounded by the number of matches returned.
                 bool sliceFromCrash = string.Equals(sinceMode, "crash", StringComparison.OrdinalIgnoreCase);
+
+                // The per-line predicate, in the same order the old LINQ chain applied.
+                var matchers = new List<Func<string, bool>>();
+                if (!string.IsNullOrWhiteSpace(objectFilter))
+                    matchers.Add(l => l.IndexOf(objectFilter, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (!string.IsNullOrWhiteSpace(filterCorrelation))
+                    matchers.Add(l => l.IndexOf(filterCorrelation, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (!string.IsNullOrWhiteSpace(grepPattern))
+                    matchers.Add(BuildGrepMatcher(grepPattern));
+
+                DateTime? sinceUtc = null;
+                if (!sliceFromCrash && !string.IsNullOrWhiteSpace(sinceMode)
+                    && DateTime.TryParse(sinceMode, null, System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AllowWhiteSpaces, out DateTime sinceDt))
+                {
+                    // Normalize to UTC so a client-supplied "...Z" timestamp compares
+                    // correctly against log-line timestamps (the worker writes local time).
+                    sinceUtc = sinceDt.Kind == DateTimeKind.Utc ? sinceDt : sinceDt.ToUniversalTime();
+                }
+
+                Func<string, bool> isMatch = matchers.Count == 0
+                    ? null
+                    : (l => matchers.TrueForAll(m => m(l)));
+
+                // Scanning backwards, a line older than the cutoff means every earlier line
+                // is too, so the scan can stop instead of reading the whole history.
+                Func<string, bool> isOutOfScope = sinceUtc.HasValue
+                    ? l => TryParseLogTimestamp(l, out DateTime lineTs) && lineTs < sinceUtc.Value
+                    : null;
+
+                GxMcp.Worker.Helpers.LogTailReader tailRead;
                 int crashIndex = -1;
+                List<string> tail;
                 if (sliceFromCrash)
                 {
-                    for (int i = allLines.Count - 1; i >= 0; i--)
+                    // since=crash: keep the newest `lines` plus 5 lines of context, walking
+                    // back until the marker is met. `isMatch` keeps everything and the
+                    // marker ends the scan, which is what makes a crash older than the old
+                    // 2000-line window findable.
+                    int window = Math.Min(LogTailReader.MaxRetainedLines, lines + 5);
+                    tailRead = GxMcp.Worker.Helpers.LogTailReader.ReadFiltered(
+                        logPath, window, _ => true, l => _crashLinePattern.IsMatch(l),
+                        keepOutOfScopeLine: true);
+                    var windowLines = tailRead.Lines;
+                    int marker = -1;
+                    for (int i = windowLines.Count - 1; i >= 0; i--)
                     {
-                        string ln = allLines[i];
-                        if (_crashLinePattern.IsMatch(ln))
-                        {
-                            crashIndex = i;
-                            break;
-                        }
+                        if (!_crashLinePattern.IsMatch(windowLines[i])) continue;
+                        marker = i;
+                        break;
                     }
-                    if (crashIndex >= 0)
+                    if (marker >= 0)
                     {
                         // Take 5 lines of context before + everything after.
-                        int start = Math.Max(0, crashIndex - 5);
-                        filtered = allLines.Skip(start);
+                        int start = Math.Max(0, marker - 5);
+                        tail = windowLines.Skip(start).ToList();
+                        crashIndex = marker - start;
+                    }
+                    else
+                    {
+                        tail = windowLines.ToList();
                     }
                 }
-                else if (!string.IsNullOrWhiteSpace(sinceMode))
+                else if (isMatch != null || isOutOfScope != null)
                 {
-                    // Item 32: since=<ISO timestamp> — skip lines whose leading timestamp
-                    // is before the requested cutoff. Log format: [yyyy-MM-dd HH:mm:ss.fff]
-                    // Lines that don't carry a parseable timestamp are kept (defensive).
-                    if (DateTime.TryParse(sinceMode, null, System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AllowWhiteSpaces, out DateTime sinceDt))
-                    {
-                        // Normalize to UTC so a client-supplied "...Z" timestamp compares correctly
-                        // against log-line timestamps (the worker writes them in local time).
-                        DateTime sinceUtc = sinceDt.Kind == DateTimeKind.Utc ? sinceDt : sinceDt.ToUniversalTime();
-                        filtered = allLines.Where(l =>
-                        {
-                            // Try to parse the leading [yyyy-MM-dd HH:mm:ss.fff] prefix.
-                            if (l.Length > 2 && l[0] == '[')
-                            {
-                                int close = l.IndexOf(']');
-                                if (close > 0)
-                                {
-                                    string ts = l.Substring(1, close - 1);
-                                    if (DateTime.TryParse(ts, null, System.Globalization.DateTimeStyles.AssumeLocal, out DateTime lineTs))
-                                        return lineTs.ToUniversalTime() >= sinceUtc;
-                                }
-                            }
-                            return true; // unparseable timestamp — keep line
-                        });
-                    }
+                    tailRead = GxMcp.Worker.Helpers.LogTailReader.ReadFiltered(
+                        logPath, lines, isMatch, isOutOfScope, ResolveLogScanBudgetBytes());
+                    tail = tailRead.Lines.ToList();
                 }
-
-                // Item 32: object-name filter — only lines mentioning the object.
-                if (!string.IsNullOrWhiteSpace(objectFilter))
-                    filtered = filtered.Where(l => l.IndexOf(objectFilter, StringComparison.OrdinalIgnoreCase) >= 0);
-
-                if (!string.IsNullOrWhiteSpace(filterCorrelation))
-                    filtered = filtered.Where(l => l.IndexOf(filterCorrelation, StringComparison.OrdinalIgnoreCase) >= 0);
-                if (!string.IsNullOrWhiteSpace(grepPattern))
+                else
                 {
-                    try
-                    {
-                        var rx = new System.Text.RegularExpressions.Regex(grepPattern,
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase,
-                            GxMcp.Worker.Services.SourceSearchService.RegexMatchTimeout);
-                        // Materialize INSIDE the try: Where() is deferred, so a match-timeout
-                        // thrown by rx.IsMatch would otherwise surface at the later ToList()
-                        // (outside this catch) as a generic error instead of the fallback.
-                        filtered = filtered.Where(l => rx.IsMatch(l)).ToList();
-                    }
-                    catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
-                    {
-                        // A valid-but-pathological pattern must not hang the STA thread; degrade
-                        // to the same substring fallback an invalid pattern gets.
-                        filtered = filtered.Where(l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0);
-                    }
-                    catch { /* invalid regex falls back to substring */ filtered = filtered.Where(l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0); }
+                    tailRead = GxMcp.Worker.Helpers.LogTailReader.Read(logPath, lines);
+                    tail = tailRead.Lines.ToList();
                 }
 
-                var matchList = filtered.ToList();
-                int skip = Math.Max(0, matchList.Count - lines);
-                var tail = matchList.Skip(skip).ToList();
                 var result = new JObject
                 {
                     // Item 32: surface the log path so the agent can read adjacent logs
@@ -872,7 +861,8 @@ namespace GxMcp.Worker.Services
                     // Back-compat alias: prior shape exposed the file location as "path".
                     ["path"] = logPath,
                     ["logDir"] = GxMcp.Worker.Helpers.Logger.LogDirectory,
-                    ["totalLines"] = allLines.Count,
+                    // The file's line count, not the size of the window that was read.
+                    ["totalLines"] = tailRead.TotalLines,
                     ["matched"] = tail.Count,
                     ["lines"] = string.Join("\n", tail)
                 };
@@ -886,31 +876,90 @@ namespace GxMcp.Worker.Services
                         // different answers. With a bounded read the first is now possible,
                         // and claiming the second would assert the worker did not crash
                         // when the marker may simply be further back than the window.
-                        result["hint"] = tailRead.Truncated
+                        result["hint"] = !tailRead.ScanComplete
+                            ? "No ERROR/CRITICAL marker found in the " + tailRead.ScannedBytes
+                              + " bytes scanned at the end of a " + tailRead.TotalLines + "-line log. "
+                              + "The scan stopped on its byte budget; grep for the marker directly to cover the rest."
+                            : tailRead.Truncated
                             ? "No ERROR/CRITICAL marker in the last " + tailRead.Lines.Count
                               + " lines of a " + tailRead.TotalLines + "-line log. The marker may be older than the retained window; raise `lines` or grep for it directly."
                             : "No ERROR/CRITICAL markers found in the log — worker has not crashed (or the log has rotated).";
                     }
                 }
 
-                // Issue #342: state the read's bounds. Every filter above ran over the
-                // retained window only, so a caller must be able to tell a complete
-                // answer from a tail.
+                // Issue #342/#370: state the read's bounds. Every filter above ran over the
+                // lines the scan actually read, and a scan stopped by the byte budget is
+                // not a complete answer - it must never read as "not found".
                 result["retainedLines"] = tailRead.Lines.Count;
                 result["truncatedFromStart"] = tailRead.TruncatedFromStart;
                 result["bounded"] = true;
-                if (tailRead.Truncated)
+                result["scanComplete"] = tailRead.ScanComplete;
+                result["scannedBytes"] = tailRead.ScannedBytes;
+                if (!tailRead.ScanComplete)
                 {
                     result["hint"] = (result["hint"]?.ToString() ?? string.Empty)
-                        + " Read the last " + tailRead.Lines.Count + " of " + tailRead.TotalLines
-                        + " lines; filters above applied only to those. Raise `lines` (max "
-                        + LogTailReader.MaxRetainedLines + ") to widen the window.";
+                        + " Scanned " + tailRead.ScannedBytes + " bytes from the end of the log and stopped on the scan budget; "
+                        + "lines further back were not examined, so this is NOT evidence of no matches there.";
                 }
                 return McpResponse.Ok(code: "LogsRead", result: result);
             }
             catch (Exception ex)
             {
                 return "{\"status\":\"Error\", \"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+            }
+        }
+
+        private static long ResolveLogScanBudgetBytes()
+        {
+            var raw = Environment.GetEnvironmentVariable("GXMCP_LOG_SCAN_MAX_MB");
+            if (long.TryParse(raw, out long mb) && mb > 0) return mb * 1024L * 1024L;
+            return GxMcp.Worker.Helpers.LogTailReader.DefaultMaxScanBytes;
+        }
+
+        /// <summary>
+        /// The leading <c>[yyyy-MM-dd HH:mm:ss.fff]</c> prefix, compared in UTC. Returns
+        /// false for a line without a parseable timestamp, which is why such a line is
+        /// never treated as out of scope: an unparseable line must not end the scan.
+        /// </summary>
+        private static bool TryParseLogTimestamp(string line, out DateTime utc)
+        {
+            utc = default;
+            if (string.IsNullOrEmpty(line) || line[0] != '[') return false;
+            int close = line.IndexOf(']');
+            if (close <= 0) return false;
+            if (!DateTime.TryParse(line.Substring(1, close - 1), null,
+                    System.Globalization.DateTimeStyles.AssumeLocal, out DateTime lineTs))
+                return false;
+            utc = lineTs.ToUniversalTime();
+            return true;
+        }
+
+        /// <summary>
+        /// A regex when the pattern compiles, otherwise the substring fallback - an
+        /// invalid one must not fail the read. The bounded match timeout is honoured at
+        /// match time too: a valid-but-pathological pattern must not hang the STA thread,
+        /// and the old implementation degraded to substring for the whole chain rather
+        /// than surfacing a generic error.
+        /// </summary>
+        private static Func<string, bool> BuildGrepMatcher(string grepPattern)
+        {
+            try
+            {
+                var rx = new System.Text.RegularExpressions.Regex(grepPattern,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+                    GxMcp.Worker.Services.SourceSearchService.RegexMatchTimeout);
+                return l =>
+                {
+                    try { return rx.IsMatch(l); }
+                    catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+                    {
+                        return l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                };
+            }
+            catch
+            {
+                return l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0;
             }
         }
 
