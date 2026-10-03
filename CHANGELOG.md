@@ -22,6 +22,7 @@
 - `genexus_layout action=add_report_control` with a `caption` no longer reports `ReportControlWriteVerificationFailed` ("The SDK changed the report control caption during save") for a label whose caption persisted unchanged: the read-back carries the text as `Caption` while the write sets `Text`, and the verification now accepts either spelling.
 - `genexus_read part=WebForm` no longer serves the pre-write body after a `genexus_layout` WebForm write. The write marked only the `Layout` read-cache entry dirty, while the body is also cached under `WebForm`; a WebForm write now drops every cached part of the object.
 - `genexus_layout` `set_property` / `set_properties` on a report layout no longer silently change only the first of several same-named controls (e.g. the same label in two print blocks); they now fail with `AmbiguousControl`, listing each match's print block and path, and accept the get_tree path (`/Report/PrintBlock[2]/Control[1]`) as `control` to disambiguate.
+- Multi-KB discovery (`kbs`) no longer throws away the results of the KBs that already finished when the caller cancels while another KB is still queued. The queued KB's cancellation escaped the fan-out (it was raised by `Task.Run` and by the concurrency gate outside the per-KB `try`), so `Task.WhenAll` threw instead of returning a `canceled` outcome for that KB. A KB whose slot is granted after the cancel is no longer dispatched either.
 
 ### Internal
 

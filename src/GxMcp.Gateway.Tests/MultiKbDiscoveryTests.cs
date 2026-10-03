@@ -272,12 +272,20 @@ namespace GxMcp.Gateway.Tests
         public async Task CancellationIsReportedPerUnfinishedKb()
         {
             using var cts = new CancellationTokenSource();
+            // KbB cancels only after KbA was dispatched; otherwise, on a loaded
+            // machine, KbA may still be queued and is (correctly) canceled too.
+            var kbADispatched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var plan = Plan(Ok("KbA"), Ok("KbB"));
             var outcomes = await MultiKbDiscovery.RunAsync(
                 plan,
                 async (target, ct) =>
                 {
-                    if (target.Alias == "KbA") return Matches(target.Alias, "X");
+                    if (target.Alias == "KbA")
+                    {
+                        kbADispatched.SetResult();
+                        return Matches(target.Alias, "X");
+                    }
+                    await kbADispatched.Task;
                     cts.Cancel();
                     await Task.Delay(TimeSpan.FromSeconds(10), ct);
                     return Matches(target.Alias, "Y");
@@ -290,6 +298,33 @@ namespace GxMcp.Gateway.Tests
             var cancelled = outcomes.Single(o => o.Alias == "KbB");
             Assert.Equal(MultiKbDiscovery.StatusCanceled, cancelled.Status);
             Assert.False(cancelled.Complete);
+        }
+
+        [Fact]
+        public async Task CancellationOfAKbStillQueuedKeepsTheFinishedKbResults()
+        {
+            // Concurrency 1: whichever KB runs first cancels the caller and still
+            // returns its matches; the other one is still queued (at the gate, or
+            // not even scheduled). Before the fix the queued KB's cancellation
+            // escaped RunAsync and Task.WhenAll threw, erasing the finished KB's
+            // results along with it.
+            using var cts = new CancellationTokenSource();
+            var plan = Plan(Ok("KbA"), Ok("KbB"));
+            var outcomes = await MultiKbDiscovery.RunAsync(
+                plan,
+                (target, ct) =>
+                {
+                    cts.Cancel();
+                    return Task.FromResult(Matches(target.Alias, "X"));
+                },
+                1,
+                TimeSpan.FromSeconds(30),
+                cts.Token);
+
+            Assert.Equal(2, outcomes.Count);
+            Assert.Single(outcomes, o => o.Status == MultiKbDiscovery.StatusOk);
+            var queued = Assert.Single(outcomes, o => o.Status == MultiKbDiscovery.StatusCanceled);
+            Assert.False(queued.Complete);
         }
 
         // ------------------------------------------------------------- envelope
