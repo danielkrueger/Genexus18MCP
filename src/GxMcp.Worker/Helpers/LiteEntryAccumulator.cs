@@ -59,9 +59,29 @@ namespace GxMcp.Worker.Helpers
             _entries = seed == null ? new List<SearchIndex.IndexEntry>() : seed.Where(e => e != null).ToList();
             _slotByGuid = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             _duplicateGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Reindex();
+        }
+
+        /// <summary>
+        /// Rebuilds the GUID -> slot map from the current list.
+        ///
+        /// <para>
+        /// Issue #378. <see cref="Upsert"/>'s duplicate-GUID fallback and
+        /// <see cref="Compact"/> both physically remove elements, which shifts every
+        /// later element left. Rebuilding afterwards keeps the map pointing at live
+        /// slots; skipping it made a later Upsert tombstone an unrelated entry (one
+        /// object silently vanished and another appeared twice) or throw
+        /// <see cref="ArgumentOutOfRangeException"/> once enough elements had been
+        /// removed. O(n), and only on the rare physical-removal paths.
+        /// </para>
+        /// </summary>
+        private void Reindex()
+        {
+            _slotByGuid.Clear();
+            _duplicateGuids.Clear();
             for (int i = 0; i < _entries.Count; i++)
             {
-                string guid = _entries[i].Guid;
+                string guid = _entries[i]?.Guid;
                 if (string.IsNullOrEmpty(guid)) continue;
                 Comparisons++;
                 if (_slotByGuid.ContainsKey(guid)) _duplicateGuids.Add(guid);
@@ -101,6 +121,9 @@ namespace GxMcp.Worker.Helpers
                         int removed = _entries.RemoveAll(e =>
                             e != null && string.Equals(e.Guid, guid, StringComparison.OrdinalIgnoreCase));
                         Comparisons += removed;
+                        // The removals shifted every later slot left, so the map has to
+                        // follow before this call records the replacement's slot.
+                        Reindex();
                     }
                     else
                     {
@@ -119,7 +142,32 @@ namespace GxMcp.Worker.Helpers
             if (_tombstones == 0) return 0;
             int reclaimed = _entries.RemoveAll(e => e == null);
             _tombstones = 0;
+            // Same shifting hazard as the fallback above: Entries has always been read
+            // once at the end of the walk, which is the only reason this was ever safe.
+            Reindex();
             return reclaimed;
+        }
+
+        /// <summary>
+        /// Issue #378: every mapped GUID must point at a live slot holding that same
+        /// GUID. A tombstone is fine to leave unmapped; a slot that shifted underneath a
+        /// stale index is not. Diagnostic only - it exists so a guard can assert the
+        /// invariant instead of inferring it from a thrown IndexOutOfRange.
+        /// </summary>
+        internal bool SlotMapIsConsistent
+        {
+            get
+            {
+                foreach (var pair in _slotByGuid)
+                {
+                    int slot = pair.Value;
+                    if (slot < 0 || slot >= _entries.Count) return false;
+                    var entry = _entries[slot];
+                    if (entry == null) return false;
+                    if (!string.Equals(entry.Guid, pair.Key, StringComparison.OrdinalIgnoreCase)) return false;
+                }
+                return true;
+            }
         }
     }
 }
