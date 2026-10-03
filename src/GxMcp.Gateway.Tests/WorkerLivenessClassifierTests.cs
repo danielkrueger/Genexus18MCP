@@ -31,6 +31,112 @@ namespace GxMcp.Gateway.Tests
                 }
             };
 
+        /// <summary>A probe with an explicit elapsed time, for the no-progress ceiling.</summary>
+        private static JObject ElapsedProbe(bool active, bool sawProgress, long elapsedMs, string op)
+            => new JObject
+            {
+                ["result"] = new JObject
+                {
+                    ["active"] = active,
+                    ["sawProgress"] = sawProgress,
+                    ["lastProgressMs"] = sawProgress ? 1_000 : (long?)null,
+                    ["elapsedMs"] = elapsedMs,
+                    ["operation"] = op
+                }
+            };
+
+        // ---- Issue #371: a call that never emits progress could never be called stalled.
+
+        [Fact]
+        public void A_Long_Busy_Call_With_No_Progress_Becomes_A_Recovery_Candidate()
+        {
+            // The defect: active=true, elapsedMs=600000, sawProgress=false stayed
+            // busy-unproven for as long as it lasted - minutes or hours - so a
+            // deadlocked SDK that emits nothing was never recovered.
+            var d = WorkerLivenessClassifier.Classify(
+                "kb1", transportAlive: true,
+                ElapsedProbe(active: true, sawProgress: false,
+                    WorkerLivenessClassifier.NoProgressStallAfterMs + 1_000, "object/Read"));
+
+            Assert.Equal("busy-stalled-unproven", (string)d["sdk"]);
+            Assert.Equal("no-progress-ceiling", (string)d["sdkStallReason"]);
+            Assert.True(WorkerLivenessClassifier.Recovers(d));
+        }
+
+        [Fact]
+        public void A_Short_Busy_Call_With_No_Progress_Is_Not_Recovered()
+        {
+            // The safety half: one sample cannot tell a healthy three-second SDK call from
+            // a wedged one, and guessing "stalled" would recycle a Worker mid-call.
+            var d = WorkerLivenessClassifier.Classify(
+                "kb1", transportAlive: true,
+                ElapsedProbe(active: true, sawProgress: false, 3_000, "object/Read"));
+
+            Assert.Equal("busy-unproven", (string)d["sdk"]);
+            Assert.Null((string?)d["sdkStallReason"]);
+            Assert.False(WorkerLivenessClassifier.Recovers(d));
+        }
+
+        [Fact]
+        public void A_Progressing_Long_Build_Is_Never_A_Recovery_Target()
+        {
+            // Twenty minutes is fine for a build that reports progress every 30s.
+            var d = WorkerLivenessClassifier.Classify(
+                "kb1", transportAlive: true,
+                ElapsedProbe(active: true, sawProgress: true, 20 * 60_000, "build/run"));
+
+            Assert.Equal("busy-progressing", (string)d["sdk"]);
+            Assert.False(WorkerLivenessClassifier.Recovers(d));
+        }
+
+        [Fact]
+        public void Elapsed_Time_Alone_Never_Convicts_A_Progressing_Lane()
+        {
+            // The ceiling must not become a second, coarser version of the progress rule.
+            var d = WorkerLivenessClassifier.Classify(
+                "kb1", transportAlive: true,
+                ElapsedProbe(active: true, sawProgress: true,
+                    WorkerLivenessClassifier.NoProgressStallAfterMs * 10, "build/run"));
+
+            Assert.Equal("busy-progressing", (string)d["sdk"]);
+        }
+
+        [Fact]
+        public void An_Idle_Lane_Is_Never_Stalled_However_Long_The_Elapsed_Time()
+        {
+            var d = WorkerLivenessClassifier.Classify(
+                "kb1", transportAlive: true,
+                ElapsedProbe(active: false, sawProgress: false,
+                    WorkerLivenessClassifier.NoProgressStallAfterMs * 5, ""));
+
+            Assert.Equal("idle", (string)d["sdk"]);
+            Assert.False(WorkerLivenessClassifier.Recovers(d));
+        }
+
+        [Fact]
+        public void The_No_Progress_Ceiling_Is_The_More_Gentle_Of_The_Two_Windows()
+        {
+            // A lane that has proved it can report progress is trusted on a much shorter
+            // window; one that has never spoken gets a long grace period.
+            Assert.True(WorkerLivenessClassifier.NoProgressStallAfterMs > WorkerLivenessClassifier.SdkStallAfterMs);
+            Assert.InRange(WorkerLivenessClassifier.NoProgressStallAfterMs, 60_000, 3_600_000);
+            // Pinned to the same number the broker uses, so the two copies of this rule
+            // cannot drift into disagreeing about the same child.
+            Assert.Equal(600_000, WorkerLivenessClassifier.NoProgressStallAfterMs);
+        }
+
+        [Fact]
+        public void A_Dead_Transport_Is_Still_Unknown_Rather_Than_Stalled()
+        {
+            var d = WorkerLivenessClassifier.Classify(
+                "kb1", transportAlive: false,
+                ElapsedProbe(active: true, sawProgress: false,
+                    WorkerLivenessClassifier.NoProgressStallAfterMs * 3, "object/Read"));
+
+            Assert.Equal("unknown", (string)d["sdk"]);
+            Assert.True(WorkerLivenessClassifier.Recovers(d));
+        }
+
         [Fact]
         public void A_Live_Transport_And_An_Idle_Sdk_Is_Healthy()
         {

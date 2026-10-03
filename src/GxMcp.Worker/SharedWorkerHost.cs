@@ -699,6 +699,26 @@ namespace GxMcp.Worker
         internal const int SdkStallAfterMs = 90_000;
 
         /// <summary>
+        /// Issue #371. The grace period for a busy lane that has never reported progress,
+        /// matching the Gateway's window so the two cannot disagree about the same child.
+        /// Only operations that emit progress notifications prove they can move; a single
+        /// object read, a save, or a COM call blocked behind a modal dialog emits none and
+        /// would otherwise read as busy-unproven forever.
+        /// </summary>
+        internal const int NoProgressStallAfterMsDefault = 600_000;
+
+        internal static readonly int NoProgressStallAfterMs = ResolveNoProgressStallAfterMs();
+
+        private const string NoProgressStallEnvVar = "GXMCP_SDK_NO_PROGRESS_STALL_MS";
+
+        private static int ResolveNoProgressStallAfterMs()
+        {
+            var raw = Environment.GetEnvironmentVariable(NoProgressStallEnvVar);
+            if (int.TryParse(raw, out int configured) && configured > 0) return configured;
+            return NoProgressStallAfterMsDefault;
+        }
+
+        /// <summary>
         /// Classifies the SDK lane. Issue #335.
         ///
         /// <para>
@@ -713,15 +733,23 @@ namespace GxMcp.Worker
         /// A busy lane with no observed progress is <c>busy-unproven</c>, not
         /// <c>busy-stalled</c>: one sample cannot tell a healthy short call from a
         /// deadlocked one, and guessing "stalled" would kill a Worker three seconds into
-        /// ordinary work.
+        /// ordinary work. Past <see cref="NoProgressStallAfterMs"/> of unproven progress it
+        /// becomes <c>busy-stalled-unproven</c>, a recovery candidate - issue #371.
         /// </para>
         /// </summary>
-        internal static string ClassifySdkState(bool active, bool sawProgress, long lastProgressMs)
+        internal static string ClassifySdkState(bool active, bool sawProgress, long lastProgressMs, long elapsedMs = 0)
         {
             if (!active) return "idle";
-            if (!sawProgress || lastProgressMs < 0) return "busy-unproven";
+            if (!sawProgress || lastProgressMs < 0)
+                return elapsedMs >= NoProgressStallAfterMs ? "busy-stalled-unproven" : "busy-unproven";
             return lastProgressMs >= SdkStallAfterMs ? "busy-stalled" : "busy-progressing";
         }
+
+        /// <summary>Why <see cref="ClassifySdkState"/> reached its verdict, or null.</summary>
+        internal static string SdkStallReason(string sdkState)
+            => sdkState == "busy-stalled-unproven" ? "no-progress-ceiling"
+                : sdkState == "busy-stalled" ? "progress-stopped"
+                : null;
 
         /// <summary>
         /// Builds the heartbeat acknowledgement, including the broker's view of the child.
@@ -786,6 +814,8 @@ namespace GxMcp.Worker
                 bool sdkActive = sdk["active"]?.ToObject<bool?>() ?? false;
                 bool sawProgress = sdk["sawProgress"]?.ToObject<bool?>() ?? false;
                 long lastProgressMs = sdk["lastProgressMs"]?.ToObject<long?>() ?? -1;
+                long sdkElapsedMs = sdk["elapsedMs"]?.ToObject<long?>() ?? 0;
+                string sdkState = ClassifySdkState(sdkActive, sawProgress, lastProgressMs, sdkElapsedMs);
                 var q = sdk["queueDepths"] as JObject;
 
                 ack["supervision"] = new JObject
@@ -807,7 +837,7 @@ namespace GxMcp.Worker
                     ["queueP2"] = q?["p2"]?.ToObject<int?>() ?? 0,
                     ["sdkBusy"] = sdkActive,
                     ["sdkOperation"] = sdk["operation"]?.ToString(),
-                    ["sdkElapsedMs"] = sdk["elapsedMs"]?.ToObject<long?>() ?? 0,
+                    ["sdkElapsedMs"] = sdkElapsedMs,
                     ["sdkSawProgress"] = sawProgress,
                     // -1 means "no progress has ever been observed for this operation",
                     // which is a different answer from 0 ("progress just now").
@@ -815,7 +845,11 @@ namespace GxMcp.Worker
                     // The classification, computed where the evidence is. A Gateway
                     // receiving this does not have to reimplement the distinction, and
                     // cannot disagree with the broker about which child it describes.
-                    ["sdkState"] = ClassifySdkState(sdkActive, sawProgress, lastProgressMs),
+                    // Issue #371: elapsed time is part of the input, so a lane that never
+                    // emits progress can still be recognised as stuck.
+                    ["sdkState"] = sdkState,
+                    ["sdkStallReason"] = SdkStallReason(sdkState),
+                    ["sdkNoProgressStallAfterMs"] = NoProgressStallAfterMs,
                     // Generation, so every attachment can tell it is looking at the same
                     // child. A Gateway must never unilaterally recycle another's child;
                     // this is the value they compare before acting.

@@ -42,6 +42,42 @@ namespace GxMcp.Gateway
         internal const int SdkStallAfterMs = 90_000;
 
         /// <summary>
+        /// Issue #371. How long a busy SDK lane that has never reported progress may run
+        /// before it counts as stalled.
+        ///
+        /// <para>
+        /// The progress marker is reset when each command starts and is only set by
+        /// <c>ProgressEmitter</c>, so it is set by builds and bulk indexing - the
+        /// operations that emit progress notifications. Most SDK calls never emit any: a
+        /// single object read, a save, an inspect, or a COM call blocked behind a modal
+        /// dialog. Those used to stay <c>busy-unproven</c> for as long as they lasted -
+        /// minutes or hours - and were therefore never recovered, by
+        /// <c>genexus_connection_recover</c> or by shared-host supervision, which applies
+        /// the same rule.
+        /// </para>
+        ///
+        /// <para>
+        /// This ceiling is deliberately several times <see cref="SdkStallAfterMs"/>: a
+        /// lane that has proved it reports progress is trusted to keep doing so on a much
+        /// shorter window, while one that has never spoken is given a long grace period
+        /// before being called stuck. Wrong in the "stalled" direction still costs the
+        /// in-flight work, so the default is minutes rather than seconds.
+        /// </para>
+        /// </summary>
+        internal const int NoProgressStallAfterMsDefault = 600_000;
+
+        internal static readonly int NoProgressStallAfterMs = ResolveNoProgressStallAfterMs();
+
+        private const string NoProgressStallEnvVar = "GXMCP_SDK_NO_PROGRESS_STALL_MS";
+
+        private static int ResolveNoProgressStallAfterMs()
+        {
+            var raw = Environment.GetEnvironmentVariable(NoProgressStallEnvVar);
+            if (int.TryParse(raw, out int configured) && configured > 0) return configured;
+            return NoProgressStallAfterMsDefault;
+        }
+
+        /// <summary>
         /// Builds the qualified liveness record for one Worker.
         /// </summary>
         /// <param name="alias">KB alias, carried through for the caller's convenience.</param>
@@ -54,6 +90,7 @@ namespace GxMcp.Gateway
         {
             string sdk;
             string operation = null;
+            string stallReason = null;
             long? elapsedMs = null;
             long? lastProgressMs = null;
 
@@ -84,15 +121,23 @@ namespace GxMcp.Gateway
                 }
                 else if (!sawProgress || lastProgressMs == null)
                 {
-                    // Busy, and we have never seen it move. Whether that is a healthy
-                    // three-second SDK call or a wedged one is genuinely undecidable from
-                    // a single sample, so it is left alone and named as unproven. Calling
-                    // this "stalled" would recycle a Worker mid-call.
-                    sdk = "busy-unproven";
+                    // Busy, and we have never seen it move. Issue #371: one sample cannot
+                    // tell a healthy three-second SDK call from a wedged one, so a short
+                    // lane is left alone and named as unproven - calling it "stalled" would
+                    // recycle a Worker mid-call. Past the ceiling it is a different
+                    // question: this operation has had no way to prove progress in ten
+                    // minutes, and most operations that legitimately run that long are the
+                    // ones that emit progress. A distinct state, because it is a recovery
+                    // candidate while plain busy-unproven is not.
+                    sdk = elapsedMs != null && elapsedMs.Value >= NoProgressStallAfterMs
+                        ? "busy-stalled-unproven"
+                        : "busy-unproven";
+                    if (sdk == "busy-stalled-unproven") stallReason = "no-progress-ceiling";
                 }
                 else if (lastProgressMs.Value >= SdkStallAfterMs)
                 {
                     sdk = "busy-stalled";
+                    stallReason = "progress-stopped";
                 }
                 else
                 {
@@ -113,7 +158,13 @@ namespace GxMcp.Gateway
                 ["sdkOperation"] = operation,
                 ["sdkElapsedMs"] = elapsedMs,
                 ["sdkLastProgressMs"] = lastProgressMs,
-                ["sdkStallAfterMs"] = SdkStallAfterMs
+                ["sdkStallAfterMs"] = SdkStallAfterMs,
+                // Issue #371. Why the lane was called stalled, or null when it was not.
+                // "no-progress-ceiling" means the operation never reported progress and
+                // ran past the grace period; "progress-stopped" means it had been
+                // reporting and then went quiet.
+                ["sdkStallReason"] = stallReason,
+                ["sdkNoProgressStallAfterMs"] = NoProgressStallAfterMs
             };
         }
 
@@ -128,7 +179,12 @@ namespace GxMcp.Gateway
             if (diagnosis == null) return true;
             bool transportAlive = string.Equals(diagnosis["transport"]?.ToString(), "alive", StringComparison.Ordinal);
             if (!transportAlive) return true;
-            return string.Equals(diagnosis["sdk"]?.ToString(), "busy-stalled", StringComparison.Ordinal);
+            string sdk = diagnosis["sdk"]?.ToString();
+            return string.Equals(sdk, "busy-stalled", StringComparison.Ordinal)
+                // Issue #371: a lane that has never reported progress is a recovery
+                // candidate once it passes the ceiling, otherwise a deadlocked SDK that
+                // emits nothing is never recovered at all.
+                || string.Equals(sdk, "busy-stalled-unproven", StringComparison.Ordinal);
         }
     }
 }

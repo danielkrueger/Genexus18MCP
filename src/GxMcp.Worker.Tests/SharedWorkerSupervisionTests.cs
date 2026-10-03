@@ -20,6 +20,47 @@ namespace GxMcp.Worker.Tests
     /// </summary>
     public class SharedWorkerSupervisionTests
     {
+        // ---- Issue #371: the broker and the Gateway must classify the same child the same
+        // way, including for a lane that never emits progress.
+
+        [Fact]
+        public void A_Long_Unproven_Lane_Becomes_Stalled_In_The_Broker_Too()
+        {
+            Assert.Equal("busy-stalled-unproven",
+                SharedWorkerHostRuntime.ClassifySdkState(
+                    active: true, sawProgress: false, lastProgressMs: -1,
+                    elapsedMs: SharedWorkerHostRuntime.NoProgressStallAfterMs + 1));
+            Assert.Equal("no-progress-ceiling",
+                SharedWorkerHostRuntime.SdkStallReason("busy-stalled-unproven"));
+            Assert.Equal("progress-stopped",
+                SharedWorkerHostRuntime.SdkStallReason("busy-stalled"));
+            Assert.Null(SharedWorkerHostRuntime.SdkStallReason("busy-progressing"));
+        }
+
+        [Fact]
+        public void The_No_Progress_Ceiling_Matches_The_Gateways_Window()
+        {
+            // Two copies of this rule can drift, and a drift means the broker elects a
+            // recycle the Gateway does not recognise (or the reverse). The constants are
+            // pinned to the same numbers on both sides; a change to one must change both.
+            Assert.Equal(600_000, SharedWorkerHostRuntime.NoProgressStallAfterMs);
+            Assert.Equal(SharedWorkerHostRuntime.NoProgressStallAfterMsDefault,
+                SharedWorkerHostRuntime.NoProgressStallAfterMs);
+        }
+
+        [Fact]
+        public void The_Broker_Carries_The_Ceiling_Into_The_Acknowledgement()
+        {
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "SharedWorkerHost.cs");
+
+            Assert.Contains("[\"sdkStallReason\"]", source, StringComparison.Ordinal);
+            Assert.Contains("[\"sdkNoProgressStallAfterMs\"]", source, StringComparison.Ordinal);
+            // The classification has to consume the elapsed time, not just the two flags.
+            Assert.Contains("ClassifySdkState(sdkActive, sawProgress, lastProgressMs, sdkElapsedMs)",
+                source, StringComparison.Ordinal);
+        }
+
         [Fact]
         public void An_Inactive_Lane_Is_Idle()
         {
