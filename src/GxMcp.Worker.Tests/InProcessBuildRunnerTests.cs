@@ -352,6 +352,108 @@ namespace GxMcp.Worker.Tests
         {
             Assert.Equal(expected, InProcessBuildRunner.HasExplicitTargetIdentity(target));
         }
+
+        private static bool InvokeWithTaskOutput(object kb, IBuildEngine engine, Func<bool> action)
+        {
+            var mi = typeof(InProcessBuildRunner).GetMethod("WithTaskOutput", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(mi);
+            try
+            {
+                return (bool)mi.MakeGenericMethod(typeof(bool)).Invoke(null, new object[] { kb, engine, action });
+            }
+            catch (TargetInvocationException ex)
+            {
+                throw ex.InnerException;
+            }
+        }
+
+        [Fact]
+        public void BL_call_runs_inside_the_task_output_subscription()
+        {
+            var specifyField = typeof(InProcessBuildRunner).GetField("_typeSpecifyOneOnly", BindingFlags.Static | BindingFlags.NonPublic);
+            object oldSpecify = specifyField.GetValue(null);
+            var engine = new InProcessBuildEngine((l, e) => { });
+            try
+            {
+                specifyField.SetValue(null, typeof(FakeOutputCarrierTask));
+                FakeOutputCarrierTask.Reset();
+
+                bool result = InvokeWithTaskOutput("kb", engine, () => { FakeOutputCarrierTask.Events.Add("action"); return true; });
+
+                Assert.True(result);
+                Assert.Equal(new[] { "subscribe", "action", "unsubscribe" }, FakeOutputCarrierTask.Events);
+                Assert.Same(engine, FakeOutputCarrierTask.LastEngine);
+                Assert.Equal("IDE", FakeOutputCarrierTask.LastOutput);
+            }
+            finally
+            {
+                specifyField.SetValue(null, oldSpecify);
+            }
+        }
+
+        [Fact]
+        public void Task_output_subscription_is_released_when_the_BL_call_throws()
+        {
+            var specifyField = typeof(InProcessBuildRunner).GetField("_typeSpecifyOneOnly", BindingFlags.Static | BindingFlags.NonPublic);
+            object oldSpecify = specifyField.GetValue(null);
+            try
+            {
+                specifyField.SetValue(null, typeof(FakeOutputCarrierTask));
+                FakeOutputCarrierTask.Reset();
+
+                Assert.Throws<InvalidOperationException>(() =>
+                    InvokeWithTaskOutput("kb", new InProcessBuildEngine((l, e) => { }), () => throw new InvalidOperationException("sdk")));
+
+                Assert.Equal(new[] { "subscribe", "unsubscribe" }, FakeOutputCarrierTask.Events);
+            }
+            finally
+            {
+                specifyField.SetValue(null, oldSpecify);
+            }
+        }
+
+        [Fact]
+        public void Environment_copy_older_than_the_design_object_is_stale()
+        {
+            var built = new DateTime(2026, 1, 1, 10, 0, 0);
+            Assert.True(InProcessBuildRunner.IsEnvironmentCopyStale(built.AddMinutes(5), built));
+            Assert.False(InProcessBuildRunner.IsEnvironmentCopyStale(built, built));
+            Assert.False(InProcessBuildRunner.IsEnvironmentCopyStale(built, built.AddMinutes(5)));
+        }
+
+        [Fact]
+        public void Object_missing_from_the_environment_copy_is_stale()
+        {
+            Assert.True(InProcessBuildRunner.IsEnvironmentCopyStale(new DateTime(2026, 1, 1), null));
+            Assert.False(InProcessBuildRunner.IsEnvironmentCopyStale(null, null));
+        }
+    }
+
+    public sealed class FakeOutputCarrierTask
+    {
+        public static List<string> Events { get; } = new List<string>();
+        public static IBuildEngine LastEngine { get; private set; }
+        public static string LastOutput { get; private set; }
+
+        public object KB { get; set; }
+        public IBuildEngine BuildEngine { get; set; }
+        public string Output { get; set; }
+
+        public void OutputSubscribe()
+        {
+            LastEngine = BuildEngine;
+            LastOutput = Output;
+            Events.Add("subscribe");
+        }
+
+        public void OutputUnsubscribe() => Events.Add("unsubscribe");
+
+        public static void Reset()
+        {
+            Events.Clear();
+            LastEngine = null;
+            LastOutput = null;
+        }
     }
 
     public sealed class FakeSpecifyOneOnlyTask
