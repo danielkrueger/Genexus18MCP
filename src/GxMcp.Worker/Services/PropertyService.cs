@@ -832,9 +832,11 @@ namespace GxMcp.Worker.Services
                     if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
                 }
 
-                if (IsWebPanelReferenceType(GetPropertyTargetType(container, propName)))
-                    return SetWebPanelReferenceProperty(obj, container, target, propName, value, controlName, typeFilter);
-
+                // Validate before dispatching. ValidatePropertyWrite already exempts a
+                // WebPanelReference from the scalar value-shape check (it is set by object
+                // name through the typed adapter below), but its read-only check runs first,
+                // so returning from the reference branch ahead of this call would make every
+                // read-only WebPanelReference property writable.
                 string propertyValidation = ValidatePropertyWrite(container, propName, value);
                 if (propertyValidation != null)
                     return Models.McpResponse.Err(
@@ -845,6 +847,9 @@ namespace GxMcp.Worker.Services
                                 : "InvalidPropertyValue",
                         message: propertyValidation,
                         target: target);
+
+                if (IsWebPanelReferenceType(GetPropertyTargetType(container, propName)))
+                    return SetWebPanelReferenceProperty(obj, container, target, propName, value, controlName, typeFilter);
 
                 string beforeVal = null;
                 using (var trans = obj.Model.KB.BeginTransaction())
@@ -1349,10 +1354,23 @@ namespace GxMcp.Worker.Services
         /// <c>GetName(KBModel)</c> is rendered as the referenced object's name instead; an
         /// empty/none reference renders as an empty string.
         /// </summary>
+        // A value whose GetName(KBModel) is meaningful for rendering: the SDK reference type
+        // itself, or another reference-shaped wrapper exposing the same shape. Applying
+        // GetName to every property would change how unrelated types are displayed, and a
+        // type whose GetName throws must still render its own value rather than silently
+        // becoming empty (an empty read can trip the PropertyWipeException safety net).
+        internal static bool IsReferenceShapedType(Type type)
+        {
+            if (type == null) return false;
+            if (IsWebPanelReferenceType(type)) return true;
+            return type.Name.IndexOf("Reference", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         internal static string RenderPropertyValue(object value, KBModel model)
         {
             if (value == null) return string.Empty;
             if (value is string s) return s;
+            if (!IsReferenceShapedType(value.GetType())) return value.ToString() ?? string.Empty;
             var getName = value.GetType().GetMethod("GetName", new[] { typeof(KBModel) });
             if (getName != null && getName.ReturnType == typeof(string))
             {
@@ -1365,7 +1383,8 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex)
                 {
                     Logger.Debug("[PROPERTY] GetName failed for " + value.GetType().Name + ": " + (ex.InnerException?.Message ?? ex.Message));
-                    return string.Empty;
+                    // Fall back to the reference's own rendering rather than reporting no value.
+                    return value.ToString() ?? string.Empty;
                 }
             }
             return value.ToString() ?? string.Empty;

@@ -24,6 +24,24 @@ namespace GxMcp.Worker.Tests
 
         public class FakeDefinition { public Type Type { get; set; } public bool ReadOnly { get; set; } }
 
+    // Exposes GetName(KBModel) like a reference, but is not reference-shaped: its value
+    // must keep rendering through ToString.
+    public class ValueWithGetName
+    {
+        private readonly string _value;
+        public ValueWithGetName(string value) { _value = value; }
+        public string GetName(KBModel model) => "resolved-name";
+        public override string ToString() => _value;
+    }
+
+    // Reference-shaped, but its GetName fails. Rendering must fall back rather than
+    // reporting no value.
+    public class ThrowingReference
+    {
+        public string GetName(KBModel model) => throw new InvalidOperationException("no name");
+        public override string ToString() => "ThrowingReference(value)";
+    }
+
         public class FakeProperty
         {
             public string Name { get; set; }
@@ -60,6 +78,37 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("5", PropertyService.RenderPropertyValue(5, null));
             Assert.Equal("abc", PropertyService.RenderPropertyValue("abc", null));
             Assert.Equal("", PropertyService.RenderPropertyValue(null, null));
+        }
+
+        // A non-reference value that happens to expose GetName(KBModel) must keep its own
+        // rendering. Resolving every property's GetName changed how unrelated types display,
+        // which is wider than this fix needs.
+        [Fact]
+        public void Render_NonReferenceValueWithGetName_KeepsItsOwnValue()
+        {
+            Assert.Equal("own-value", PropertyService.RenderPropertyValue(new ValueWithGetName("own-value"), null));
+        }
+
+        // A reference-shaped value whose GetName throws must not render as empty: an empty
+        // read is indistinguishable from a wiped property and trips the safety net.
+        [Fact]
+        public void Render_ReferenceWhoseGetNameThrows_DoesNotBecomeEmpty()
+        {
+            string rendered = PropertyService.RenderPropertyValue(new ThrowingReference(), null);
+
+            Assert.NotEqual("", rendered);
+            Assert.Equal(new ThrowingReference().ToString(), rendered);
+        }
+
+        [Fact]
+        public void IsReferenceShapedType_CoversReferencesAndNothingElse()
+        {
+            Assert.True(PropertyService.IsReferenceShapedType(typeof(WebPanelReference)));
+            Assert.True(PropertyService.IsReferenceShapedType(typeof(FakeReference)));
+            Assert.False(PropertyService.IsReferenceShapedType(typeof(ValueWithGetName)));
+            Assert.False(PropertyService.IsReferenceShapedType(typeof(string)));
+            Assert.False(PropertyService.IsReferenceShapedType(typeof(int)));
+            Assert.False(PropertyService.IsReferenceShapedType(null));
         }
 
         [Fact]
