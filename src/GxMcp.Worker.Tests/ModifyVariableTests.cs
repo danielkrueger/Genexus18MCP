@@ -95,27 +95,60 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("MissingParameter", obj["error"]?["code"]?.ToString());
         }
 
-        [Theory]
-        [InlineData("")]
-        [InlineData("Sample description")]
-        public void ModifyVariable_DescriptionOnly_DoesNotRequireType(string description)
-        {
-            // description without a type must pass the type gate (no UnknownType /
-            // MissingParameter) and reach the object-resolution path.
-            var ws = BuildIsolatedWriteService();
-            string json;
-            try
-            {
-                json = ws.ModifyVariable("NonExistentObj_" + System.Guid.NewGuid().ToString("N"), "X", null, description: description);
-            }
-            catch (System.IO.FileNotFoundException) { return; }
-            catch (System.TypeLoadException) { return; }
+        // Set-vs-clear is the distinction the description-only path exists to express, and it is
+// invisible to a test that stops at the argument gate. `ResolveEffectiveDescription` is the
+// shared rule for both the variable and the Business Component modify path, so it is
+// pinned directly rather than inferred from an error code.
+[Theory]
+[InlineData(null, "kept", "kept")]   // not supplied: a retype must not clear it
+[InlineData("", "kept", "")]         // explicit empty: an intentional clear
+[InlineData("new text", "kept", "new text")]
+[InlineData("new text", null, "new text")]
+[InlineData(null, null, null)]
+[InlineData("", null, "")]
+public void ResolveEffectiveDescription_DistinguishesUnsuppliedFromCleared(
+    string requested, string preserved, string expected)
+{
+    Assert.Equal(expected, WriteService.ResolveEffectiveDescription(requested, preserved));
+}
 
-            var obj = JObject.Parse(json);
-            string code = obj["error"]?["code"]?.ToString();
-            Assert.NotEqual("UnknownType", code);
-            Assert.NotEqual("MissingParameter", code);
-        }
+// The defect was that the Business Component path had no way to receive a description at
+// all: the dispatcher did not forward it and the method had no parameter for it, so the
+// call returned success and changed nothing. Pinned on the signature, which fails for the
+// original reason and needs no KB to observe.
+[Fact]
+public void ChangeBusinessComponentVariable_AcceptsAnOptionalDescription()
+{
+    var method = typeof(WriteService).GetMethod("ChangeBusinessComponentVariable");
+    Assert.NotNull(method);
+    var parameters = method.GetParameters();
+    var last = parameters[parameters.Length - 1];
+    Assert.Equal("description", last.Name);
+    Assert.Equal(typeof(string), last.ParameterType);
+    // Optional, so the existing `add` call site keeps compiling unchanged.
+    Assert.True(last.HasDefaultValue);
+    Assert.Null(last.DefaultValue);
+}
+
+[Fact]
+public void ModifyVariable_DescriptionOnly_DoesNotRequireType()
+{
+    // description without a type must pass the type gate (no UnknownType /
+    // MissingParameter) and reach the object-resolution path.
+    var ws = BuildIsolatedWriteService();
+    string json;
+    try
+    {
+        json = ws.ModifyVariable("NonExistentObj_" + System.Guid.NewGuid().ToString("N"), "X", null, description: "Sample description");
+    }
+    catch (System.IO.FileNotFoundException) { return; }
+    catch (System.TypeLoadException) { return; }
+
+    var obj = JObject.Parse(json);
+    string code = obj["error"]?["code"]?.ToString();
+    Assert.NotEqual("UnknownType", code);
+    Assert.NotEqual("MissingParameter", code);
+}
 
         [Fact]
         public void ModifyVariable_ObjectNotFound_ReturnsError()

@@ -2428,7 +2428,7 @@ namespace GxMcp.Worker.Services
 
                     var newVar = new global::Artech.Genexus.Common.Variable(varPart);
                     newVar.Name = varName;
-                    string effectiveDescription = description ?? preservedDescription;
+                    string effectiveDescription = ResolveEffectiveDescription(description, preservedDescription);
                     if (!string.IsNullOrEmpty(effectiveDescription))
                     {
                         try { newVar.Description = effectiveDescription; } catch { /* best-effort */ }
@@ -2796,10 +2796,17 @@ namespace GxMcp.Worker.Services
         /// Domain resolver: it resolves the Transaction first, binds its EntityKey, and verifies
         /// the same GUID from a fresh VariablesPart read after commit.
         /// </summary>
-        public string ChangeBusinessComponentVariable(string action, string target, string varName,
+        // An explicit description wins over the preserved one. null means "not supplied", so a
+// retype alone must not clear it; an empty string is an explicit clear. Shared by the
+// variable and Business Component modify paths so the two agree on that distinction.
+internal static string ResolveEffectiveDescription(string requested, string preserved)
+    => requested ?? preserved;
+
+public string ChangeBusinessComponentVariable(string action, string target, string varName,
             string objectName, string moduleName, bool dryRun, string expectedVersion,
             bool rollbackOnFailure = true, bool? collection = null,
-            int? dimensions = null, JArray dimensionSizes = null)
+            int? dimensions = null, JArray dimensionSizes = null,
+            string description = null)
         {
             string dimensionValidationError = DimensionValidationFailure(dimensions, dimensionSizes, collection, target);
             if (dimensionValidationError != null) return dimensionValidationError;
@@ -2995,18 +3002,23 @@ namespace GxMcp.Worker.Services
                             ?? throw new InvalidOperationException("Variables part not found during the atomic save.");
                         var currentVariable = currentPart.Variables.FirstOrDefault(v =>
                             string.Equals(v.Name, normalizedName, StringComparison.OrdinalIgnoreCase));
-                        string description = null;
+                        string preservedDescription = null;
                         if (currentVariable != null)
                         {
-                            try { description = currentVariable.Description; } catch { }
+                            try { preservedDescription = currentVariable.Description; } catch { }
                             currentPart.Variables.Remove(currentVariable);
                         }
+
+                        // An explicit description wins over the preserved one; null means
+                        // "not supplied", so the retype alone must not clear it. An empty
+                        // string is an explicit clear.
+                        string effectiveDescription = ResolveEffectiveDescription(description, preservedDescription);
 
                         var replacement = new global::Artech.Genexus.Common.Variable(currentPart)
                         {
                             Name = normalizedName
                         };
-                        try { replacement.Description = description; } catch { }
+                        try { replacement.Description = effectiveDescription; } catch { }
                         VariableInjector.BindVariableToBC(replacement, bc);
                         try { replacement.IsCollection = effectiveIsCollection; } catch { }
                         if (effectiveDimensions.HasValue
