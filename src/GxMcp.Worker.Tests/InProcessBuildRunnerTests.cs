@@ -131,6 +131,74 @@ namespace GxMcp.Worker.Tests
             Assert.True(engine.ContinueOnError);
         }
 
+        private static void LogMarker(InProcessBuildEngine engine, string message)
+        {
+            engine.LogMessageEvent(new BuildMessageEventArgs(message, null, "test", MessageImportance.Normal));
+        }
+
+        // BuildOne log of a target whose spec failed: the DeveloperMenu still compiles
+        // from the previously generated .cs and WebAppConfig then fails.
+        private static readonly string[] SpecFailedThenCompiledLog =
+        {
+            ">SSpecification:-:Specification",
+            ">O1spc0010: Type mismatch in assignment (Binary=File)|pos",
+            ">E0Specification:-:Specification",
+            ">SDefault (.NET Framework) Generation:-:Default (.NET Framework) Generation",
+            ">E1Default (.NET Framework) Generation:-:Default (.NET Framework) Generation",
+            ">SDeveloperMenu Compilation:-:DeveloperMenu Compilation",
+            ">E1DeveloperMenu Compilation:-:DeveloperMenu Compilation",
+            ">SWebAppConfig:-:Web configuration update",
+            ">E0Build One Task:-:Build One Task"
+        };
+
+        [Fact]
+        public void PartialSuccess_is_rejected_when_specification_section_failed()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            foreach (var line in SpecFailedThenCompiledLog) LogMarker(engine, line);
+
+            Assert.True(engine.CompileSucceeded);
+            Assert.True(engine.WebAppConfigStarted);
+            Assert.True(engine.PreCompileSectionFailed);
+            Assert.False(InProcessBuildRunner.IsLateStagePartialSuccess(engine));
+        }
+
+        [Fact]
+        public void PartialSuccess_is_rejected_when_generation_section_failed()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            LogMarker(engine, ">E1Specification:-:Specification");
+            LogMarker(engine, ">E0Default (.NET Framework) Generation:-:Default (.NET Framework) Generation");
+            LogMarker(engine, ">E1DeveloperMenu Compilation:-:DeveloperMenu Compilation");
+            LogMarker(engine, ">SWebAppConfig:-:Web configuration update");
+
+            Assert.False(InProcessBuildRunner.IsLateStagePartialSuccess(engine));
+        }
+
+        [Fact]
+        public void PartialSuccess_is_accepted_for_late_webappconfig_failure_after_clean_spec()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            LogMarker(engine, ">E1Specification:-:Specification");
+            LogMarker(engine, ">E1Default (.NET Framework) Generation:-:Default (.NET Framework) Generation");
+            LogMarker(engine, ">E1DeveloperMenu Compilation:-:DeveloperMenu Compilation");
+            LogMarker(engine, ">SWebAppConfig:-:Web configuration update");
+            LogMarker(engine, ">E0Build One Task:-:Build One Task");
+
+            Assert.False(engine.PreCompileSectionFailed);
+            Assert.True(InProcessBuildRunner.IsLateStagePartialSuccess(engine));
+        }
+
+        [Fact]
+        public void ResetSectionFlags_clears_precompile_failure()
+        {
+            var engine = new InProcessBuildEngine((l, e) => { });
+            LogMarker(engine, ">E0Specification:-:Specification");
+            engine.ResetSectionFlags();
+
+            Assert.False(engine.PreCompileSectionFailed);
+        }
+
         [Fact]
         public void RebuildAll_with_multiple_targets_runs_targeted_specify_before_force_rebuild()
         {
