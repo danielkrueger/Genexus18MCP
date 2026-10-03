@@ -1415,6 +1415,58 @@ test('doctor resolves the neutral user config outside a KB folder, like the Gate
     }
 });
 
+// The diagnostics fall back to the shared user profile, but the commands that WRITE to
+// the resolved path must not: `clients add` patches it in place and `config migrate`
+// reads it as `--from`. Without the opt-in, both would silently rewrite
+// `~/.genexus-mcp/config.json` when run from any folder that is not a KB.
+test('clients add refuses to fall back to the shared user profile config', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-clients-add-user-cfg-'));
+    try {
+        const home = path.join(tempRoot, 'home');
+        const cwd = path.join(tempRoot, 'project');
+        const userConfig = path.join(home, '.genexus-mcp', 'config.json');
+        fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+        fs.mkdirSync(cwd, { recursive: true });
+        const original = JSON.stringify({ Environment: { ResolutionPolicy: 'strict' } }, null, 2);
+        fs.writeFileSync(userConfig, original);
+
+        const result = runCli(['clients', 'add', '--clients', 'opencode', '--format', 'json'], {
+            cwd,
+            env: { ...sandboxHomeEnv(home), GENEXUS_MCP_GATEWAY_EXE: process.execPath }
+        });
+
+        assert.notEqual(result.status, 0, result.stdout + result.stderr);
+        // The shared config is untouched.
+        assert.equal(fs.readFileSync(userConfig, 'utf8'), original);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('config migrate requires an explicit source instead of defaulting to the user profile', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-config-migrate-user-cfg-'));
+    try {
+        const home = path.join(tempRoot, 'home');
+        const cwd = path.join(tempRoot, 'project');
+        const userConfig = path.join(home, '.genexus-mcp', 'config.json');
+        fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+        fs.mkdirSync(cwd, { recursive: true });
+        fs.writeFileSync(userConfig, JSON.stringify({ Environment: { KBPath: 'C:/KBs/One' } }));
+
+        const result = runCli(['config', 'migrate', '--output', path.join(tempRoot, 'out.json')], {
+            cwd,
+            env: { ...sandboxHomeEnv(home) }
+        });
+
+        assert.notEqual(result.status, 0, result.stdout + result.stderr);
+        // No neutral config was written next to the user profile.
+        assert.equal(fs.existsSync(`${userConfig}.neutral.json`), false);
+        assert.equal(fs.existsSync(path.join(tempRoot, 'out.json')), false);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('doctor rejects malformed tool definitions instead of reporting only file presence', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-tool-defs-'));
     try {
