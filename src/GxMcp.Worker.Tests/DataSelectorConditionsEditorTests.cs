@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
@@ -7,6 +8,48 @@ namespace GxMcp.Worker.Tests
 {
     public class DataSelectorConditionsEditorTests
     {
+        // A whole-list replace cannot preserve a nested AND/OR group: the request format
+        // is one condition per line and carries no grouping, so applying it would empty the
+        // nested level and leave it behind. The write refuses instead of flattening, and
+        // this is the predicate that decides. Before this guard the write proceeded and the
+        // grouping was lost silently, so "flat" must be the only shape that proceeds.
+        [Fact]
+        public void NestedConditionExpressions_IsEmptyForAFlatConditionList()
+        {
+            var conditions = new List<KeyValuePair<string, bool>>
+            {
+                new KeyValuePair<string, bool>("SampleId = &SampleId", false),
+                new KeyValuePair<string, bool>("SampleDate >= &From", false)
+            };
+
+            Assert.Empty(WriteService.NestedConditionExpressions(conditions));
+        }
+
+        [Fact]
+        public void NestedConditionExpressions_ReportsTheGroupedConditions()
+        {
+            var conditions = new List<KeyValuePair<string, bool>>
+            {
+                new KeyValuePair<string, bool>("SampleId = &SampleId", false),
+                new KeyValuePair<string, bool>("SampleDate >= &From", true),
+                new KeyValuePair<string, bool>("SampleDate <= &To", true)
+            };
+
+            var nested = WriteService.NestedConditionExpressions(conditions);
+
+            Assert.Equal(2, nested.Count);
+            Assert.Contains("SampleDate >= &From", nested);
+            Assert.Contains("SampleDate <= &To", nested);
+            Assert.DoesNotContain("SampleId = &SampleId", nested);
+        }
+
+        [Fact]
+        public void NestedConditionExpressions_ToleratesNullAndEmptyInput()
+        {
+            Assert.Empty(WriteService.NestedConditionExpressions(null));
+            Assert.Empty(WriteService.NestedConditionExpressions(
+                new List<KeyValuePair<string, bool>> { new KeyValuePair<string, bool>(null, true) }));
+        }
         [Theory]
         [InlineData("Conditions")]
         [InlineData("conditions")]
