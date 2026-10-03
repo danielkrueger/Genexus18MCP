@@ -286,11 +286,20 @@ namespace GxMcp.Gateway
 
             foreach (var target in plan)
             {
+                // No token on Task.Run, and the gate wait inside the try: a KB that is
+                // still queued when the caller cancels must settle as a canceled
+                // outcome. Letting that cancellation escape would make Task.WhenAll
+                // throw and erase the results of the KBs that already finished.
                 tasks.Add(Task.Run(async () =>
                 {
-                    await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    bool entered = false;
                     try
                     {
+                        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        entered = true;
+                        // SemaphoreSlim can still hand the slot to a waiter whose token
+                        // was cancelled while it queued; do not dispatch it.
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!string.Equals(target.Status, StatusOk, StringComparison.Ordinal))
                         {
                             return new Outcome
@@ -340,9 +349,9 @@ namespace GxMcp.Gateway
                     }
                     finally
                     {
-                        gate.Release();
+                        if (entered) gate.Release();
                     }
-                }, cancellationToken));
+                }));
             }
 
             var settled = await Task.WhenAll(tasks).ConfigureAwait(false);

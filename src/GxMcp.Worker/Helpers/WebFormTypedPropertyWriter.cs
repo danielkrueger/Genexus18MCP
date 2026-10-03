@@ -26,6 +26,23 @@ namespace GxMcp.Worker.Helpers
         private const string HelperTypeName = "Artech.Genexus.Common.Parts.WebForm.WebFormHelper";
         private const string EditableTypeName = "Artech.Genexus.Common.Parts.WebForm.WebFormEditable";
 
+        /// <summary>
+        /// Property names whose value in <paramref name="element"/> differs from the delta's
+        /// wanted value (null/empty are the same "absent"). A missing element mismatches
+        /// every delta.
+        /// </summary>
+        internal static List<string> FindVerifyMismatches(XmlElement element, IEnumerable<WebFormPropertyDelta> deltas)
+        {
+            var bad = new List<string>();
+            foreach (var d in deltas)
+            {
+                string after = element?.Attributes?[d.PropertyName]?.Value;
+                if (element == null || !string.Equals(string.IsNullOrEmpty(after) ? null : after, string.IsNullOrEmpty(d.Value) ? null : d.Value, StringComparison.Ordinal))
+                    bad.Add(d.PropertyName);
+            }
+            return bad;
+        }
+
         public static bool TryApply(object webFormPart, IReadOnlyList<WebFormPropertyDelta> deltas, out string failure)
         {
             failure = null;
@@ -195,11 +212,22 @@ namespace GxMcp.Worker.Helpers
                 }
 
                 // Verify the mutation actually landed in part.Document by re-querying.
+                // A mismatch means the SDK's typed model overwrote our value (measured:
+                // IWebTag.SetProperties reset gxButton Caption to '' and the later
+                // EditableToStored re-serialized the button from the model, losing
+                // ControlName/Event/Class). Bail out BEFORE the part is marked dirty and
+                // synced, so the caller falls back to the raw XML rewrite.
                 var verify = WebFormSdkReflection.FindElementInPartDoc(partDoc, controlName);
+                var mismatches = FindVerifyMismatches(verify, effectiveDeltas);
                 foreach (var d in effectiveDeltas)
                 {
                     string after = verify?.Attributes?[d.PropertyName]?.Value;
-                    Logger.Info("[TypedWriter] verify part.Document <" + node.Name + " id=" + controlName + ">." + d.PropertyName + " = '" + SdkReflection.Truncate(after, 80) + "' (wanted '" + SdkReflection.Truncate(d.Value, 80) + "', match=" + (after == d.Value) + ")");
+                    Logger.Info("[TypedWriter] verify part.Document <" + node.Name + " " + controlName + ">." + d.PropertyName + " = '" + SdkReflection.Truncate(after, 80) + "' (wanted '" + SdkReflection.Truncate(d.Value, 80) + "', match=" + !mismatches.Contains(d.PropertyName) + ")");
+                }
+                if (mismatches.Count > 0)
+                {
+                    failure = "typed write of '" + controlName + "' did not stick in part.Document (" + string.Join(", ", mismatches) + ")";
+                    return false;
                 }
             }
 

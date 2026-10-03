@@ -531,7 +531,7 @@ namespace GxMcp.Worker.Services
                 {
                     var n = p["name"]?.ToString();
                     if (string.Equals(n, targetPropName, StringComparison.OrdinalIgnoreCase) ||
-                        (IsDomainPropertyName(targetPropName) && IsDomainPropertyName(n)))
+                        IsDomainReadAlias(targetPropName, n))
                     {
                         matched = p;
                         break;
@@ -596,7 +596,7 @@ namespace GxMcp.Worker.Services
                     {
                         var n = p["name"]?.ToString();
                         if (string.Equals(n, req, StringComparison.OrdinalIgnoreCase) ||
-                            (IsDomainPropertyName(req) && IsDomainPropertyName(n)))
+                            IsDomainReadAlias(req, n))
                         {
                             if (!foundRequested.Contains(req))
                             {
@@ -1158,6 +1158,7 @@ namespace GxMcp.Worker.Services
                 // issue #117: Domain assignment on Attribute/Domain/Variable routes through DomainBasedOn
                 if (IsDomainPropertyName(propName))
                 {
+                    requested = StripDomainQualifier(requested);
                     try
                     {
                         string domName = DomainPropertyApplier.GetDomainBasedOnName((object)container);
@@ -1602,7 +1603,7 @@ namespace GxMcp.Worker.Services
                     {
                         if (obj?.Model != null)
                         {
-                            var qName = new Artech.Architecture.Common.Objects.QualifiedName(rawValue.Trim());
+                            var qName = new Artech.Architecture.Common.Objects.QualifiedName(StripDomainQualifier(rawValue).Trim());
                             domainObj = Artech.Genexus.Common.Objects.Domain.Get(obj.Model, qName);
                         }
                     }
@@ -1677,7 +1678,38 @@ namespace GxMcp.Worker.Services
             return norm.Equals("Domain", StringComparison.OrdinalIgnoreCase)
                 || norm.Equals("DomainBasedOn", StringComparison.OrdinalIgnoreCase)
                 || norm.Equals("BasedOn", StringComparison.OrdinalIgnoreCase)
-                || norm.Equals("DomainDefinition", StringComparison.OrdinalIgnoreCase);
+                || norm.Equals("DomainDefinition", StringComparison.OrdinalIgnoreCase)
+                || IsIdBasedOnPropertyName(norm);
+        }
+
+        // idBasedOn is the SDK name of an Attribute's "Based on" property. Its value is a
+        // BasedOnReference, not a string, so it must take the typed Domain path: the
+        // generic scalar setter cannot bind to it and reported PropertyApplied without
+        // writing anything.
+        private static bool IsIdBasedOnPropertyName(string propName)
+            => string.Equals(propName?.Trim(), "idBasedOn", StringComparison.OrdinalIgnoreCase);
+
+        // Read-side aliasing: a Domain/BasedOn request returns the DomainBasedOn entry.
+        // idBasedOn is excluded on both sides — the bag holds the opaque BasedOnReference
+        // type name there, and letting it alias would make `get Domain` return that
+        // instead of the domain name depending on property order.
+        internal static bool IsDomainReadAlias(string requested, string candidate)
+            => IsDomainPropertyName(requested) && IsDomainPropertyName(candidate)
+               && !IsIdBasedOnPropertyName(requested) && !IsIdBasedOnPropertyName(candidate);
+
+        // Agents commonly qualify the value as "Domain:<Name>" (the form the variable tool
+        // accepts). QualifiedName cannot resolve the prefixed form, and the persisted
+        // value read back is the bare name, so the prefix is dropped on both the write and
+        // the verification side. Any other prefix (e.g. "Attribute:") is left intact so it
+        // fails as DomainNotFound instead of resolving to the wrong object.
+        internal static string StripDomainQualifier(string value)
+        {
+            if (value == null) return null;
+            string trimmed = value.Trim();
+            const string prefix = "Domain:";
+            return trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? trimmed.Substring(prefix.Length).Trim()
+                : value;
         }
 
         // TableAttribute.IsNullableValue: False=0, True=1, Compatible=2. Accepts the

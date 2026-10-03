@@ -96,6 +96,10 @@ namespace GxMcp.Worker.Helpers
                 {
                     System.Threading.Volatile.Write(ref _webAppConfigStarted, 1);
                 }
+                if (_rxPreCompileFail.IsMatch(payload))
+                {
+                    System.Threading.Volatile.Write(ref _preCompileSectionFailed, 1);
+                }
             }
         }
 
@@ -110,6 +114,13 @@ namespace GxMcp.Worker.Helpers
         private static readonly Regex _rxWebAppConfigStart = new Regex(
             @"^>SWebAppConfig\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // ">E0Specification" / ">E0Default (.NET Framework) Generation". BuildOne keeps
+        // going after a failed spec: it still compiles the DeveloperMenu and the target's
+        // previously generated .cs, so ">E1...Compilation" alone does not prove the
+        // requested object was rebuilt.
+        private static readonly Regex _rxPreCompileFail = new Regex(
+            @"^>E0[^:]*(?:Specification|Generation)(?::|$)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Reset section flags between targets in a multi-target fast-path loop.
         // Without this, target N+1 inherits target N's success markers and a
@@ -119,6 +130,7 @@ namespace GxMcp.Worker.Helpers
         {
             System.Threading.Volatile.Write(ref _compileSucceeded, 0);
             System.Threading.Volatile.Write(ref _webAppConfigStarted, 0);
+            System.Threading.Volatile.Write(ref _preCompileSectionFailed, 0);
         }
         public string DrainTrace()
         {
@@ -138,6 +150,10 @@ namespace GxMcp.Worker.Helpers
         // failure is in the deploy/config layer, after the DLL is already written.
         private int _webAppConfigStarted;
         public bool WebAppConfigStarted => System.Threading.Volatile.Read(ref _webAppConfigStarted) == 1;
+
+        // Set when a Specification or Generation section ended with E0.
+        private int _preCompileSectionFailed;
+        public bool PreCompileSectionFailed => System.Threading.Volatile.Read(ref _preCompileSectionFailed) == 1;
 
         public InProcessBuildEngine(Action<string, bool> sink)
         {
