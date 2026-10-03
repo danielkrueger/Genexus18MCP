@@ -457,6 +457,15 @@ declared indexes are reported only when they can be resolved without Specify.
 typed public SDK elements and never exposes the internal collection type names
 produced by `DataSelectorStructurePart.ToString()` on U16.
 
+To change a Data Selector's conditions use `genexus_edit type=DataSelector part=Conditions
+mode=full` with one condition per line (`genexus_read parts=["conditions"]` also returns
+that text as `source`). The list is replaced as a whole, parameters/orders/Defined By are
+left untouched, and the saved conditions are re-read and verified. A Data Selector whose
+conditions sit inside a nested AND/OR group is refused with
+`DataSelectorConditionsNestedGroupsUnsupported` and nothing is saved: the one-per-line form
+carries no grouping, so replacing the list would silently flatten it. Flatten those levels
+in GeneXus first.
+
 **Editing**
 - `genexus_edit` — edit any object part; modes `full` / `patch` / `ops`
 - `genexus_edit_and_build` — edit + optional specification + rebuild callers in one call, with compensating rollback on validation failure
