@@ -276,6 +276,25 @@ namespace GxMcp.Gateway.Routers
                         mode = "patch";
                     }
 
+                    // Same data-loss shape as `operation` above: a `patch` payload without mode
+                    // fell through to the full-write branch, which only reads `content` — so
+                    // {patch:{find,replace}} wrote the whole part EMPTY and reported success.
+                    // A supplied patch implies patch semantics; combining it with a full-write
+                    // mode is contradictory and rejected rather than silently discarding the patch.
+                    JToken? patchPayload = args?["patch"];
+                    bool hasPatchPayload = patchPayload != null && patchPayload.Type != JTokenType.Null;
+                    if (hasPatchPayload && !string.Equals(mode, "patch", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(mode, "ops", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(mode, "xml", StringComparison.OrdinalIgnoreCase))
+                            throw new UsageException(
+                                "usage_error",
+                                $"`patch` is a mode=patch parameter and cannot be combined with mode={mode}. "
+                                + "Omit mode (or set mode=patch) to apply it; use mode=full only to replace the entire part with `content`.");
+                        mode = "patch";
+                    }
+
                     bool returnPostState = args?["return_post_state"]?.ToObject<bool?>() ?? true;
                     bool verbose = args?["verbose"]?.ToObject<bool?>() ?? false;
                     // Items 5 + 37 (friction 2026-05-22): forward visualVerify to the
@@ -422,6 +441,15 @@ namespace GxMcp.Gateway.Routers
                     }
                     else
                     {
+                        // A full write with no `content` key would persist an empty part. An explicit
+                        // empty string stays allowed (intentional clear); only absent/null is rejected.
+                        JToken? fullContent = args?["content"];
+                        if (fullContent == null || fullContent.Type == JTokenType.Null)
+                            throw new UsageException(
+                                "ContentRequired",
+                                "A full-part write needs `content` (use content=\"\" to clear the part on purpose). "
+                                + "To edit part of the text send mode=patch with patch={find,replace}. No write was attempted.");
+
                         // issue #60 — forward validationMode/rollbackOnFailure so the worker's
                         // SaveSpecifyOrchestrator can run the inline Specify pass after the
                         // write (see CommandDispatcher.Handle_Write). Also pass `validate`

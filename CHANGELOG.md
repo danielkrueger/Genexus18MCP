@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_edit` with `patch={find,replace}` and no `mode` wrote the part empty and reported success. The Gateway only entered the patch branch when `mode == "patch"`; with `mode` absent the call fell through to the full-write branch, which reads only `content`, so a `patch`-only call persisted an empty string (`requested.length` 0, hash of the empty string) over the existing source. This is the same silent data loss the `operation` guard closed for issue #43, through a different carrier. A supplied `patch` now implies `mode=patch` (object, string and RFC 6902 array forms), and `patch` combined with `mode=full`, `ops` or `xml` is a `usage_error` instead of a discarded patch. A full-part write with no `content` key (absent or `null`) is now rejected with `ContentRequired` before anything is sent to the Worker; an explicit `content=""` is still accepted as an intentional clear.
+
 ### Internal
 
 ## v3.10.0 - 2026-10-02

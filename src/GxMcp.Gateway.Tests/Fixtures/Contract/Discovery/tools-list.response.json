@@ -1433,7 +1433,7 @@
           },
           "patch": {
             "additionalProperties": true,
-            "description": "Shorthand for {find,replace} on…",
+            "description": "Shorthand for {find,replace}; implies…",
             "properties": {
               "find": {
                 "description": "Exact existing text to find. Real line…",
