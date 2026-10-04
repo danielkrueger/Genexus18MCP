@@ -849,7 +849,10 @@ namespace GxMcp.Worker.Services
                             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
                     var seenCheckpointGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     var pendingBatch = new List<SearchIndex.IndexEntry>();
-                    const int checkpointInterval = 2000;
+                    // Issue #373: the checkpoint interval doubles after each write, so the
+                    // accumulated snapshot is not rewritten every C objects for the whole
+                    // walk (which cost O(N^2 / C) bytes on the indexing path).
+                    var checkpointSchedule = new GxMcp.Worker.Helpers.LiteCheckpointSchedule(_lastResumedFrom);
                     long readTicks = 0, flushTicks = 0;
 
                     // Issue #337: dedup is O(1) per object through a GUID -> slot map
@@ -961,10 +964,15 @@ namespace GxMcp.Worker.Services
                                     pendingBatch.Clear();
                                 }
                                 _indexCacheService.MarkUltraLiteReady(_totalCount);
-                                if (_totalCount % checkpointInterval == 0)
+                                long cumulative = _lastResumedFrom + _totalCount;
+                                if (checkpointSchedule.IsDue(cumulative))
                                 {
                                     _checkpointActive = _indexCacheService.WriteLiteWalkCheckpoint(
-                                        _indexCacheService.TryGetLoadedIndex(), _lastResumedFrom + _totalCount, objectGuid, walkStartedAtUtc);
+                                        _indexCacheService.TryGetLoadedIndex(), (int)Math.Min(int.MaxValue, cumulative), objectGuid, walkStartedAtUtc);
+                                    // Advance regardless: a failed write must not make the
+                                    // next flush retry the same state forever, and a walk
+                                    // that is this far along has little to lose.
+                                    checkpointSchedule.Record();
                                     if (_checkpointActive)
                                         _checkpointCapturedAtUtc = DateTime.UtcNow.ToString("o");
                                 }
