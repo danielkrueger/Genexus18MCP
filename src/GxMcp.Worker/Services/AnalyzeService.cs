@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -932,9 +933,86 @@ namespace GxMcp.Worker.Services
         /// </summary>
         internal static readonly TimeSpan InspectSectionBudget = TimeSpan.FromSeconds(5);
 
-        /// <summary>Pairs a section name with its task, so a late one is reportable by name.</summary>
-        private static KeyValuePair<string, Task> NewSection(string section, Task task) =>
-            new KeyValuePair<string, Task>(section, task);
+        /// <summary>
+        /// How many iterations of an expensive section run between deadline checks.
+        /// Checking the clock per reference would dominate the loop it guards.
+        /// </summary>
+        internal const int InspectDeadlineCheckInterval = 8;
+
+        /// <summary>
+        /// Issue #368. Runs one inspect section's SDK capture on the thread that owns the
+        /// SDK, into its own slot, and reports instead of swallowing a failure.
+        ///
+        /// <para>
+        /// The sections used to be <c>Task.Run</c> lambdas that captured the live
+        /// <c>KBObject</c> and called SDK members from thread-pool threads while the owner
+        /// STA sat in <c>WaitAll</c>. The GeneXus object model is not thread-safe, so those
+        /// reads raced the owner and could corrupt the very objects being inspected. Each
+        /// section now captures on this thread - which is the thread already running
+        /// <c>GetConversionContext</c> - and only detached, already-materialized data is
+        /// touched afterwards.
+        /// </para>
+        ///
+        /// <para>
+        /// Two further consequences are fixed here. A section that overruns the budget no
+        /// longer keeps running: the deadline is checked before each section and inside
+        /// the expensive loops, so no background work outlives the request and a late
+        /// completion cannot mutate a response that has already been returned or cached.
+        /// And a section that throws is reported in <c>sectionErrors</c> rather than
+        /// vanishing, so "this object has no callers" stays distinguishable from "the
+        /// caller walk failed".
+        /// </para>
+        /// </summary>
+        private sealed class InspectSectionCapture
+        {
+            private readonly Stopwatch _clock;
+            private readonly List<KeyValuePair<string, JObject>> _slots = new List<KeyValuePair<string, JObject>>();
+            private readonly List<string> _skipped = new List<string>();
+            private readonly JObject _errors = new JObject();
+
+            internal InspectSectionCapture(Stopwatch clock) => _clock = clock;
+
+            /// <summary>Slots for the sections that completed, in declaration order.</summary>
+            internal IReadOnlyList<KeyValuePair<string, JObject>> Slots => _slots;
+
+            /// <summary>Sections not attempted because the budget was already spent.</summary>
+            internal IReadOnlyList<string> Skipped => _skipped;
+
+            /// <summary>Per-section failure text, for sections that threw.</summary>
+            internal JObject Errors => _errors;
+
+            internal bool BudgetLeft => _clock.Elapsed < InspectSectionBudget;
+
+            internal void AddError(string section, Exception ex) =>
+                _errors[section] = ex.GetType().Name + ": " + ex.Message;
+
+            /// <summary>
+            /// Runs <paramref name="capture"/> into a fresh slot, or records why it did not
+            /// run. The slot is merged into the response only here, on the request thread,
+            /// so nothing outside this method can write into the envelope.
+            /// </summary>
+            internal void Capture(string section, Action<JObject> capture)
+            {
+                if (!BudgetLeft)
+                {
+                    _skipped.Add(section);
+                    return;
+                }
+                var slot = new JObject();
+                try
+                {
+                    capture(slot);
+                }
+                catch (Exception ex)
+                {
+                    // Kept in the envelope: a failed section must be distinguishable from a
+                    // section that legitimately found nothing.
+                    AddError(section, ex);
+                    return;
+                }
+                _slots.Add(new KeyValuePair<string, JObject>(section, slot));
+            }
+        }
 
         public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard",
             string guid = null, string entityKey = null, string path = null)
@@ -1112,49 +1190,50 @@ namespace GxMcp.Worker.Services
                 bool includeAll = (include == null || include.Count == 0);
                 HashSet<string> requested = includeAll ? new HashSet<string>() : new HashSet<string>(include.Select(i => i.ToString().ToLower()));
 
-                // PERFORMANCE: Parallel execution of metadata extraction.
+                // Issue #368: SDK capture happens on this thread, which owns the SDK.
                 //
-                // issue #334: each entry is tracked with its section name, because the
-                // completion budget is enforced below and a task that misses it has to be
-                // reported by name. A bare List<Task> could only be reported by position,
-                // which means nothing to a caller reading the envelope.
-                var tasks = new List<KeyValuePair<string, Task>>();
+                // Each section used to be a Task.Run lambda holding the live KBObject,
+                // calling GetParametersInternal / PartAccessor.GetVariableObjects / part
+                // source reads / _kbService.GetKB() / reference walks from thread-pool
+                // threads while this thread waited in Task.WaitAll. The GeneXus object
+                // model is not thread-safe, so those reads raced the owner thread. Each
+                // section now writes into its own slot, and the slots are merged below on
+                // this thread - so a response can no longer change after it was published.
+                var sectionClock = Stopwatch.StartNew();
+                var capture = new InspectSectionCapture(sectionClock);
 
                 // 1. Signature (Parameters)
                 if (includeAll || requested.Contains("signature"))
                 {
-                    tasks.Add(NewSection("signature", Task.Run(() => {
-                        try {
-                            var (parmRule, parms) = _objectService.GetParametersInternal(obj);
-                            lock (result) {
-                                if (!string.IsNullOrEmpty(parmRule)) result["parmRule"] = parmRule;
-                                var parameters = new JArray();
-                                foreach (var p in parms) parameters.Add(new JObject { ["name"] = p.Name, ["accessor"] = p.Accessor, ["type"] = p.Type });
-                                result["parameters"] = parameters;
-                            }
-                        } catch {}
-                    })));
+                    capture.Capture("signature", slot =>
+                    {
+                        var (parmRule, parms) = _objectService.GetParametersInternal(obj);
+                        if (!string.IsNullOrEmpty(parmRule)) slot["parmRule"] = parmRule;
+                        var parameters = new JArray();
+                        foreach (var p in parms) parameters.Add(new JObject { ["name"] = p.Name, ["accessor"] = p.Accessor, ["type"] = p.Type });
+                        slot["parameters"] = parameters;
+                    });
                 }
 
                 // 2. Variables
                 if (includeAll || requested.Contains("variables"))
                 {
-                    tasks.Add(NewSection("variables", Task.Run(() => {
-                        try {
-                            var variablesOnObject = GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(obj).ToList();
-                            if (variablesOnObject.Count > 0) {
-                                // Lean default: name+type only, capped at 40 rows — enough to orient.
-                                // verbose=true adds length/decimals/internalId and the full list.
-                                const int leanVarCap = 40;
-                                var variables = new JArray();
-                                int idxLocal = 0;
-                                int emitted = 0;
-                                foreach (object v in variablesOnObject) {
-                                    idxLocal++;
-                                    if (!verbose && emitted >= leanVarCap) continue;
-                                    dynamic variable = v;
-                                    string variableName = GxMcp.Worker.Structure.PartAccessor.GetVariableName(v);
-                                    var entry = new JObject { ["name"] = variableName };
+                    capture.Capture("variables", slot =>
+                    {
+                        var variablesOnObject = GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(obj).ToList();
+                        if (variablesOnObject.Count > 0) {
+                            // Lean default: name+type only, capped at 40 rows — enough to orient.
+                            // verbose=true adds length/decimals/internalId and the full list.
+                            const int leanVarCap = 40;
+                            var variables = new JArray();
+                            int idxLocal = 0;
+                            int emitted = 0;
+                            foreach (object v in variablesOnObject) {
+                                idxLocal++;
+                                if (!verbose && emitted >= leanVarCap) continue;
+                                dynamic variable = v;
+                                string variableName = GxMcp.Worker.Structure.PartAccessor.GetVariableName(v);
+                                var entry = new JObject { ["name"] = variableName };
                                     try { entry["type"] = variable.Type?.ToString() ?? "Unknown"; } catch { entry["type"] = "Unknown"; }
                                     try { entry["isCollection"] = (bool)variable.IsCollection; } catch { }
                                     VariableDimensionSupport.AddMetadata(entry, v);
@@ -1194,29 +1273,24 @@ namespace GxMcp.Worker.Services
                                     variables.Add(entry);
                                     emitted++;
                                 }
-                                lock (result) {
-                                    result["variables"] = variables;
-                                    if (!verbose && idxLocal > emitted) {
-                                        result["variablesTruncated"] = true;
-                                        result["variablesTotal"] = idxLocal;
-                                    }
+                                slot["variables"] = variables;
+                                if (!verbose && idxLocal > emitted) {
+                                    slot["variablesTruncated"] = true;
+                                    slot["variablesTotal"] = idxLocal;
                                 }
                             }
                             else if (GxMcp.Worker.Structure.PartAccessor.HasReadableVariablesCollection(obj))
                             {
-                                lock (result) { result["variables"] = new JArray(); }
+                                slot["variables"] = new JArray();
                             }
                             else if (requested.Contains("variables"))
                             {
-                                lock (result)
+                                slot["variables"] = new JArray();
+                                slot["unsupportedIncludes"] = new JArray(new JObject
                                 {
-                                    result["variables"] = new JArray();
-                                    result["unsupportedIncludes"] = new JArray(new JObject
-                                    {
-                                        ["include"] = "variables",
-                                        ["reason"] = "The SDK exposes no readable variables-bearing part for this object kind."
-                                    });
-                                }
+                                    ["include"] = "variables",
+                                    ["reason"] = "The SDK exposes no readable variables-bearing part for this object kind."
+                                });
                             }
 
                             // FR#3 (friction-report 2026-05-19): scan WebFormPart layout for all
@@ -1245,7 +1319,7 @@ namespace GxMcp.Worker.Services
                                             if (seen.Add(id)) idsInUse.Add(id);
                                         }
                                         if (idsInUse.Count > 0)
-                                            lock (result) result["layoutAttIdsInUse"] = idsInUse;
+                                            slot["layoutAttIdsInUse"] = idsInUse;
 
                                         // FR#1 + FR#2 (friction-report 2026-05-19): surface static
                                         // gotcha warnings so the agent learns at inspect time, not
@@ -1272,7 +1346,7 @@ namespace GxMcp.Worker.Services
                                                     };
                                                     arr.Add(entry);
                                                 }
-                                                lock (result) result["layoutGotchas"] = arr;
+                                                slot["layoutGotchas"] = arr;
                                             }
                                         }
                                         catch { /* scanner best-effort */ }
@@ -1280,60 +1354,58 @@ namespace GxMcp.Worker.Services
                                 }
                             }
                             catch { /* best-effort */ }
-                        } catch {}
-                    })));
+                    });
                 }
 
                 // 3. Structure (Rules/Events)
                 if (includeAll || requested.Contains("structure"))
                 {
-                    tasks.Add(NewSection("structure", Task.Run(() => {
-                        try {
-                            // issue #25 follow-up (P1): cap each part source so a default
-                            // inspect (no `include` filter) can't dump tens of KB of
-                            // Rules+Conditions+Events unpaginated. Full source is available
-                            // via genexus_read (paginated). Mirrors the maxCallers cap below.
-                            int srcCap = verbose ? InspectSourceCap : InspectSourceCapLean;
-                            var rules = CapInspectSource(GetPartSourceByName(obj, "Rules"), out bool rulesTrunc, srcCap);
-                            lock (result) { result["rules"] = rules; if (rulesTrunc) result["rulesTruncated"] = true; }
+                    capture.Capture("structure", slot => {
+                        // issue #25 follow-up (P1): cap each part source so a default
+                        // inspect (no `include` filter) can't dump tens of KB of
+                        // Rules+Conditions+Events unpaginated. Full source is available
+                        // via genexus_read (paginated). Mirrors the maxCallers cap below.
+                        int srcCap = verbose ? InspectSourceCap : InspectSourceCapLean;
+                        var rules = CapInspectSource(GetPartSourceByName(obj, "Rules"), out bool rulesTrunc, srcCap);
+                        slot["rules"] = rules;
+                        if (rulesTrunc) slot["rulesTruncated"] = true;
 
-                            if (obj is Procedure || obj is WebPanel) {
-                                var conditions = CapInspectSource(GetPartSourceByName(obj, "Conditions"), out bool condTrunc, srcCap);
-                                lock (result) { result["conditions"] = conditions; if (condTrunc) result["conditionsTruncated"] = true; }
-                            }
-                            if (obj is Transaction || obj is WebPanel) {
-                                var events = CapInspectSource(GetPartSourceByName(obj, "Events"), out bool evTrunc, srcCap);
-                                lock (result) { result["events"] = events; if (evTrunc) result["eventsTruncated"] = true; }
-                            }
-                            lock (result) result["sourceReadHint"] = verbose
-                                ? "Inspect source parts are capped at 8000 chars; use genexus_read part=Rules|Conditions|Events (paginated) for the full text."
-                                : "Lean inspect: source parts capped at 1200 chars. Pass verbose=true for the 8000-char heads, or genexus_read part=Rules|Conditions|Events for full paginated text.";
-                        } catch {}
-                    })));
+                        if (obj is Procedure || obj is WebPanel) {
+                            var conditions = CapInspectSource(GetPartSourceByName(obj, "Conditions"), out bool condTrunc, srcCap);
+                            slot["conditions"] = conditions;
+                            if (condTrunc) slot["conditionsTruncated"] = true;
+                        }
+                        if (obj is Transaction || obj is WebPanel) {
+                            var events = CapInspectSource(GetPartSourceByName(obj, "Events"), out bool evTrunc, srcCap);
+                            slot["events"] = events;
+                            if (evTrunc) slot["eventsTruncated"] = true;
+                        }
+                        slot["sourceReadHint"] = verbose
+                            ? "Inspect source parts are capped at 8000 chars; use genexus_read part=Rules|Conditions|Events (paginated) for the full text."
+                            : "Lean inspect: source parts capped at 1200 chars. Pass verbose=true for the 8000-char heads, or genexus_read part=Rules|Conditions|Events for full paginated text.";
+                    });
                 }
 
                 // 4. Domains & Enums
                 if (includeAll || requested.Contains("metadata") || requested.Contains("variables"))
                 {
-                    tasks.Add(NewSection("domainsAndEnums", Task.Run(() => {
-                        try {
-                            var domains = new JArray();
-                            var processedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                            foreach (var v in GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(obj)) {
-                                dynamic dv = v;
-                                var domain = dv.Domain ?? (dv.Attribute != null ? dv.Attribute.Domain : null);
-                                if (domain != null && !processedDomains.Contains(domain.Name)) {
-                                    processedDomains.Add(domain.Name);
-                                    var dObj = new JObject { ["name"] = domain.Name };
-                                    var values = new JArray();
-                                    foreach (var ev in ((dynamic)domain).EnumValues) values.Add(new JObject { ["name"] = ev.Name, ["value"] = ev.Value });
-                                    dObj["values"] = values;
-                                    domains.Add(dObj);
-                                }
+                    capture.Capture("domainsAndEnums", slot => {
+                        var domains = new JArray();
+                        var processedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var v in GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(obj)) {
+                            dynamic dv = v;
+                            var domain = dv.Domain ?? (dv.Attribute != null ? dv.Attribute.Domain : null);
+                            if (domain != null && !processedDomains.Contains(domain.Name)) {
+                                processedDomains.Add(domain.Name);
+                                var dObj = new JObject { ["name"] = domain.Name };
+                                var values = new JArray();
+                                foreach (var ev in ((dynamic)domain).EnumValues) values.Add(new JObject { ["name"] = ev.Name, ["value"] = ev.Value });
+                                dObj["values"] = values;
+                                domains.Add(dObj);
                             }
-                            if (domains.Count > 0) lock (result) result["domains"] = domains;
-                        } catch {}
-                    })));
+                        }
+                        if (domains.Count > 0) slot["domains"] = domains;
+                    });
                 }
 
                 // 5. Callers (incoming references) — surfaces top-N callers so the agent can
@@ -1341,59 +1413,71 @@ namespace GxMcp.Worker.Services
                 // include=["callers"] or default (when no include filter is provided).
                 if (includeAll || requested.Contains("callers"))
                 {
-                    tasks.Add(NewSection("callers", Task.Run(() => {
-                        try {
-                            var kb = _kbService.GetKB();
-                            var callers = new JArray();
-                            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                            const int maxCallers = 20;
-                            foreach (var reference in obj.GetReferencesTo())
+                    capture.Capture("callers", slot => {
+                        var kb = _kbService.GetKB();
+                        var callers = new JArray();
+                        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        const int maxCallers = 20;
+                        int visited = 0;
+                        bool overBudget = false;
+                        foreach (var reference in obj.GetReferencesTo())
+                        {
+                            // Issue #368: the budget is checked inside the walk, so an
+                            // expensive reference graph stops instead of running on after
+                            // the response has been returned.
+                            if (++visited % InspectDeadlineCheckInterval == 0 && !capture.BudgetLeft)
                             {
-                                string refKey = null;
-                                try { refKey = reference.From?.ToString(); } catch { }
-                                if (string.IsNullOrEmpty(refKey) || !seen.Add(refKey)) continue;
+                                overBudget = true;
+                                break;
+                            }
+                            string refKey = null;
+                            try { refKey = reference.From?.ToString(); } catch { }
+                            if (string.IsNullOrEmpty(refKey) || !seen.Add(refKey)) continue;
 
-                                var sourceObj = kb.DesignModel.Objects.Get(reference.From);
-                                if (sourceObj == null) continue;
-                                callers.Add(new JObject {
-                                    ["name"] = sourceObj.Name,
-                                    ["type"] = sourceObj.TypeDescriptor.Name
-                                });
-                                if (callers.Count >= maxCallers) break;
-                            }
-                            lock (result) {
-                                result["callers"] = callers;
-                                result["callersTruncated"] = callers.Count >= maxCallers;
-                            }
-                        } catch {}
-                    })));
+                            var sourceObj = kb.DesignModel.Objects.Get(reference.From);
+                            if (sourceObj == null) continue;
+                            callers.Add(new JObject {
+                                ["name"] = sourceObj.Name,
+                                ["type"] = sourceObj.TypeDescriptor.Name
+                            });
+                            if (callers.Count >= maxCallers) break;
+                        }
+                        if (overBudget)
+                        {
+                            capture.AddError("callers", new TimeoutException(
+                                "The caller walk exceeded the " + InspectSectionBudget.TotalSeconds
+                                + "s inspect budget; the reference list is partial."));
+                            return;
+                        }
+                        slot["callers"] = callers;
+                        slot["callersTruncated"] = callers.Count >= maxCallers;
+                    });
                 }
 
-                // issue #334: `Task.WaitAll(tasks, timeout)` returns a bool that was
-                // discarded. A section that missed the budget therefore left its task
-                // running against the SDK and against `result` - a live SDK object read
-                // on a thread pool thread, mutating an envelope this method had already
-                // published and could cache. The return value is now inspected, and a
-                // section that did not finish is named in the response so its absence
-                // cannot be read as "no callers" or "no variables".
-                var pending = tasks.Select(t => t.Value).ToArray();
-                if (pending.Length > 0 && !Task.WaitAll(pending, InspectSectionBudget))
+                // Issue #334/#368: merge the completed sections on this thread.
+                //
+                // Nothing else writes into the envelope, so the response is final the moment
+                // this loop ends - a section that overran the budget is named rather than
+                // left to mutate a published (and cacheable) object later, and a section
+                // that threw is reported instead of being indistinguishable from empty.
+                foreach (var slot in capture.Slots)
                 {
-                    var unfinished = tasks.Where(t => !t.Value.IsCompleted)
-                                         .Select(t => t.Key).ToList();
-                    Logger.Warn("[Analyze] inspect section budget elapsed with "
-                        + unfinished.Count + " of " + pending.Length
-                        + " sections unfinished: " + string.Join(", ", unfinished));
-
-                    // Every writer locks `result`, so a late writer either lands before
-                    // this and counts as complete, or finds its section already listed.
-                    lock (result)
-                    {
-                        result["sectionsComplete"] = false;
-                        var incomplete = new JArray();
-                        foreach (string section in unfinished) incomplete.Add(section);
-                        result["incompleteSections"] = incomplete;
-                    }
+                    foreach (var property in slot.Value.Properties())
+                        result[property.Name] = property.Value;
+                }
+                var skipped = capture.Skipped;
+                if (skipped.Count > 0)
+                {
+                    Logger.Warn("[Analyze] inspect section budget elapsed; "
+                        + skipped.Count + " section(s) not run: " + string.Join(", ", skipped));
+                    result["sectionsComplete"] = false;
+                    result["incompleteSections"] = new JArray(skipped);
+                }
+                if (capture.Errors.Count > 0)
+                {
+                    result["sectionErrors"] = (JObject)capture.Errors.DeepClone();
+                    Logger.Warn("[Analyze] inspect sections reported errors: "
+                        + string.Join(", ", capture.Errors.Properties().Select(p => p.Name)));
                 }
 
                 // 5. UI Structure (Sync because it's usually fast or has its own internal logic)

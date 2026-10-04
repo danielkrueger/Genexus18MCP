@@ -73,18 +73,56 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void The_Wait_Result_Is_Inspected_Rather_Than_Discarded()
+        public void The_Budget_Is_Enforced_On_The_Owner_Thread_Not_By_Waiting_For_Tasks()
         {
-            // The defect in one assertion: the bounded wait's bool was dropped on the
-            // floor, so nothing downstream could tell a completed section set from a
-            // truncated one.
+            // Issue #368. The sections used to be Task.Run lambdas holding the live
+            // KBObject, reading the SDK from thread-pool threads while this thread waited,
+            // and a late writer could still mutate the published (and cached) response.
+            // The deadline now runs on the capture loop and nothing outlives the request.
             string source = GxMcp.TestSupport.RepoSource.WithoutComments(
                 "src", "GxMcp.Worker", "Services", "AnalyzeService.cs");
 
+            // No bounded wait whose result could be ignored, and no SDK capture off-thread.
             Assert.DoesNotContain(
                 "Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5));",
                 source, StringComparison.Ordinal);
-            Assert.Contains("!Task.WaitAll(pending, InspectSectionBudget)", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("Task.WaitAll(pending", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("NewSection(", source, StringComparison.Ordinal);
+
+            // The deadline is consulted, both between sections and inside a long walk.
+            Assert.Contains("capture.BudgetLeft", source, StringComparison.Ordinal);
+            Assert.Contains("_clock.Elapsed < InspectSectionBudget", source, StringComparison.Ordinal);
+            Assert.Contains("InspectDeadlineCheckInterval", source, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Sections_Write_Into_Their_Own_Slot_And_Are_Merged_On_The_Request_Thread()
+        {
+            // A late writer that can still reach the envelope is the defect #368 closes:
+            // the response could contain both incompleteSections=["callers"] and a
+            // "callers" key, and a cached entry could change after being stored.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "AnalyzeService.cs");
+
+            // Every capture body takes its own slot and writes only into it.
+            int captures = source.Split(new[] { "capture.Capture(" }, StringSplitOptions.None).Length - 1;
+            Assert.True(captures > 0, "no inspect sections found");
+            Assert.DoesNotContain("lock (result) result[", source, StringComparison.Ordinal);
+
+            // The merge is the only place the envelope is written for these sections.
+            Assert.Contains("foreach (var slot in capture.Slots)", source, StringComparison.Ordinal);
+            Assert.Contains("result[property.Name] = property.Value", source, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_Failed_Section_Is_Reported_Rather_Than_Swallowed()
+        {
+            // "No callers" and "the caller walk threw" must not look alike.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "AnalyzeService.cs");
+
+            Assert.Contains("sectionErrors", source, StringComparison.Ordinal);
+            Assert.Contains("AddError(section, ex)", source, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -100,7 +138,7 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void Every_Parallel_Section_Is_Named()
+        public void Every_Section_Is_Named()
         {
             // A section with no name could only be reported by list position, which
             // means nothing to a caller - and a section added later would be unnamed by
@@ -108,14 +146,13 @@ namespace GxMcp.Worker.Tests
             string source = GxMcp.TestSupport.RepoSource.WithoutComments(
                 "src", "GxMcp.Worker", "Services", "AnalyzeService.cs");
 
-            int adds = source.Split(new[] { "tasks.Add(" }, StringSplitOptions.None).Length - 1;
-            int named = source.Split(new[] { "tasks.Add(NewSection(" }, StringSplitOptions.None).Length - 1;
-            Assert.True(adds > 0, "no parallel inspect sections found");
-            Assert.Equal(adds, named);
+            int captures = source.Split(new[] { "capture.Capture(\"" }, StringSplitOptions.None).Length - 1;
+            int named = source.Split(new[] { "capture.Capture(\"" }, StringSplitOptions.None).Length - 1;
+            Assert.Equal(captures, named);
 
             // The names are stable, and are the ones the response reports.
             foreach (var section in new[] { "signature", "variables", "structure", "domainsAndEnums", "callers" })
-                Assert.Contains("NewSection(\"" + section + "\"", source, StringComparison.Ordinal);
+                Assert.Contains("capture.Capture(\"" + section + "\"", source, StringComparison.Ordinal);
         }
     }
 }
