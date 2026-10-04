@@ -56,10 +56,143 @@ namespace GxMcp.Worker.Tests
 
             Assert.Contains("[\"sdkStallReason\"]", source, StringComparison.Ordinal);
             Assert.Contains("[\"sdkNoProgressStallAfterMs\"]", source, StringComparison.Ordinal);
-            // The classification has to consume the elapsed time, not just the two flags.
-            Assert.Contains("ClassifySdkState(sdkActive, sawProgress, lastProgressMs, sdkElapsedMs)",
-                source, StringComparison.Ordinal);
         }
+
+        // ---- Issue #362: the supervision block described the broker, not the child.
+
+        [Fact]
+        public void The_Heartbeat_Does_Not_Collect_Garbage()
+        {
+            // Two forced blocking gen-2 collections per acknowledgement, per attachment,
+            // on the process that routes every client's traffic.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "SharedWorkerHost.cs");
+
+            int start = source.IndexOf("private JObject BuildHeartbeatAck", StringComparison.Ordinal);
+            Assert.True(start > 0, "BuildHeartbeatAck not found");
+            int end = source.IndexOf("private void BroadcastHostError", start, StringComparison.Ordinal);
+            Assert.True(end > start, "could not delimit BuildHeartbeatAck");
+            string body = source.Substring(start, end - start);
+
+            Assert.DoesNotContain("GC.Collect", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("GC.WaitForPendingFinalizers", body, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void The_Heartbeat_Does_Not_Read_The_Brokers_Own_Sdk_State()
+        {
+            // The broker starts a separate child process and only relays frames to it, so
+            // its own scheduler is always empty and its SDK lane always idle.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "SharedWorkerHost.cs");
+
+            int start = source.IndexOf("private JObject BuildHeartbeatAck", StringComparison.Ordinal);
+            int end = source.IndexOf("private void BroadcastHostError", start, StringComparison.Ordinal);
+            string body = source.Substring(start, end - start);
+
+            Assert.DoesNotContain("Program.GetSdkBusyStatus()", body, StringComparison.Ordinal);
+            Assert.Contains("TryGetFreshChildStatus", body, StringComparison.Ordinal);
+            Assert.Contains("RecordChildStatus", source, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void The_Managed_Heap_Figure_Is_The_Childs_Not_The_Brokers()
+        {
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "SharedWorkerHost.cs");
+
+            // The old fields were produced by GC.GetTotalMemory in the broker and reported
+            // next to the child's PID as if they described it.
+            Assert.DoesNotContain("managedHeapBeforeBytes", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("managedHeapAfterBytes", source, StringComparison.Ordinal);
+            Assert.Contains("childManagedHeapBytes", source, StringComparison.Ordinal);
+            Assert.Contains("childManagedHeapSource", source, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void An_Idle_Child_Over_The_Heap_Budget_Elects_Exactly_One_Recycle()
+        {
+            var host = NewHost();
+            host.ChildManagedHeapBudgetBytes = 1024;
+
+            host.RecordChildStatus(new JObject
+            {
+                ["sdkState"] = "idle",
+                ["sdkBusy"] = false,
+                ["queueTotal"] = 0,
+                ["childManagedHeapBytes"] = 4096
+            });
+
+            var first = Elect(host);
+            var second = Elect(host);
+
+            // Exactly one election per generation, however many attachments heartbeat.
+            Assert.Equal(1, first);
+            Assert.Equal(0, second);
+        }
+
+        [Fact]
+        public void Progressing_Work_And_A_Queued_Request_Block_The_Election()
+        {
+            Assert.Equal(0, Elect(host: HostWith("busy-progressing", 0, 4096)));
+            Assert.Equal(0, Elect(host: HostWith("idle", 1, 4096)));
+            // An idle child under budget is fine.
+            Assert.Equal(0, Elect(host: HostWith("idle", 0, 16)));
+        }
+
+        [Fact]
+        public void A_Stalled_Child_Elects_A_Recycle_Even_Under_The_Heap_Budget()
+        {
+            Assert.Equal(1, Elect(HostWith("busy-stalled", 0, 16)));
+            Assert.Equal(1, Elect(HostWith("busy-stalled-unproven", 0, 16)));
+        }
+
+        [Fact]
+        public void The_Election_Clears_When_The_New_Child_Starts()
+        {
+            var host = HostWith("busy-stalled", 0, 16);
+            Assert.Equal(1, Elect(host));
+            Assert.Equal(0, Elect(host));
+        }
+
+        [Fact]
+        public void No_Child_Snapshot_Means_Unavailable_Rather_Than_Idle()
+        {
+            var host = NewHost();
+
+            // "We did not look" must not read as "nothing is happening".
+            Assert.False(host.TryGetFreshChildStatusForTest(out _, out string reason));
+            Assert.Contains("No child status", reason, StringComparison.Ordinal);
+        }
+
+        private static SharedWorkerHostRuntime NewHost() =>
+            new SharedWorkerHostRuntime(SharedWorkerHostOptions.Parse(new[]
+            {
+                "--shared-host",
+                "--worker-executable", @"C:\genexus\worker.exe",
+                "--kb", @"C:\kb\alpha",
+                "--installation", @"C:\genexus",
+                "--driver", "native",
+                "--major", "18"
+            }));
+
+        private static SharedWorkerHostRuntime HostWith(string sdkState, long queueTotal, long managedHeap)
+        {
+            var host = NewHost();
+            host.ChildManagedHeapBudgetBytes = 1024;
+            host.RecordChildStatus(new JObject
+            {
+                ["sdkState"] = sdkState,
+                ["sdkBusy"] = sdkState != "idle",
+                ["queueTotal"] = queueTotal,
+                ["childManagedHeapBytes"] = managedHeap
+            });
+            return host;
+        }
+
+        /// <summary>Runs the election the heartbeat runs, reporting what an attachment sees.</summary>
+        private static int Elect(SharedWorkerHostRuntime host) =>
+            host.EvaluateRecycleElectionForTest() ? 1 : 0;
 
         [Fact]
         public void An_Inactive_Lane_Is_Idle()
@@ -170,15 +303,19 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void The_Sdk_Lane_Reading_Reuses_The_Workers_Own_Projection()
+        public void The_Broker_Does_Not_Keep_A_Second_Copy_Of_The_Childs_Lane_State()
         {
-            // The broker must not keep a second copy of the busy/progress bookkeeping. If
-            // it did, this path and connection-recover could report different states for
-            // the same lane at the same instant.
+            // The original intent was right - one projection, so this path and
+            // connection-recover cannot report different states for the same lane. It was
+            // reached the wrong way: #362 showed the broker is not the Worker, so its own
+            // projection describes its own empty scheduler. The lane state now comes from
+            // the child, and the classification still lives in one place.
             string source = GxMcp.TestSupport.RepoSource.WithoutComments(
                 "src", "GxMcp.Worker", "SharedWorkerHost.cs");
 
-            Assert.Contains("Program.GetSdkBusyStatus()", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("Program.GetSdkBusyStatus()", source, StringComparison.Ordinal);
+            Assert.Contains("internal static string ClassifySdkState", source, StringComparison.Ordinal);
+            Assert.Contains("ShouldElectRecycle", source, StringComparison.Ordinal);
         }
 
         [Fact]
