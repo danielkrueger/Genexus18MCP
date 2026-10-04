@@ -1101,7 +1101,8 @@ namespace GxMcp.Worker.Services
                         ["records"] = recordsArray
                     };
 
-                    byte[] bytes = Encoding.UTF8.GetBytes(root.ToString(Formatting.None));
+                    string serialized = root.ToString(Formatting.None);
+                    byte[] bytes = Encoding.UTF8.GetBytes(serialized);
                     using (var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
                     using (var gz = new GZipStream(fs, CompressionMode.Compress))
                     {
@@ -1113,6 +1114,15 @@ namespace GxMcp.Worker.Services
                         if (File.Exists(catalogPath)) File.Delete(catalogPath);
                         File.Move(tmpPath, catalogPath);
                     }
+
+                    // Issue #374: persist the derived trigram state next to the catalog it
+                    // describes, stamped with the catalog's own digest. Without it every
+                    // warm reopen had to read, decompress and hash-check every stored body
+                    // to rebuild postings, so startup I/O scaled with the whole store.
+                    // Written after the catalog is in place, and stamped with the digest
+                    // of what was just written, so a crash between the two leaves postings
+                    // that fail the digest check and trigger the normal rebuild.
+                    WriteTrigramPostingsFile(ComputeCatalogDigest(serialized));
 
                     _isCatalogDirty = false;
                 }
@@ -1132,19 +1142,22 @@ namespace GxMcp.Worker.Services
             // survive into it. A leftover entry would make the first replacement of a
             // loaded record subtract the wrong postings.
             _trigramsByRecord.Clear();
-                // Issue #339: same for the freshness certifications - they describe the
-                // store that was just reset.
-                _certifications.Clear();
+            // Issue #339: same for the freshness certifications - they describe the
+            // store that was just reset. A reopen therefore starts uncertified, and the
+            // first coverage probe validates bodies lazily, which is what keeps a
+            // postings hit from standing in for a freshness claim.
+            _certifications.Clear();
             if (!File.Exists(catalogPath)) return;
 
             try
             {
+                string catalogText;
                 using (var fs = new FileStream(catalogPath, FileMode.Open, FileAccess.Read, FileShare.Read))
                 using (var gz = new GZipStream(fs, CompressionMode.Decompress))
                 using (var reader = new StreamReader(gz, Encoding.UTF8))
                 {
-                    string json = reader.ReadToEnd();
-                    var root = JObject.Parse(json);
+                    catalogText = reader.ReadToEnd();
+                    var root = JObject.Parse(catalogText);
                     var array = root["records"] as JArray;
                     if (array == null) return;
 
@@ -1199,29 +1212,15 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
-                    // Build trigrams in parallel across loaded records
-                    Parallel.ForEach(_records, kvp =>
+                    // Issue #374: try the persisted postings first. A warm reopen of an unchanged store
+                    // then reads one derived file instead of every stored body, so startup
+                    // I/O no longer scales with the store size. A missing, partial, stale
+                    // or corrupt file falls through to the full rebuild below, so search
+                    // results are identical either way.
+                    if (!TryLoadTrigramPostingsFile(ComputeCatalogDigest(catalogText)))
                     {
-                        if (TryGet(kvp.Value.Guid, kvp.Value.PartName, out string src) && !string.IsNullOrEmpty(src))
-                        {
-                            var trigrams = TrigramExtractor.ExtractTrigrams(src);
-                            // Issue #344: a loaded record must record its own trigram
-                            // set. Without this, the first replacement of a record that
-                            // came from disk had nothing to subtract, so its original
-                            // postings stayed live and the stale set was never
-                            // reclaimable - which is exactly the churn case this fixes.
-                            var indexed = new HashSet<string>(trigrams, StringComparer.OrdinalIgnoreCase);
-                            foreach (var t in indexed)
-                            {
-                                var set = _trigramIndex.GetOrAdd(t, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-                                lock (set)
-                                {
-                                    set.Add(kvp.Key);
-                                }
-                            }
-                            _trigramsByRecord[kvp.Key] = indexed;
-                        }
-                    });
+                        RebuildTrigramPostingsFromBodies();
+                    }
                 }
             }
             catch (Exception ex)
@@ -1229,6 +1228,163 @@ namespace GxMcp.Worker.Services
                 Logger.Error($"[SOURCE-STORE] Error reading catalog: {ex.Message}");
             }
         }
+
+        // ---- Issue #374: derived trigram state persisted beside the catalog ----
+
+        private static string TrigramPostingsFileName => "trigram-postings.json.gz";
+
+        /// <summary>
+        /// Identity of the catalog a postings file was derived from. Both the digest and
+        /// the record count have to match, so a file left over from a different catalog -
+        /// including one whose body changed without the catalog changing shape - is
+        /// rejected rather than trusted.
+        /// </summary>
+        private static string ComputeCatalogDigest(string catalogText)
+        {
+            using (var sha = SHA256.Create())
+            {
+                return Convert.ToBase64String(sha.ComputeHash(Encoding.UTF8.GetBytes(catalogText ?? string.Empty)));
+            }
+        }
+
+        /// <summary>
+        /// Reconstructs the postings by reading and decompressing every stored body. The
+        /// fallback for a store with no usable postings file.
+        /// </summary>
+        private void RebuildTrigramPostingsFromBodies()
+        {
+            Parallel.ForEach(_records, kvp =>
+            {
+                if (!TryGet(kvp.Value.Guid, kvp.Value.PartName, out string src) || string.IsNullOrEmpty(src)) return;
+                // Issue #344: a loaded record must record its own trigram set. Without
+                // this, the first replacement of a record that came from disk had nothing
+                // to subtract, so its original postings stayed live and the stale set was
+                // never reclaimable - which is exactly the churn case this fixes.
+                AddRecordTrigrams(kvp.Key, TrigramExtractor.ExtractTrigrams(src));
+            });
+        }
+
+        /// <summary>Publishes one record's trigram set into both directions of the index.</summary>
+        private void AddRecordTrigrams(string key, IEnumerable<string> trigrams)
+        {
+            var indexed = new HashSet<string>(trigrams, StringComparer.OrdinalIgnoreCase);
+            foreach (var t in indexed)
+            {
+                var set = _trigramIndex.GetOrAdd(t, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                lock (set) { set.Add(key); }
+            }
+            _trigramsByRecord[key] = indexed;
+        }
+
+        /// <summary>
+        /// Writes the derived postings, stamped with the catalog digest. Best-effort: a
+        /// failure here costs the next start a full rebuild, which is the behaviour before
+        /// this file existed.
+        /// </summary>
+        private void WriteTrigramPostingsFile(string catalogDigest)
+        {
+            try
+            {
+                var byRecord = new JArray();
+                foreach (var kvp in _trigramsByRecord)
+                {
+                    if (kvp.Value == null) continue;
+                    byRecord.Add(new JObject { ["k"] = kvp.Key, ["t"] = new JArray(kvp.Value) });
+                }
+
+                var root = new JObject
+                {
+                    ["version"] = TrigramPostingsSchemaVersion,
+                    ["catalogDigest"] = catalogDigest,
+                    ["records"] = _records.Count,
+                    ["savedAt"] = DateTime.UtcNow.ToString("o"),
+                    ["byRecord"] = byRecord
+                };
+
+                string path = Path.Combine(_storeDirectory, TrigramPostingsFileName);
+                string tmp = path + $".tmp-{Guid.NewGuid():N}";
+                byte[] bytes = Encoding.UTF8.GetBytes(root.ToString(Formatting.None));
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var gz = new GZipStream(fs, CompressionMode.Compress))
+                {
+                    gz.Write(bytes, 0, bytes.Length);
+                }
+                lock (_ioGate)
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                    File.Move(tmp, path);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[SOURCE-STORE] Could not persist trigram postings: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Loads persisted postings when they provably belong to the catalog just read.
+        /// Returns false - leaving the index empty for
+        /// <see cref="RebuildTrigramPostingsFromBodies"/> - for anything unproven.
+        /// </summary>
+        private bool TryLoadTrigramPostingsFile(string catalogDigest)
+        {
+            string path = Path.Combine(_storeDirectory, TrigramPostingsFileName);
+            if (!File.Exists(path)) return false;
+
+            try
+            {
+                string json;
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var gz = new GZipStream(fs, CompressionMode.Decompress))
+                using (var reader = new StreamReader(gz, Encoding.UTF8))
+                {
+                    json = reader.ReadToEnd();
+                }
+
+                var root = JObject.Parse(json);
+                if (root["version"]?.ToObject<int?>() != TrigramPostingsSchemaVersion) return false;
+                if (!string.Equals(root["catalogDigest"]?.ToString(), catalogDigest, StringComparison.Ordinal)) return false;
+                if (root["records"]?.ToObject<long?>() != _records.Count) return false;
+
+                var byRecord = root["byRecord"] as JArray;
+                if (byRecord == null) return false;
+
+                // Rebuild from the persisted per-record sets. Only keys the catalog still
+                // holds are accepted, so a postings file can never introduce a record that
+                // the catalog does not describe.
+                var staged = new List<KeyValuePair<string, HashSet<string>>>();
+                foreach (var item in byRecord)
+                {
+                    string key = item["k"]?.ToString();
+                    if (string.IsNullOrEmpty(key) || !_records.ContainsKey(key)) continue;
+                    var trigrams = item["t"] as JArray;
+                    if (trigrams == null) continue;
+                    staged.Add(new KeyValuePair<string, HashSet<string>>(key,
+                        new HashSet<string>(trigrams.Select(t => t?.ToString()).Where(t => !string.IsNullOrEmpty(t)),
+                            StringComparer.OrdinalIgnoreCase)));
+                }
+
+                if (staged.Count != _records.Count)
+                {
+                    // A record the catalog holds has no set here: the file is partial, so
+                    // it cannot answer absence and the bodies have to be read.
+                    Logger.Warn($"[SOURCE-STORE] Persisted trigram postings cover {staged.Count} of "
+                        + _records.Count + " records; rebuilding from bodies.");
+                    return false;
+                }
+
+                foreach (var pair in staged) AddRecordTrigrams(pair.Key, pair.Value);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // A corrupt postings file is a rebuild, never a wrong answer.
+                Logger.Warn("[SOURCE-STORE] Discarding unreadable trigram postings: " + ex.Message);
+                return false;
+            }
+        }
+
+        private const int TrigramPostingsSchemaVersion = 1;
 
         private void EnforceStorageBudget()
         {
@@ -1368,6 +1524,64 @@ namespace GxMcp.Worker.Services
 
         /// <summary>Catalog records whose bytes the counter currently accounts for.</summary>
         internal int RecordCount => _records.Count;
+
+        // ---- Issue #374 test seams: the reopen path needs to be drivable without a
+        // second process, and the failure modes need to be injectable.
+
+        /// <summary>Writes the catalog to disk now, as the flush timer would.</summary>
+        internal void FlushCatalogForTest() => FlushCatalog();
+
+        /// <summary>Re-reads the catalog and postings from disk, as a fresh start would.</summary>
+        internal void ReloadCatalogForTest() => LoadCatalog();
+
+        /// <summary>The record key the postings index stores a GUID/part pair under.</summary>
+        internal string MakeKeyForTest(string guid, string partName)
+            => MakeKey(guid, ObjectService.NormalizeRawSourcePart(partName));
+
+        /// <summary>Removes the persisted postings so the next load must rebuild.</summary>
+        internal void DiscardPostingsForTest()
+        {
+            try
+            {
+                string path = Path.Combine(_storeDirectory, TrigramPostingsFileName);
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Rewrites the persisted postings with only half their records, standing in for a
+        /// file that was truncated or written by an older partial flush.
+        /// </summary>
+        internal void DropHalfThePostingsForTest()
+        {
+            string path = Path.Combine(_storeDirectory, TrigramPostingsFileName);
+            if (!File.Exists(path)) return;
+
+            string json;
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var gz = new GZipStream(fs, CompressionMode.Decompress))
+            using (var reader = new StreamReader(gz, Encoding.UTF8))
+            {
+                json = reader.ReadToEnd();
+            }
+
+            var root = JObject.Parse(json);
+            var byRecord = root["byRecord"] as JArray;
+            if (byRecord != null)
+                byRecord = new JArray(byRecord.Take(byRecord.Count / 2).Cast<object>().ToArray());
+            root["byRecord"] = byRecord;
+
+            string tmp = path + ".test";
+            byte[] bytes = Encoding.UTF8.GetBytes(root.ToString(Formatting.None));
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var gz = new GZipStream(fs, CompressionMode.Compress))
+            {
+                gz.Write(bytes, 0, bytes.Length);
+            }
+            File.Delete(path);
+            File.Move(tmp, path);
+        }
 
         /// <summary>
         /// Issue #363: evicted files whose delete failed. They survive on disk outside the

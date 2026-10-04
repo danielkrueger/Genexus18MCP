@@ -21,7 +21,11 @@ namespace GxMcp.Worker.Tests
     public class SourceStoreBudgetAccountingTests : IDisposable
     {
         private readonly string _tempDir;
-        private readonly List<string> _writtenGuids = new List<string>();
+        // Concurrent: Accounting_Survives_Concurrent_Inserts drives Put from
+        // Parallel.For, and a plain List<T>.Add is not thread-safe. The pre-existing
+        // helper only survived because of the capacity it happened to have grown to.
+        private readonly System.Collections.Concurrent.ConcurrentBag<string> _writtenGuids
+            = new System.Collections.Concurrent.ConcurrentBag<string>();
 
         public SourceStoreBudgetAccountingTests()
         {
