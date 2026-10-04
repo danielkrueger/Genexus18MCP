@@ -211,6 +211,7 @@ namespace GxMcp.Worker.Helpers
         {
             if (part == null || string.IsNullOrWhiteSpace(xml)) return false;
 
+            _layoutOwner = part.KBObject;
             try
             {
                 var visualDoc = XDocument.Parse(xml);
@@ -393,13 +394,18 @@ namespace GxMcp.Worker.Helpers
                         if (string.IsNullOrEmpty(elName)) continue;
 
                         bool alreadyExists = false;
+                        // issue #361: a control bound to an attribute or variable is named after that
+                        // reference, so the requested reference identifies the existing control too.
+                        string requestedReference = ReferenceIdentity(elXml);
                         foreach (var item in items)
                         {
                             var iType = item.GetType();
                             var currentName = iType.GetProperty("Name", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
                             var currentControlName = iType.GetProperty("ControlName", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
                             if (string.Equals(currentName, elName, StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(currentControlName, elName, StringComparison.OrdinalIgnoreCase))
+                                string.Equals(currentControlName, elName, StringComparison.OrdinalIgnoreCase) ||
+                                (requestedReference != null && (string.Equals(currentName, requestedReference, StringComparison.OrdinalIgnoreCase) ||
+                                                                string.Equals(currentControlName, requestedReference, StringComparison.OrdinalIgnoreCase))))
                             {
                                 alreadyExists = true;
                                 break;
@@ -493,7 +499,7 @@ namespace GxMcp.Worker.Helpers
 
                         var requestedNames = new HashSet<string>(
                             requestedBlock.Elements("Control")
-                                .Select(c => GetXmlIdentity(c, "ControlName", "Name"))
+                                .SelectMany(c => new[] { GetXmlIdentity(c, "ControlName", "Name"), ReferenceIdentity(c) })
                                 .Where(n => !string.IsNullOrWhiteSpace(n)),
                             StringComparer.OrdinalIgnoreCase);
                         var bandObj = bandsList.FirstOrDefault(b => IsMatchingReportBand(b, baselineBlockName));
@@ -598,6 +604,17 @@ namespace GxMcp.Worker.Helpers
                 Logger.Error("ReportLayoutHelper.WriteLayout Error: " + ex.Message);
                 return false;
             }
+            finally
+            {
+                _layoutOwner = null;
+            }
+        }
+
+        // The reference a bound control shows ("&var" or an attribute name); "(none)" means unbound.
+        private static string ReferenceIdentity(XElement control)
+        {
+            string reference = control.Attribute("AttributeReference")?.Value;
+            return string.IsNullOrWhiteSpace(reference) || reference == "(none)" ? null : reference;
         }
 
         // With a baseline only a block whose Height the caller actually changed is written back, as
@@ -1139,11 +1156,45 @@ namespace GxMcp.Worker.Helpers
             return n.IndexOf("Reference", StringComparison.OrdinalIgnoreCase) >= 0 && !propertyType.IsEnum;
         }
 
+        // issue #361: the owning object of the layout being written, so an AttributeReference can be
+        // resolved to its Variable or Attribute. The string constructor of the SDK reference does not
+        // resolve names, which left every new variable-bound control as "(none)".
+        [ThreadStatic] private static KBObject _layoutOwner;
+
+        private static object BuildTypedReference(string value, Type propertyType)
+        {
+            var owner = _layoutOwner;
+            if (owner == null || !string.Equals(propertyType.Name, "AttributeVariableReference", StringComparison.Ordinal)) return null;
+
+            object typed;
+            if (value.StartsWith("&", StringComparison.Ordinal))
+            {
+                string name = value.Substring(1);
+                var variables = owner.Parts.Get<global::Artech.Genexus.Common.Parts.VariablesPart>();
+                typed = variables?.Variables.FirstOrDefault(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                typed = global::Artech.Genexus.Common.Objects.Attribute.Get(owner.Model, value);
+            }
+            if (typed == null) return null;
+
+            var ctor = propertyType.GetConstructors().FirstOrDefault(c =>
+            {
+                var pars = c.GetParameters();
+                return pars.Length == 1 && pars[0].ParameterType.IsInstanceOfType(typed);
+            });
+            return ctor?.Invoke(new[] { typed });
+        }
+
         private static object BuildReferenceValue(string value, Type propertyType)
         {
             if (string.IsNullOrWhiteSpace(value) || propertyType == null) return null;
             try
             {
+                object typedReference = BuildTypedReference(value, propertyType);
+                if (typedReference != null) return typedReference;
+
                 object instance = null;
                 foreach (var ctor in propertyType.GetConstructors())
                 {

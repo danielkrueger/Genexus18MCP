@@ -7,7 +7,7 @@
 
 ### Added
 
-- `genexus_read` / `genexus_edit part=QueryStructure` (or the default `Source`) now read and write a Query object's structure as text: one `[Elements]`, `[Parameters]`, `[Filters]` and `[Orders]` section, one SDK-serialized item per line, through the part's own `ToSerializedStrings`/`FromSerializedStrings`. A write is saved on the part itself and reported only when the re-read has the same item counts. Output formats and the native `export_kb_to_text` renderer are not covered. https://github.com/lennix1337/Genexus18MCP/issues/404
+- `genexus_read` / `genexus_edit part=QueryStructure` (or the default `Source`) now read and write a Query object's structure as text: one `[Elements]`, `[Parameters]`, `[Filters]` and `[Orders]` section, one SDK-serialized item per line, through the part's own `ToSerializedStrings`/`FromSerializedStrings`. A write is saved on the part itself and reported only when the re-read has the same item counts. `export_kb_to_text format=native` carries the same text. Output formats are not covered. https://github.com/lennix1337/Genexus18MCP/issues/404
 
 ### Changed
 
@@ -19,7 +19,7 @@
 ### Fixed
 
 - `genexus_create action=save_as` of a report Procedure copies the `Layout` part natively and keeps its controls. The textual path either aborted with `SaveAsPartFailed` or, for new controls, dropped them without an error; the copy is now accepted only when its layout projection equals the source's, otherwise the part fails with `LayoutCloneNotFaithful`. The clone write also passes the source `typeFilter`. https://github.com/lennix1337/Genexus18MCP/issues/406
-- Importing a report Layout now writes each print block's `Height` back to the SDK when the caller changed it, instead of failing the write or keeping the old height. The variable binding, duplicate-on-reimport and `add_report_control` overlap items of the same issue are not fixed. https://github.com/lennix1337/Genexus18MCP/issues/361
+- Report Layout writes (`genexus_edit`/`import_part part=Layout`, `genexus_layout set_property`) now persist a print block's `Height`; bind a control to a new `&variable` or an attribute (the SDK reference is resolved to the Variable/Attribute instead of `(none)`); and no longer duplicate or delete bound controls on re-import, because a control bound to a reference is named after it and is now matched by that reference. The `add_report_control` overlap message now names an unnamed unbound control instead of `''`. https://github.com/lennix1337/Genexus18MCP/issues/361
 
 ### Internal
 

@@ -431,7 +431,8 @@ namespace GxMcp.Worker.Services
                 var otherRect = ReadRect(other);
                 if (otherRect == null) continue;
                 if (rect.Left < otherRect.Right && rect.Right > otherRect.Left && rect.Top < otherRect.Bottom && rect.Bottom > otherRect.Top)
-                    return "Report control geometry overlaps '" + (Text(Attr(other, "ControlName")) ?? Text(Attr(other, "Name"))) + "'.";
+                    return "Report control geometry overlaps '" + (Text(Attr(other, "ControlName")) ?? Text(Attr(other, "Name"))
+                        ?? "unnamed control, AttributeReference=" + (Text(Attr(other, "AttributeReference")) ?? "(none)")) + "'.";
             }
             return null;
         }
