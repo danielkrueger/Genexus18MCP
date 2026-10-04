@@ -46,6 +46,26 @@ try {
     if ($auto17Custom.Count -ne 1 -or $auto17Custom[0].major -ne '17' -or $auto17Custom[0].path -ne (Join-Path $fixtureRoot 'KBTeste17')) { throw 'Custom GeneXus 17 fixture autodetection selected the wrong KB.' }
     if ($null -ne $none) { throw 'Fixture autodetection returned a KB that does not exist.' }
 
+    # Issue #412: a non-phase element in the summary must not make the next
+    # Add-PreflightPhaseResult throw, and a non-phase result must be rejected.
+    foreach ($fnName in 'Test-PreflightPhaseShape', 'Add-PreflightPhaseResult', 'Complete-PreflightPhaseSingle') {
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName }, $true)
+        if ($null -eq $fn) { throw "$fnName not found in release-preflight.ps1." }
+        . ([scriptblock]::Create($fn.Extent.Text))
+    }
+    function Write-PreflightSummary { }
+    function Complete-PreflightPhase { param($State) 'stray output'; $State.Phase }
+    $summary = @{ phases = New-Object System.Collections.Generic.List[object] }
+    [void]$summary.phases.Add('stray')
+    Add-PreflightPhaseResult -Phase ([pscustomobject]@{ name = 'a'; status = 'passed' })
+    if ($summary.phases.Count -ne 2) { throw 'Add-PreflightPhaseResult must add a phase next to a foreign element.' }
+    $threw = $false
+    try { Add-PreflightPhaseResult -Phase 'not a phase' } catch { $threw = $true }
+    if (-not $threw) { throw 'Add-PreflightPhaseResult must reject a result without a name.' }
+    $single = Complete-PreflightPhaseSingle -State @{ Phase = [pscustomobject]@{ name = 'b'; status = 'passed' } }
+    if ($single -is [array] -or $single.name -ne 'b') { throw 'Complete-PreflightPhaseSingle must return only the phase object.' }
+    Remove-Item Function:\Write-PreflightSummary, Function:\Complete-PreflightPhase
+
     & pwsh -NoProfile -File (Join-Path $root 'scripts/release-preflight.ps1') -DryRun -SkipLive -SummaryPath $drySummary
     if ($LASTEXITCODE -ne 0) { throw "Dry-run preflight failed with exit code $LASTEXITCODE." }
     $summary = Get-Content -LiteralPath $drySummary -Raw | ConvertFrom-Json

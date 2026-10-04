@@ -448,9 +448,34 @@ function Complete-PreflightPhase {
     $phase
 }
 
+# A phase is an ordered dictionary (or an object read back from JSON); anything
+# else is stray output.
+function Test-PreflightPhaseShape {
+    param([object]$Value)
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [System.Collections.IDictionary]) { return $Value.Contains('name') -and $Value.Contains('status') }
+    return $null -ne $Value.PSObject.Properties['name'] -and $null -ne $Value.PSObject.Properties['status']
+}
+
+# Complete-PreflightPhase must return exactly one phase, but a function returns
+# everything it writes to the output stream. Keep only the phase object so an
+# extra emitted value cannot be stored in the summary (Issue #412).
+function Complete-PreflightPhaseSingle {
+    param([Parameter(Mandatory = $true)][object]$State)
+    $emitted = @(Complete-PreflightPhase -State $State)
+    $phase = @($emitted | Where-Object { Test-PreflightPhaseShape -Value $_ }) | Select-Object -Last 1
+    if ($null -eq $phase) { throw "Preflight phase '$($State.Phase.name)' completed without returning a phase result." }
+    $phase
+}
+
 function Add-PreflightPhaseResult {
     param([Parameter(Mandatory = $true)][object]$Phase)
-    $existing = @($summary.phases | Where-Object { [string]$_.name -eq [string]$Phase.name }) | Select-Object -First 1
+    # Issue #412: a non-phase element (stray pipeline output) stored here made the
+    # next call's `.name` lookup throw under strict mode and abort the release.
+    if (-not (Test-PreflightPhaseShape -Value $Phase)) {
+        throw "Preflight phase result has no 'name' and 'status' (type $($Phase.GetType().FullName))."
+    }
+    $existing = @($summary.phases | Where-Object { (Test-PreflightPhaseShape -Value $_) -and [string]$_.name -eq [string]$Phase.name }) | Select-Object -First 1
     if ($null -eq $existing) {
         [void]$summary.phases.Add($Phase)
     } elseif (-not [object]::ReferenceEquals($existing, $Phase)) {
@@ -472,7 +497,7 @@ function Invoke-PreflightParallel {
             -AllowFailure:$allowFailure -AllowUnavailable:$allowUnavailable -SkipReason $skipReason
     }
     $results = foreach ($state in @($states)) {
-        $phase = Complete-PreflightPhase -State $state
+        $phase = Complete-PreflightPhaseSingle -State $state
         Add-PreflightPhaseResult -Phase $phase | Out-Null
         $phase
     }
@@ -514,7 +539,7 @@ function Invoke-PreflightPhase {
     )
     $state = Start-PreflightPhase -Name $Name -Executable $Executable -Arguments $Arguments -WorkingDirectory $WorkingDirectory `
         -AllowFailure:$AllowFailure -AllowUnavailable:$AllowUnavailable -SkipReason $SkipReason
-    $phase = Complete-PreflightPhase -State $state
+    $phase = Complete-PreflightPhaseSingle -State $state
     Add-PreflightPhaseResult -Phase $phase
     $phaseBlocked = -not (Test-PreflightPhaseStatus -Status ([string]$phase.status) `
         -AllowFailure:$AllowFailure -AllowUnavailable:$AllowUnavailable)
