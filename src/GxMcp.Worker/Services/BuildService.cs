@@ -630,6 +630,17 @@ namespace GxMcp.Worker.Services
         private static readonly Regex _rxSpecError = new Regex(
             @"\berror\s+(spc|gen|src|qry)\d+\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // issue #409: a GeneXus spec/gen diagnostic can reach us as a plain build *message*
+        // with no "error " prefix at all. The in-process engine routes every message through
+        // LogMessageEvent, which passes isError: false and cannot tell a diagnostic from
+        // progress chatter, so the severity the BL engine knows is discarded on the way in.
+        // Both _rxError and _rxSpecError require that literal "error", so such a diagnostic
+        // was pushed into TailLines and never counted: `specify` returned errorCount 0 for a
+        // run that had in fact failed, and the caller saw only TailLines. Anchored at the
+        // start of a line so ordinary prose containing a bare token cannot match.
+        private static readonly Regex _rxBareGxDiagnostic = new Regex(
+            @"^\s*(?!spc0217\b)(?<code>spc|gen|src|qry)\d{4}\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         internal static string ClassifyErrorCategory(string line)
         {
@@ -4410,7 +4421,11 @@ namespace GxMcp.Worker.Services
                     return;
                 }
 
-                if (_rxError.IsMatch(line))
+                // issue #409: count a bare GeneXus diagnostic as an error too, not only text that
+                    // spells out "error". Without this the engine's severity signal is
+                    // thrown away, because the in-process engine delivers spec/gen
+                    // diagnostics as plain messages, and a failed run reports errorCount 0.
+                    if (_rxError.IsMatch(line) || _rxBareGxDiagnostic.IsMatch(line))
                 {
                     // v2.6.6 Stream E (FR#9): CS2001 for "<obj>_bc.cs" where the
                     // underlying Transaction has BC disabled (or doesn't exist) is

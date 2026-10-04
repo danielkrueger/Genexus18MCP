@@ -304,12 +304,23 @@ namespace GxMcp.Worker.Services
                 {
                     foreach (var match in EnumerateFilesPruned(c, target + ".*"))
                     {
-                        string ext = Path.GetExtension(match);
-                        if (GeneratedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
-                            && string.Equals(Path.GetFileName(match), target + ext, StringComparison.OrdinalIgnoreCase)
+                        if (IsGeneratedFileFor(match, target)
                             && !found.Contains(match, StringComparer.OrdinalIgnoreCase))
                         {
                             found.Add(match);
+                        }
+                    }
+                    // issue #409: the generator prefixes a Main object's .cs with "a", so
+                    // "rcliser2sql" is only ever on disk as "arcliser2sql.cs". The glob
+                    // target + ".*" cannot see that, so the freshness probe reported the file
+                    // missing and every Main report build raised a false [generate-gap]
+                    // warning. Probe the prefixed spelling too.
+                    foreach (var prefixed in EnumerateFilesPruned(c, MainFilePrefix + target + ".*"))
+                    {
+                        if (IsGeneratedFileFor(prefixed, target)
+                            && !found.Contains(prefixed, StringComparer.OrdinalIgnoreCase))
+                        {
+                            found.Add(prefixed);
                         }
                     }
                 }
@@ -317,6 +328,29 @@ namespace GxMcp.Worker.Services
                 if (!allRoots && found.Count > 0) break; // first matching root wins
             }
             return found;
+        }
+
+        /// <summary>
+        /// The prefix the GeneXus .NET generator puts in front of a Main object's source
+        /// file: a procedure named <c>rcliser2sql</c> generates <c>arcliser2sql.cs</c>.
+        /// </summary>
+        internal const string MainFilePrefix = "a";
+
+        /// <summary>
+        /// Whether <paramref name="file"/> is the generated file for <paramref name="target"/>,
+        /// accepting either the bare spelling or the generator's Main-object prefix. The name
+        /// is matched exactly and the extension must be one we diff, so a similarly-named
+        /// sibling object - or the same stem with some other extension - is never mistaken
+        /// for it.
+        /// </summary>
+        internal static bool IsGeneratedFileFor(string file, string target)
+        {
+            if (string.IsNullOrEmpty(file) || string.IsNullOrEmpty(target)) return false;
+            string name = Path.GetFileName(file);
+            string ext = Path.GetExtension(name);
+            if (!GeneratedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)) return false;
+            return string.Equals(name, target + ext, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, MainFilePrefix + target + ext, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>Result of a generated-file freshness probe for one object.</summary>
