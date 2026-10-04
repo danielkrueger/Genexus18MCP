@@ -55,6 +55,16 @@ namespace GxMcp.Worker.Helpers
         public static bool Cancel(string token)
         {
             if (string.IsNullOrEmpty(token)) return false;
+
+            // Issue #369. A cancel for a command that has not started yet has no CTS to
+            // signal: the registration only happens once the command reaches the SDK lane.
+            // Drop it from the queue instead, so its admission capacity is released now
+            // rather than when it eventually reaches the head - and so it can never
+            // execute. This runs before the CTS lookup because the queued case is exactly
+            // the one that returns false below.
+            try { GxMcp.Worker.Services.StaScheduler.Instance.DropQueuedForCancelToken(token); }
+            catch { }
+
             if (!_tokens.TryGetValue(token, out var entry))
             {
                 _preCancelled[token] = DateTime.UtcNow.Add(PreCancellationRetention);

@@ -55,7 +55,22 @@ namespace GxMcp.Gateway
         // needs, so it doesn't re-parse the command we just serialized (every large
         // genexus_edit / import command used to be JObject.Parse'd a second time on
         // the write path just to read two top-level fields).
-        private readonly Channel<QueuedCommand> _commandChannel = Channel.CreateUnbounded<QueuedCommand>();
+        // Issue #369. This was Channel.CreateUnbounded, so a client that out-pushed the Worker's
+        // pipe reader retained an arbitrary burst in the Gateway before the Worker ever
+        // applied its own admission control. Bounding it here means the Gateway applies
+        // backpressure (FullMode.Wait) instead of buffering, and a caller that cannot be
+        // served within the timeout gets an actionable, retryable error rather than
+        // unbounded memory growth and a silent stall.
+        internal const int CommandChannelCapacity = 512;
+        internal static readonly TimeSpan CommandQueueEnqueueTimeout = TimeSpan.FromSeconds(5);
+
+        private readonly Channel<QueuedCommand> _commandChannel =
+            Channel.CreateBounded<QueuedCommand>(new BoundedChannelOptions(CommandChannelCapacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false,
+            });
 
         private sealed record QueuedCommand(string? Json, JObject? Rpc, string? Id, string? Method);
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
@@ -90,6 +105,7 @@ namespace GxMcp.Gateway
         internal Func<WorkerStopReason, Exception?>? StopFailureForTest { get; set; }
         private int _inFlightCommands;
         private int _queuedCommands;
+        private ManualResetEventSlim? _commandWriterGateForTest;
         // BUG-03: start timestamp of each in-flight command, keyed by JSON-RPC id.
         // Populated when a command that counts as activity is written to the pipe,
         // removed on normal completion (CompleteInFlight) or send failure. The health
@@ -576,6 +592,7 @@ namespace GxMcp.Gateway
                 {
                     if (await _commandChannel.Reader.WaitToReadAsync(_cts.Token))
                     {
+                        _commandWriterGateForTest?.Wait();
                         while (_commandChannel.Reader.TryRead(out var cmd))
                         {
                             Interlocked.Decrement(ref _queuedCommands);
@@ -1396,7 +1413,7 @@ namespace GxMcp.Gateway
             string? id = rpc["id"]?.ToString();
             string? method = rpc["method"]?.ToString();
             Interlocked.Increment(ref _queuedCommands);
-            await _commandChannel.Writer.WriteAsync(new QueuedCommand(null, rpc, id, method));
+            await EnqueueCommandAsync(new QueuedCommand(null, rpc, id, method), id, method);
         }
 
         // Compatibility shim (no production caller after the JObject overload was
@@ -1404,7 +1421,40 @@ namespace GxMcp.Gateway
         public async Task SendCommandAsync(string jsonRpc)
         {
             Interlocked.Increment(ref _queuedCommands);
-            await _commandChannel.Writer.WriteAsync(new QueuedCommand(jsonRpc, null, null, null));
+            await EnqueueCommandAsync(new QueuedCommand(jsonRpc, null, null, null), null, null);
+        }
+
+        /// <summary>
+        /// Writes to the bounded command channel, waiting up to
+        /// <see cref="CommandQueueEnqueueTimeout"/> for room.
+        ///
+        /// <para>
+        /// Issue #369. On expiry the command is refused with
+        /// <see cref="WorkerCommandQueueFullException"/> instead of being buffered
+        /// indefinitely. The queued-command counter is decremented here, because the
+        /// increment above has already happened: refusing without the decrement would leak
+        /// queue depth for a command that was never enqueued.
+        /// </para>
+        /// </summary>
+        private async Task EnqueueCommandAsync(QueuedCommand cmd, string? id, string? method)
+        {
+            using var timeout = new CancellationTokenSource(CommandQueueEnqueueTimeout);
+            try
+            {
+                await _commandChannel.Writer.WriteAsync(cmd, timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                Interlocked.Decrement(ref _queuedCommands);
+                throw new WorkerCommandQueueFullException(Kb.Alias, id, method,
+                    CommandChannelCapacity, CommandQueueEnqueueTimeout.TotalMilliseconds);
+            }
+            catch (ChannelClosedException)
+            {
+                Interlocked.Decrement(ref _queuedCommands);
+                throw new WorkerCommandQueueFullException(Kb.Alias, id, method,
+                    CommandChannelCapacity, CommandQueueEnqueueTimeout.TotalMilliseconds);
+            }
         }
 
         public void Stop() => StopWithReason(WorkerStopReason.GatewayShutdown);
@@ -1851,6 +1901,43 @@ namespace GxMcp.Gateway
         internal void CompleteInFlightForTest(string id) => CompleteInFlight(id);
 
         internal int InFlightStartTimesCountForTest => _inFlightStartTimes.Count;
+
+        /// <summary>
+        /// Commands currently retained in the Gateway-side command channel, including
+        /// commands the writer loop has taken but not yet written to the Worker. Issue
+        /// #369 bounds this channel; the test seam exists so a bounded-channel test can
+        /// assert that a refused command does not leak the count.
+        /// </summary>
+        internal int QueuedCommandsForTest => Volatile.Read(ref _queuedCommands);
+
+        /// <summary>
+        /// Stands in for the writer loop consuming one command. Only the depth accounting
+        /// and the resulting room in the bounded channel are modelled, which is what a
+        /// drain test needs; no Worker process is involved.
+        /// </summary>
+        internal bool ReleaseOneQueuedCommandForTest()
+            => _commandChannel.Reader.TryRead(out _) && Interlocked.Decrement(ref _queuedCommands) >= 0;
+
+        /// <summary>
+        /// Blocks the command writer loop at its next iteration, modelling a Worker whose
+        /// pipe has stalled. Issue #369: with the loop running, the bounded channel drains
+        /// as fast as it is filled and the full-channel refusal is unreachable; a stalled
+        /// pipe is exactly the production condition under which it has to engage.
+        /// </summary>
+        internal ManualResetEventSlim StallCommandWriterForTest()
+        {
+            var gate = new ManualResetEventSlim(false);
+            _commandWriterGateForTest = gate;
+            return gate;
+        }
+
+        /// <summary>Releases a writer loop stalled by <see cref="StallCommandWriterForTest"/>.</summary>
+        internal void ResumeCommandWriterForTest()
+        {
+            var gate = _commandWriterGateForTest;
+            _commandWriterGateForTest = null;
+            gate?.Set();
+        }
 
         // Test seam: lets a reap-path test assert the background loops were told to stop.
         internal bool CancellationRequestedForTest => _cts.IsCancellationRequested;

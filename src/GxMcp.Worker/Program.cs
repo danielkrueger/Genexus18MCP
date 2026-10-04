@@ -665,7 +665,11 @@ namespace GxMcp.Worker
                 BusyWaitMs = busyWaitMs,
                 IdJson = idJson,
                 Method = method,
-                Action = action
+                Action = action,
+                // Issue #369: so a cancel that lands while the command is still queued can
+                // drop it from the queue, instead of it sitting charged until it reaches
+                // the head and starting with an already-cancelled token.
+                CancelToken = obj?["params"]?["cancelToken"]?.ToString()
             };
 
             // Issue #341: admission is bounded, and a refusal is returned to the caller

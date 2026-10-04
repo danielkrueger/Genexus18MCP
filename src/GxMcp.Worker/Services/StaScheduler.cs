@@ -24,6 +24,21 @@ namespace GxMcp.Worker.Services
         public string IdJson { get; set; }
         public string Method { get; set; }
         public string Action { get; set; }
+
+        /// <summary>
+        /// The Gateway's cancel token for this command, if it carries one. It lets a
+        /// cancel that lands while the command is still queued drop it from the queue
+        /// instead of waiting for it to reach the head and start with a cancelled token.
+        /// </summary>
+        public string CancelToken { get; set; }
+
+        /// <summary>
+        /// Bytes this item was charged at admission, and refunded verbatim on dequeue,
+        /// timeout or cancellation. Computed once because release has to refund exactly
+        /// what admission charged: recomputing it later can drift, and a drifted refund
+        /// leaks budget until admission is permanently exhausted.
+        /// </summary>
+        internal long ChargeBytes { get; set; }
     }
 
     public sealed class StaScheduler
@@ -50,10 +65,38 @@ namespace GxMcp.Worker.Services
         // bounds its wait without giving up interactive latency for the common case.
         internal const int MaxQueuedCommands = 512;
         internal const long MaxQueuedBytes = 32L * 1024 * 1024;
+
+        // Issue #369. The global budgets above are necessary but not sufficient: with
+        // only global bounds, admission is a denial-of-service primitive. One client
+        // floods P2 work until every slot is gone, and from then on every *other*
+        // client's interactive read is refused with WorkerQueueSaturated - the flooder
+        // spends capacity that other clients never get to use. Per-client fairness at
+        // dequeue time does not help: the problem is that the work is never admitted at
+        // all.
+        //
+        // These bounds apply to *background and normal* work only. Interactive (P0) work
+        // is bounded by the global budgets alone, which is the reserved headroom the issue
+        // asks for: a client's own background flood must not be able to lock that same
+        // client out of its own reads, or the cap would just convert one client's flood
+        // into that client's self-inflicted denial of service. Half of each global budget
+        // is enough to stop any one client monopolising admission while still letting a
+        // single busy client use a large share of the lane.
+        internal const int MaxQueuedCommandsPerClient = MaxQueuedCommands / 2;
+        internal const long MaxQueuedBytesPerClient = MaxQueuedBytes / 2;
+
+        // Fixed per-item overhead in bytes: the ScheduledCommandItem itself, its queue
+        // node, and the small header strings every item carries. Charging it keeps a
+        // flood of tiny commands from being effectively free under a byte budget.
+        internal const long ItemOverheadBytes = 128;
+
         internal static readonly TimeSpan PriorityAgingWindow = TimeSpan.FromSeconds(5);
 
         private int _queuedCount;
         private long _queuedBytes;
+        private readonly Dictionary<string, int> _queuedCountByClient =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, long> _queuedBytesByClient =
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Why an admission was refused, so the caller can answer with something
@@ -179,6 +222,8 @@ namespace GxMcp.Worker.Services
             if (item == null) return false;
             string client = string.IsNullOrEmpty(item.ClientId) ? "default" : item.ClientId;
             long bytes = EstimateBytes(item);
+            // Charge the item now, outside the lock, and refund exactly this value later.
+            item.ChargeBytes = bytes;
 
             lock (_lock)
             {
@@ -200,6 +245,26 @@ namespace GxMcp.Worker.Services
                     LastAdmissionError = "queue_bytes_exhausted";
                     return false;
                 }
+                // Issue #369: per-client bounds, decided in the same critical section as
+                // the enqueue so the refusal cannot race the queue. Interactive work is
+                // exempt: it is bounded by the global budgets only, so a client's own
+                // background flood can never refuse that client's reads.
+                bool interactive = item.Priority == CommandPriority.P0_Interactive;
+                int clientCount = ClientCount(client);
+                long clientBytes = ClientBytes(client);
+                if (!interactive)
+                {
+                    if (clientCount >= MaxQueuedCommandsPerClient)
+                    {
+                        LastAdmissionError = "client_command_cap";
+                        return false;
+                    }
+                    if (clientBytes + bytes > MaxQueuedBytesPerClient)
+                    {
+                        LastAdmissionError = "client_bytes_exhausted";
+                        return false;
+                    }
+                }
 
                 switch (item.Priority)
                 {
@@ -218,22 +283,49 @@ namespace GxMcp.Worker.Services
                 }
                 _queuedCount++;
                 _queuedBytes += bytes;
+                SetClientAccounting(client, clientCount + 1, clientBytes + bytes);
                 LastAdmissionError = null;
                 return true;
             }
         }
 
+        private int ClientCount(string client)
+            => _queuedCountByClient.TryGetValue(client, out int n) ? n : 0;
+
+        private long ClientBytes(string client)
+            => _queuedBytesByClient.TryGetValue(client, out long b) ? b : 0L;
+
+        private void SetClientAccounting(string client, int count, long bytes)
+        {
+            if (count > 0) _queuedCountByClient[client] = count;
+            else _queuedCountByClient.Remove(client);
+            if (bytes > 0) _queuedBytesByClient[client] = bytes;
+            else _queuedBytesByClient.Remove(client);
+        }
+
         /// <summary>
-        /// Retained bytes attributed to a queued item. The raw command line is the
-        /// payload that actually occupies memory; <see cref="ScheduledCommandItem.IdJson"/>
-        /// is a subset of it.
+        /// Retained bytes attributed to a queued item.
+        ///
+        /// <para>
+        /// Issue #369. This used to sum only <see cref="ScheduledCommandItem.IdJson"/>,
+        /// <c>Method</c> and <c>Action</c> - a few dozen bytes - while the queued item
+        /// also retained <see cref="ScheduledCommandItem.RawLine"/>, the whole command
+        /// text including any edit or import payload. So a queued 10 MiB edit was charged
+        /// about a hundred bytes, <see cref="MaxQueuedBytes"/> could not be reached before
+        /// <see cref="MaxQueuedCommands"/> did, and 512 accepted large commands retained
+        /// hundreds of megabytes inside a 32-bit process. The byte budget has to charge
+        /// what is actually retained, or it is not a budget.
+        /// </para>
         /// </summary>
         private static long EstimateBytes(ScheduledCommandItem item)
         {
-            long bytes = 0;
-            if (item?.IdJson != null) bytes += (item.IdJson.Length + 1) * 2L; // UTF-16 chars
-            if (item?.Method != null) bytes += (item.Method.Length + 1) * 2L;
-            if (item?.Action != null) bytes += (item.Action.Length + 1) * 2L;
+            if (item == null) return 0;
+            long bytes = ItemOverheadBytes;
+            if (item.RawLine != null) bytes += (item.RawLine.Length + 1) * 2L; // UTF-16 chars
+            if (item.IdJson != null) bytes += (item.IdJson.Length + 1) * 2L;
+            if (item.Method != null) bytes += (item.Method.Length + 1) * 2L;
+            if (item.Action != null) bytes += (item.Action.Length + 1) * 2L;
+            if (item.CancelToken != null) bytes += (item.CancelToken.Length + 1) * 2L;
             return bytes;
         }
 
@@ -433,9 +525,75 @@ namespace GxMcp.Worker.Services
             if (item == null) return;
             _queuedCount--;
             if (_queuedCount < 0) _queuedCount = 0;
-            long bytes = EstimateBytes(item);
+            // Refund exactly what admission charged (issue #369). Recomputing here could
+            // drift from the charge and leak budget until admission is permanently
+            // exhausted, which is a denial of service the caller cannot recover from.
+            long bytes = item.ChargeBytes;
+            if (bytes < 0) bytes = 0;
             _queuedBytes -= bytes;
             if (_queuedBytes < 0) _queuedBytes = 0;
+
+            string client = string.IsNullOrEmpty(item.ClientId) ? "default" : item.ClientId;
+            SetClientAccounting(client, ClientCount(client) - 1, ClientBytes(client) - bytes);
+        }
+
+        /// <summary>
+        /// Drops every queued command carrying <paramref name="cancelToken"/>, refunding
+        /// its count and bytes, and reports how many were dropped.
+        ///
+        /// <para>
+        /// Issue #369. A cancel that arrives while the command is still queued used to be
+        /// recorded only as a pre-cancellation: the command kept its slot and its bytes
+        /// until it reached the head of the queue, then started with an already-cancelled
+        /// token. Capacity was therefore not released at cancellation time, and whether
+        /// the cancelled work ran at all depended on each individual handler happening to
+        /// observe the token. Dropping it here releases capacity immediately and
+        /// guarantees the command never executes.
+        /// </para>
+        /// </summary>
+        public int DropQueuedForCancelToken(string cancelToken)
+        {
+            if (string.IsNullOrEmpty(cancelToken)) return 0;
+            int dropped = 0;
+            lock (_lock)
+            {
+                dropped += DropMatching(_p0Queues, cancelToken);
+                dropped += DropMatching(_p1Queues, cancelToken);
+                dropped += DropMatching(_p2Queues, cancelToken);
+            }
+            return dropped;
+        }
+
+        /// <summary>
+        /// Removes the matching items from each per-client queue. A <see cref="Queue{T}"/>
+        /// has no positional removal, so this rebuilds it - the same rotate-and-reenqueue
+        /// shape <see cref="ExpireTimedOut"/> already uses, and for the same reason:
+        /// cancellation is rare compared to service.
+        /// </summary>
+        private int DropMatching(
+            Dictionary<string, Queue<ScheduledCommandItem>> queues, string cancelToken)
+        {
+            int dropped = 0;
+            foreach (var kvp in queues)
+            {
+                var q = kvp.Value;
+                if (q.Count == 0) continue;
+                int count = q.Count;
+                for (int i = 0; i < count; i++)
+                {
+                    var item = q.Dequeue();
+                    if (string.Equals(item.CancelToken, cancelToken, StringComparison.Ordinal))
+                    {
+                        dropped++;
+                        ReleaseAccounting(item);
+                    }
+                    else
+                    {
+                        q.Enqueue(item);
+                    }
+                }
+            }
+            return dropped;
         }
 
         public (int p0, int p1, int p2, int total) GetQueueDepths()
@@ -473,6 +631,8 @@ namespace GxMcp.Worker.Services
                 // enough takes happened to walk the phantom count back down.
                 _queuedCount = 0;
                 _queuedBytes = 0;
+                _queuedCountByClient.Clear();
+                _queuedBytesByClient.Clear();
                 LastAdmissionError = null;
             }
         }

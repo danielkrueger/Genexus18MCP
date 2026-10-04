@@ -20,6 +20,33 @@ namespace GxMcp.Gateway
         }
     }
 
+    /// <summary>
+    /// Issue #369: the Gateway's per-Worker command channel stayed at capacity longer than
+    /// <see cref="WorkerProcess.CommandQueueEnqueueTimeout"/>, so the command was refused
+    /// rather than buffered without bound. The command was never enqueued, so a retry is
+    /// safe and the caller is told so explicitly.
+    /// </summary>
+    public sealed class WorkerCommandQueueFullException : Exception
+    {
+        public string? KbAlias { get; }
+        public string? CommandId { get; }
+        public string? Method { get; }
+        public int Capacity { get; }
+        public long WaitedMs { get; }
+
+        public WorkerCommandQueueFullException(
+            string? kbAlias, string? commandId, string? method, int capacity, double waitedMs)
+            : base($"The Gateway command queue for KB '{kbAlias}' stayed full for {waitedMs:F0} ms " +
+                   $"(capacity {capacity} commands). This command was NOT sent to the Worker.")
+        {
+            KbAlias = kbAlias;
+            CommandId = commandId;
+            Method = method;
+            Capacity = capacity;
+            WaitedMs = (long)waitedMs;
+        }
+    }
+
     /// <summary>Immutable snapshot of a worker startup failure. Classification lives in <see cref="SdkDiagnosticClassifier"/>.</summary>
     public sealed record WorkerStartupFailure(
         WorkerStopReason Reason,

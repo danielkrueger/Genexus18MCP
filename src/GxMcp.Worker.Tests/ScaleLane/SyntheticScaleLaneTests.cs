@@ -190,7 +190,7 @@ namespace GxMcp.Worker.Tests
             {
                 DateTime now = DateTime.UtcNow;
                 for (int i = 0; i < 400; i++)
-                    Assert.True(scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "bulk-" + i, now)));
+                    Assert.True(scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "bulk-" + i, now, "bulk-" + i)));
                 Assert.True(scheduler.TryEnqueue(Item(CommandPriority.P0_Interactive, "read-fresh", now)),
                     "the read was refused admission, so its position could not be measured");
 
@@ -252,7 +252,7 @@ namespace GxMcp.Worker.Tests
             scheduler.Clear();
 
             for (int i = 0; i < 300; i++)
-                Assert.True(scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "fill-" + i, DateTime.UtcNow)));
+                Assert.True(scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "fill-" + i, DateTime.UtcNow, "fill-" + i)));
             Assert.Equal(300, scheduler.QueuedCount);
 
             scheduler.Clear();
@@ -261,7 +261,7 @@ namespace GxMcp.Worker.Tests
 
             for (int i = 0; i < 300; i++)
             {
-                Assert.True(scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "after-clear-" + i, DateTime.UtcNow)),
+                Assert.True(scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "after-clear-" + i, DateTime.UtcNow, "after-clear-" + i)),
                     $"command {i} was refused with '{scheduler.LastAdmissionError}' on a cleared queue");
             }
             Assert.Equal(300, scheduler.QueuedCount);
@@ -505,18 +505,28 @@ namespace GxMcp.Worker.Tests
         }
 
         private static ScheduledCommandItem Item(CommandPriority priority, string method, DateTime at)
+            => Item(priority, method, at, "scale-tests");
+
+        /// <summary>
+        /// Issue #369 capped one client's background work at half the global admission
+        /// budget, so a single client can no longer hold 300-400 bulk items at once. That is
+        /// the point of the cap, so the starvation and Clear() fixtures model the realistic
+        /// multi-producer shape - one client per unit of work - instead of one client
+        /// monopolising the lane. Their assertions and intent are unchanged.
+        /// </summary>
+        private static ScheduledCommandItem Item(CommandPriority priority, string method, DateTime at, string clientId)
         {
             var obj = new Newtonsoft.Json.Linq.JObject
             {
                 ["method"] = method,
-                ["_meta"] = new Newtonsoft.Json.Linq.JObject { ["clientId"] = "scale-tests" },
+                ["_meta"] = new Newtonsoft.Json.Linq.JObject { ["clientId"] = clientId },
             };
             return new ScheduledCommandItem
             {
                 Obj = obj,
                 RawLine = obj.ToString(Newtonsoft.Json.Formatting.None),
                 Priority = priority,
-                ClientId = "scale-tests",
+                ClientId = clientId,
                 EnqueuedAtUtc = at,
                 Method = method,
             };

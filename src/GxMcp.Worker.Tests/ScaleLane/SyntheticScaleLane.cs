@@ -445,7 +445,7 @@ namespace GxMcp.Worker.Tests.ScaleLane
                 DateTime now = DateTime.UtcNow;
                 for (int i = 0; i < bulk; i++)
                 {
-                    if (scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "bulk-" + i, now)))
+                    if (scheduler.TryEnqueue(Item(CommandPriority.P2_Background, "bulk-" + i, now, "bulk-" + i)))
                         accepted++;
                 }
                 bool readAdmitted = scheduler.TryEnqueue(
@@ -533,18 +533,29 @@ namespace GxMcp.Worker.Tests.ScaleLane
         /// resolution is exercised rather than assumed.
         /// </summary>
         private static ScheduledCommandItem Item(CommandPriority priority, string method, DateTime enqueuedAtUtc)
+            => Item(priority, method, enqueuedAtUtc, "scale-lane");
+
+        /// <summary>
+        /// Issue #369 capped one client's background work at half the global admission
+        /// budget, so a single client can no longer hold this lane's 400-item bulk load.
+        /// That is the point of the cap, so the bulk load is spread over distinct clients -
+        /// the realistic multi-producer shape - rather than one client monopolising the
+        /// lane. The criterion's meaning is unchanged: it still measures whether a cleared
+        /// scheduler admits work at lane scale.
+        /// </summary>
+        private static ScheduledCommandItem Item(CommandPriority priority, string method, DateTime enqueuedAtUtc, string clientId)
         {
             var obj = new JObject
             {
                 ["method"] = method,
-                ["_meta"] = new JObject { ["clientId"] = "scale-lane" },
+                ["_meta"] = new JObject { ["clientId"] = clientId },
             };
             return new ScheduledCommandItem
             {
                 Obj = obj,
                 RawLine = obj.ToString(Newtonsoft.Json.Formatting.None),
                 Priority = priority,
-                ClientId = "scale-lane",
+                ClientId = clientId,
                 EnqueuedAtUtc = enqueuedAtUtc,
                 Method = method,
             };

@@ -616,6 +616,27 @@ namespace GxMcp.Gateway
                         ["openKbs"] = JArray.FromObject(ex.OpenKbs.Select(k => k.Alias))
                     };
                 }
+                catch (WorkerCommandQueueFullException ex)
+                {
+                    // issue #369: the Gateway-side command channel stayed full. The command
+                    // was never enqueued, so this is retryable - say so, with the byte and
+                    // command context the caller needs to decide whether to retry.
+                    isError = true;
+                    payload = new JObject
+                    {
+                        ["error"] = ex.Message,
+                        ["code"] = "WORKER_COMMAND_QUEUE_FULL",
+                        ["retryable"] = true,
+                        ["sentToWorker"] = false,
+                        ["retryAfterMs"] = 250,
+                        ["capacity"] = ex.Capacity,
+                        ["waitedMs"] = ex.WaitedMs,
+                        ["kbAlias"] = ex.KbAlias,
+                        ["method"] = ex.Method,
+                        ["requestId"] = ex.CommandId,
+                        ["hint"] = "Retry once the Worker drains. A refused command was never sent to the Worker, so a retry cannot duplicate its effect."
+                    };
+                }
                 catch (Exception ex)
                 {
                     isError = true;
