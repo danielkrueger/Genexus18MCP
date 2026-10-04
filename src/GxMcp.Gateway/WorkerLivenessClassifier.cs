@@ -89,8 +89,8 @@ namespace GxMcp.Gateway
         internal static JObject Classify(string alias, bool transportAlive, JObject? sdkProbe)
         {
             string sdk;
-            string operation = null;
-            string stallReason = null;
+            string? operation = null;
+            string? stallReason = null;
             long? elapsedMs = null;
             long? lastProgressMs = null;
 
@@ -179,7 +179,7 @@ namespace GxMcp.Gateway
             if (diagnosis == null) return true;
             bool transportAlive = string.Equals(diagnosis["transport"]?.ToString(), "alive", StringComparison.Ordinal);
             if (!transportAlive) return true;
-            string sdk = diagnosis["sdk"]?.ToString();
+            string? sdk = diagnosis["sdk"]?.ToString();
             return string.Equals(sdk, "busy-stalled", StringComparison.Ordinal)
                 // Issue #371: a lane that has never reported progress is a recovery
                 // candidate once it passes the ceiling, otherwise a deadlocked SDK that

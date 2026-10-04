@@ -183,7 +183,7 @@ namespace GxMcp.Worker
         /// child; the seam exists so a guard can drive the decision logic - and the recycle
         /// election that depends on it - without a wedged or real SDK.
         /// </summary>
-        internal Func<JObject>? ChildStatusProvider { get; set; }
+        internal Func<JObject> ChildStatusProvider { get; set; }
 
         /// <summary>Managed heap over which a recycling policy is evaluated, in bytes.</summary>
         internal long ChildManagedHeapBudgetBytes = 512L * 1024 * 1024;
@@ -905,7 +905,7 @@ namespace GxMcp.Worker
             {
                 var child = _child;
                 var pid = child?.Id ?? 0;
-                long workingSet = 0, privateBytes = 0, availableBefore = 0, availableAfter = 0;
+                long workingSet = 0, privateBytes = 0;
 
                 if (child != null && !child.HasExited)
                 {

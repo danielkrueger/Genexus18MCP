@@ -61,6 +61,8 @@
 
 ### Internal
 
+- Cleared the 27 nullable/unused-variable warnings the worker-liveness classifier and shared WorkerHost changes introduced, so the Release warning baseline passes without a baseline update.
+
 ## v3.10.0 - 2026-10-02
 
 

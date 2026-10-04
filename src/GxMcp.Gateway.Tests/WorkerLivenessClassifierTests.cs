@@ -58,8 +58,8 @@ namespace GxMcp.Gateway.Tests
                 ElapsedProbe(active: true, sawProgress: false,
                     WorkerLivenessClassifier.NoProgressStallAfterMs + 1_000, "object/Read"));
 
-            Assert.Equal("busy-stalled-unproven", (string)d["sdk"]);
-            Assert.Equal("no-progress-ceiling", (string)d["sdkStallReason"]);
+            Assert.Equal("busy-stalled-unproven", (string?)d["sdk"]);
+            Assert.Equal("no-progress-ceiling", (string?)d["sdkStallReason"]);
             Assert.True(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -72,7 +72,7 @@ namespace GxMcp.Gateway.Tests
                 "kb1", transportAlive: true,
                 ElapsedProbe(active: true, sawProgress: false, 3_000, "object/Read"));
 
-            Assert.Equal("busy-unproven", (string)d["sdk"]);
+            Assert.Equal("busy-unproven", (string?)d["sdk"]);
             Assert.Null((string?)d["sdkStallReason"]);
             Assert.False(WorkerLivenessClassifier.Recovers(d));
         }
@@ -85,7 +85,7 @@ namespace GxMcp.Gateway.Tests
                 "kb1", transportAlive: true,
                 ElapsedProbe(active: true, sawProgress: true, 20 * 60_000, "build/run"));
 
-            Assert.Equal("busy-progressing", (string)d["sdk"]);
+            Assert.Equal("busy-progressing", (string?)d["sdk"]);
             Assert.False(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -98,7 +98,7 @@ namespace GxMcp.Gateway.Tests
                 ElapsedProbe(active: true, sawProgress: true,
                     WorkerLivenessClassifier.NoProgressStallAfterMs * 10, "build/run"));
 
-            Assert.Equal("busy-progressing", (string)d["sdk"]);
+            Assert.Equal("busy-progressing", (string?)d["sdk"]);
         }
 
         [Fact]
@@ -109,7 +109,7 @@ namespace GxMcp.Gateway.Tests
                 ElapsedProbe(active: false, sawProgress: false,
                     WorkerLivenessClassifier.NoProgressStallAfterMs * 5, ""));
 
-            Assert.Equal("idle", (string)d["sdk"]);
+            Assert.Equal("idle", (string?)d["sdk"]);
             Assert.False(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -133,7 +133,7 @@ namespace GxMcp.Gateway.Tests
                 ElapsedProbe(active: true, sawProgress: false,
                     WorkerLivenessClassifier.NoProgressStallAfterMs * 3, "object/Read"));
 
-            Assert.Equal("unknown", (string)d["sdk"]);
+            Assert.Equal("unknown", (string?)d["sdk"]);
             Assert.True(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -142,8 +142,8 @@ namespace GxMcp.Gateway.Tests
         {
             var d = WorkerLivenessClassifier.Classify("kb1", transportAlive: true, SdkProbe(false, false, null));
 
-            Assert.Equal("alive", (string)d["transport"]);
-            Assert.Equal("idle", (string)d["sdk"]);
+            Assert.Equal("alive", (string?)d["transport"]);
+            Assert.Equal("idle", (string?)d["sdk"]);
             Assert.False(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -159,8 +159,8 @@ namespace GxMcp.Gateway.Tests
                 SdkProbe(active: true, sawProgress: true,
                          lastProgressMs: WorkerLivenessClassifier.SdkStallAfterMs + 1_000));
 
-            Assert.Equal("alive", (string)d["transport"]);
-            Assert.Equal("busy-stalled", (string)d["sdk"]);
+            Assert.Equal("alive", (string?)d["transport"]);
+            Assert.Equal("busy-stalled", (string?)d["sdk"]);
             // And it is the one busy state that justifies recycling.
             Assert.True(WorkerLivenessClassifier.Recovers(d));
         }
@@ -175,7 +175,7 @@ namespace GxMcp.Gateway.Tests
                 "kb1", transportAlive: true,
                 SdkProbe(active: true, sawProgress: true, lastProgressMs: 3_000));
 
-            Assert.Equal("busy-progressing", (string)d["sdk"]);
+            Assert.Equal("busy-progressing", (string?)d["sdk"]);
             Assert.False(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -190,7 +190,7 @@ namespace GxMcp.Gateway.Tests
 
             var d = WorkerLivenessClassifier.Classify("kb1", transportAlive: true, probe);
 
-            Assert.Equal("busy-progressing", (string)d["sdk"]);
+            Assert.Equal("busy-progressing", (string?)d["sdk"]);
             Assert.False(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -204,7 +204,7 @@ namespace GxMcp.Gateway.Tests
                 "kb1", transportAlive: true,
                 SdkProbe(active: true, sawProgress: false, lastProgressMs: null));
 
-            Assert.Equal("busy-unproven", (string)d["sdk"]);
+            Assert.Equal("busy-unproven", (string?)d["sdk"]);
             Assert.False(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -217,8 +217,8 @@ namespace GxMcp.Gateway.Tests
                 "kb1", transportAlive: false,
                 SdkProbe(active: false, sawProgress: false, lastProgressMs: null));
 
-            Assert.Equal("dead", (string)d["transport"]);
-            Assert.Equal("unknown", (string)d["sdk"]);
+            Assert.Equal("dead", (string?)d["transport"]);
+            Assert.Equal("unknown", (string?)d["sdk"]);
             Assert.True(WorkerLivenessClassifier.Recovers(d));
         }
 
@@ -229,8 +229,8 @@ namespace GxMcp.Gateway.Tests
             // the probe not coming back is itself a finding.
             var timedOut = new JObject { ["__timeout"] = true };
 
-            Assert.Equal("unknown", (string)WorkerLivenessClassifier.Classify("kb1", true, timedOut)["sdk"]);
-            Assert.Equal("unknown", (string)WorkerLivenessClassifier.Classify("kb1", true, null)["sdk"]);
+            Assert.Equal("unknown", (string?)WorkerLivenessClassifier.Classify("kb1", true, timedOut)["sdk"]);
+            Assert.Equal("unknown", (string?)WorkerLivenessClassifier.Classify("kb1", true, null)["sdk"]);
         }
 
         [Fact]
@@ -253,8 +253,8 @@ namespace GxMcp.Gateway.Tests
                 "kb1", transportAlive: true,
                 SdkProbe(active: true, sawProgress: true, lastProgressMs: 1_000));
 
-            Assert.Equal("responsive", (string)d["state"]);
-            Assert.Equal("busy-progressing", (string)d["sdk"]);
+            Assert.Equal("responsive", (string?)d["state"]);
+            Assert.Equal("busy-progressing", (string?)d["sdk"]);
         }
 
         [Fact]
@@ -274,7 +274,7 @@ namespace GxMcp.Gateway.Tests
                 "kb1", transportAlive: true,
                 SdkProbe(active: true, sawProgress: true, lastProgressMs: 7_000, op: "build/run"));
 
-            Assert.Equal("build/run", (string)d["sdkOperation"]);
+            Assert.Equal("build/run", (string?)d["sdkOperation"]);
             Assert.Equal(7_000L, (long)d["sdkLastProgressMs"]);
             Assert.Equal(8_000L, (long)d["sdkElapsedMs"]);
             Assert.Equal(WorkerLivenessClassifier.SdkStallAfterMs, (int)d["sdkStallAfterMs"]);
@@ -311,7 +311,7 @@ namespace GxMcp.Gateway.Tests
                 foreach (var probe in probes)
                 {
                     var d = WorkerLivenessClassifier.Classify("kb", transport, probe);
-                    string sdk = (string)d["sdk"];
+                    string? sdk = (string?)d["sdk"];
                     Assert.False(string.IsNullOrEmpty(sdk));
                     // A live transport is never enough on its own to imply an idle SDK.
                     if (transport && !ReferenceEquals(probe, null))
