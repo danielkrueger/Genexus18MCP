@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
@@ -869,11 +870,70 @@ namespace GxMcp.Worker.Services
 
             bool matches = !exact && (TextPersistenceVerifier.Evaluate(requested, persisted, mode, partName).Matches
                 || WhitespaceInsensitiveEquals(persisted, requested)
+                // Scoped to Variables, where line order is not content. See the note on
+                // the comparator: a set comparison is unsound for an ordered part.
+                || (DeclarationOrderIsNotContent(partName)
+                    && VariablesDeclarationSetEquals(requested, persisted))
                 || XmlEquivalentWhenApplicable(persisted, requested));
             string reason = ModuleQualificationEquals(persisted, requested) ? "moduleQualification"
                 : matches ? "normalization" : "contentMismatch";
             return new PersistedVerificationResult { State = matches ? "verified" : "mismatch", Reason = reason, Matches = matches };
         }
+
+        // ----------------------------------------------------------------------
+        // issue #410 - declaration order in a Variables part is not content.
+        // ----------------------------------------------------------------------
+        // The SDK places a newly declared variable wherever it places it, so a patch
+        // that appended three declarations persists them at a different index than the
+        // request had them. Every comparator above is positional - `normalized` is a
+        // verbatim string compare, and NormalizedCodeEquals/ModuleQualificationEquals
+        // both bail on a length change and then compare index-wise - so all of them fail
+        // and the write is reported as `WriteNotPersisted` even though the lines are
+        // there. The reporter's re-read showed the variables present.
+        //
+        // Scoped to Variables on purpose. This is a *set* comparison, which is only
+        // sound where the order of the lines carries no meaning. Loosening the shared
+        // positional comparators instead would be unsound everywhere: `PatchUtils`' own
+        // header records that a false "verified" masks a real content divergence, and
+        // rule order in a Source part is real content.
+        //
+        // The comparison stays strict about content. It reports equal only when both
+        // sides hold the same multiset of normalized lines, so a patch that failed to
+        // apply a requested line, or that dropped a pre-existing one, still mismatches:
+        // the inserted set must be present *and* the removed set absent.
+        internal static bool VariablesDeclarationSetEquals(string requested, string persisted)
+        {
+            var a = NormalizedDeclarationLines(requested);
+            var b = NormalizedDeclarationLines(persisted);
+            if (a.Length != b.Length) return false;
+            if (a.Length == 0) return true;
+
+            Array.Sort(a, StringComparer.OrdinalIgnoreCase);
+            Array.Sort(b, StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < a.Length; i++)
+                if (!string.Equals(a[i], b[i], StringComparison.OrdinalIgnoreCase)) return false;
+            return true;
+        }
+
+        private static string[] NormalizedDeclarationLines(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return new string[0];
+            var lines = TextPersistenceVerifier.Normalize(text).Split('\n');
+            var kept = new List<string>(lines.Length);
+            foreach (var line in lines)
+            {
+                string trimmed = line.Trim();
+                if (trimmed.Length > 0) kept.Add(trimmed);
+            }
+            return kept.ToArray();
+        }
+
+        /// <summary>
+        /// Whether declaration order in <paramref name="partName"/> carries no meaning, so
+        /// the set comparison above is a sound substitute for a positional one.
+        /// </summary>
+        private static bool DeclarationOrderIsNotContent(string partName)
+            => string.Equals(partName, "Variables", StringComparison.OrdinalIgnoreCase);
 
         private static bool XmlEquivalentWhenApplicable(string a, string b)
         {
