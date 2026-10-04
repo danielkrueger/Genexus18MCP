@@ -1,6 +1,44 @@
 # Changelog
 
 ## Unreleased
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.11.0 - 2026-10-04
+
+
+### Tracked issues
+
+- [#362](https://github.com/lennix1337/Genexus18MCP/issues/362) — [Bug] Shared WorkerHost supervision reports the broker's own state instead of the child's, and never raises a recycle election
+- [#363](https://github.com/lennix1337/Genexus18MCP/issues/363) — [Bug] Source-store eviction never subtracts evicted bytes, so every later insert evicts more of the store
+- [#364](https://github.com/lennix1337/Genexus18MCP/issues/364) — [Perf] FullSource promotion still sums every indexed source length on each promotion
+- [#365](https://github.com/lennix1337/Genexus18MCP/issues/365) — [Bug] First-touch warm scope key ignores the KB being warmed, so a second KB is still suppressed
+- [#366](https://github.com/lennix1337/Genexus18MCP/issues/366) — [Bug] Caller-site continuation is unreachable from the public tool, and a single oversized caller stalls paging forever
+- [#368](https://github.com/lennix1337/Genexus18MCP/issues/368) — [Bug] inspect still reads live SDK objects on Task.Run and late sections still mutate the returned response
+- [#369](https://github.com/lennix1337/Genexus18MCP/issues/369) — [Bug] STA admission byte budget ignores the payload, has no per-client bound, and the Gateway channel is still unbounded
+- [#370](https://github.com/lennix1337/Genexus18MCP/issues/370) — [Bug] Log grep/since/correlation filters now only search the last N lines instead of the whole log
+- [#371](https://github.com/lennix1337/Genexus18MCP/issues/371) — [Bug] SDK stall detection never fires for a call that has not emitted progress
+- [#373](https://github.com/lennix1337/Genexus18MCP/issues/373) — [Perf] Lite-walk checkpoints still serialize the whole accumulated snapshot (second half of #345)
+- [#374](https://github.com/lennix1337/Genexus18MCP/issues/374) — [Perf] Warm reopen still reads and decompresses every stored body to rebuild trigram postings (deferred part of #339)
+- [#376](https://github.com/lennix1337/Genexus18MCP/issues/376) — [Bug] Conditional reads can return notModified from the Gateway semantic cache without the Worker checking freshness
+- [#377](https://github.com/lennix1337/Genexus18MCP/issues/377) — [Bug] Multi-KB discovery loses results on a budget cut and reports paged KBs as complete
+- [#378](https://github.com/lennix1337/Genexus18MCP/issues/378) — [Bug] LiteEntryAccumulator duplicate-GUID fallback leaves stale slots and can tombstone the wrong entry
+- [#379](https://github.com/lennix1337/Genexus18MCP/issues/379) — [Bug] A resource-updated notification without a KB alias clears the semantic cache of every KB
+- [#390](https://github.com/lennix1337/Genexus18MCP/issues/390) — Flaky test: A_Corrupted_Body_On_Disk_Is_Not_Reported_As_Certified (mtime set within the same clock tick)
+- [#405](https://github.com/lennix1337/Genexus18MCP/issues/405) — [Bug] A variable of SDT, BC or built-in type cannot be marked as a collection: modify reports 'Domain ... was not found'
+- [#409](https://github.com/lennix1337/Genexus18MCP/issues/409) — [Bug] Build diagnostics: dropped severity loses compiler errors, and the [generate-gap] warning is false for Main procedures
+- [#410](https://github.com/lennix1337/Genexus18MCP/issues/410) — [Bug] genexus_edit part=Variables mode=patch reports WriteNotPersisted when the lines were written at another index
+- [#412](https://github.com/lennix1337/Genexus18MCP/issues/412) — [Bug] release-preflight.ps1 crashes in Add-PreflightPhaseResult, aborting the release after the long phases
+
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 

@@ -1,13 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.10.0",
-  "tag": "v3.10.0",
-  "collectedAtUtc": "2026-10-02T16:11:29.5251327Z",
+  "version": "3.11.0",
+  "tag": "v3.11.0",
+  "collectedAtUtc": "2026-10-04T15:21:06.1550465Z",
   "issues": [
     {
-      "number": 331,
-      "title": "[Bug] genexus_properties action=get with a single name always fails with InvalidBatchTargets (3.9.4)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/331",
+      "number": 362,
+      "title": "[Bug] Shared WorkerHost supervision reports the broker's own state instead of the child's, and never raises a recycle election",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/362",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -15,163 +15,159 @@
       "milestone": null
     },
     {
-      "number": 332,
-      "title": "[Bug] genexus_wwp action=list throws NullReferenceException when name is the WebPanel instead of the WorkWithPlus host (follow-up to #330)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/332",
+      "number": 363,
+      "title": "[Bug] Source-store eviction never subtracts evicted bytes, so every later insert evicts more of the store",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/363",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 333,
-      "title": "[Bug] Worker pool eviction can select a busy Worker when opening another KB",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/333",
+      "number": 364,
+      "title": "[Perf] FullSource promotion still sums every indexed source length on each promotion",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/364",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 334,
-      "title": "[Bug] inspect reads live SDK objects on Task.Run and ignores section timeout completion",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/334",
+      "number": 365,
+      "title": "[Bug] First-touch warm scope key ignores the KB being warmed, so a second KB is still suppressed",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/365",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 335,
-      "title": "[Reliability] Shared WorkerHost needs broker-owned memory and SDK-stall supervision",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/335",
+      "number": 366,
+      "title": "[Bug] Caller-site continuation is unreachable from the public tool, and a single oversized caller stalls paging forever",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/366",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 336,
-      "title": "[Bug] Resource update notifications do not advance Gateway semantic cache revisions",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/336",
+      "number": 368,
+      "title": "[Bug] inspect still reads live SDK objects on Task.Run and late sections still mutate the returned response",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/368",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 337,
-      "title": "[Perf] Lite indexing performs a growing-list duplicate scan for every object",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/337",
+      "number": 369,
+      "title": "[Bug] STA admission byte budget ignores the payload, has no per-client bound, and the Gateway channel is still unbounded",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/369",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 338,
-      "title": "[Perf] Source inserts repeatedly recompute full-catalog storage and FullSource budgets",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/338",
+      "number": 370,
+      "title": "[Bug] Log grep/since/correlation filters now only search the last N lines instead of the whole log",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/370",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 339,
-      "title": "[Perf] Source coverage checks and warm load repeatedly read and decompress stored content",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/339",
+      "number": 371,
+      "title": "[Bug] SDK stall detection never fires for a call that has not emitted progress",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/371",
       "state": "open",
       "labels": [
-        "enhancement",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 340,
-      "title": "[Perf] First-touch warmup is claimed process-wide and runs an unscoped source search",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/340",
+      "number": 373,
+      "title": "[Perf] Lite-walk checkpoints still serialize the whole accumulated snapshot (second half of #345)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/373",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 341,
-      "title": "[Reliability] Bound effective command queues and prevent cross-priority starvation",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/341",
+      "number": 374,
+      "title": "[Perf] Warm reopen still reads and decompresses every stored body to rebuild trigram postings (deferred part of #339)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/374",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 342,
-      "title": "[Reliability] Read logs off the SDK STA and distinguish transport liveness from SDK health",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/342",
+      "number": 376,
+      "title": "[Bug] Conditional reads can return notModified from the Gateway semantic cache without the Worker checking freshness",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/376",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 343,
-      "title": "[Perf] Detailed caller-site analysis has no bounded scan or continuation contract",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/343",
+      "number": 377,
+      "title": "[Bug] Multi-KB discovery loses results on a budget cut and reports paged KBs as complete",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/377",
       "state": "open",
       "labels": [
-        "enhancement",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 344,
-      "title": "[Perf] Reclaim stale trigram postings and add Worker memory budgets for large KBs",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/344",
+      "number": 378,
+      "title": "[Bug] LiteEntryAccumulator duplicate-GUID fallback leaves stale slots and can tombstone the wrong entry",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/378",
       "state": "open",
       "labels": [
-        "bug",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 345,
-      "title": "[Perf] Incremental snapshot publication copies clean shards and rewrites accumulated checkpoints",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/345",
+      "number": 379,
+      "title": "[Bug] A resource-updated notification without a KB alias clears the semantic cache of every KB",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/379",
       "state": "open",
       "labels": [
-        "enhancement",
         "fixed-pending-release"
       ],
       "milestone": null
     },
     {
-      "number": 346,
-      "title": "[Perf] Cursor and deep-offset listings sort the complete candidate set for every page",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/346",
+      "number": 390,
+      "title": "Flaky test: A_Corrupted_Body_On_Disk_Is_Not_Reported_As_Certified (mtime set within the same clock tick)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/390",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 405,
+      "title": "[Bug] A variable of SDT, BC or built-in type cannot be marked as a collection: modify reports 'Domain ... was not found'",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/405",
       "state": "open",
       "labels": [
         "bug",
@@ -180,9 +176,9 @@
       "milestone": null
     },
     {
-      "number": 347,
-      "title": "[Reliability] A valid oversized shared Worker response stops the broker for all clients",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/347",
+      "number": 409,
+      "title": "[Bug] Build diagnostics: dropped severity loses compiler errors, and the [generate-gap] warning is false for Main procedures",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/409",
       "state": "open",
       "labels": [
         "bug",
@@ -191,29 +187,9 @@
       "milestone": null
     },
     {
-      "number": 348,
-      "title": "[Bug] release-preflight.ps1: o motivo da fase que falhou não chega ao release-status.json",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/348",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 349,
-      "title": "[Feature] WorkWithPlus PatternInstance: support structural edits (add / move / remove layout elements) via genexus_wwp",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/349",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 350,
-      "title": "[Bug] PatternInstance: prévia de patch aprova texto que full dryRun recusa no preflight estrutural",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/350",
+      "number": 410,
+      "title": "[Bug] genexus_edit part=Variables mode=patch reports WriteNotPersisted when the lines were written at another index",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/410",
       "state": "open",
       "labels": [
         "bug",
@@ -222,95 +198,9 @@
       "milestone": null
     },
     {
-      "number": 352,
-      "title": "[Docs/DX] Corrigir receita e exemplos de PatternInstance e evitar recomendação de reapply bloqueado",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/352",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 353,
-      "title": "[Discussão] Há uma rota candidata de regeneração headless do WorkWith padrão no GeneXus 18?",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/353",
-      "state": "open",
-      "labels": [
-        "question",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 354,
-      "title": "[Bug] kb_diff reports success for missing inventories and misses same-metadata content changes",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/354",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 355,
-      "title": "[Bug] Gateway queue metrics discard Worker queue time and include startup waiting",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/355",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 356,
-      "title": "[Feature] Bounded read-only discovery across an explicit set of KBs",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/356",
-      "state": "open",
-      "labels": [
-        "enhancement",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 357,
-      "title": "[Feature] Conditional object-part reads to avoid retransmitting unchanged source",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/357",
-      "state": "open",
-      "labels": [
-        "enhancement",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 358,
-      "title": "[Perf/Test] Add a reproducible synthetic multi-KB scale regression lane",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/358",
-      "state": "open",
-      "labels": [
-        "enhancement",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 359,
-      "title": "[Bug] apply_pattern: primeiro apply em Transaction retorna PatternApplied mas não gera os objetos WW (directAttach / InvoiceStyle1); worker recarregado gera WW com user controls não resolvidos",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/359",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 360,
-      "title": "[Bug] WebForm control properties can't be set via MCP on a plain WebPanel (e.g. TextBlock Format = Raw HTML)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/360",
+      "number": 412,
+      "title": "[Bug] release-preflight.ps1 crashes in Add-PreflightPhaseResult, aborting the release after the long phases",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/412",
       "state": "open",
       "labels": [
         "bug",
