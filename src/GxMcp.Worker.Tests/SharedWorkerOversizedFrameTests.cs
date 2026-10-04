@@ -88,18 +88,106 @@ namespace GxMcp.Worker.Tests
             }
         }
 
-        [Fact]
-        public void A_Frame_Beyond_The_Hard_Ceiling_Is_Not_Even_Parsed()
+        // Issue #375: past the ceiling the reader keeps only a bounded prefix. A valid response
+        // still names its requester before its payload, so one client's very large result is a
+        // per-request refusal - not a host stop for every attachment.
+        private static string BoundedPrefixOf(string line, long totalBytes, out long measuredBytes)
         {
-            // Past the ceiling the frame is no longer a plausible response, and refusing
-            // to buffer it is the point of having a ceiling at all.
+            using (var reader = new System.IO.StringReader(line))
+                return SharedWorkerHostProtocol.ReadBoundedLine(reader, 64 * 1024, out measuredBytes);
+        }
+
+        [Fact]
+        public void A_Valid_Response_Beyond_The_Hard_Ceiling_Is_Refused_Per_Request()
+        {
             string line = ValidFrame("probe", new string('x', SharedWorkerHostProtocol.HardFrameCeilingBytes + 10));
+            string prefix = BoundedPrefixOf(line, ByteCount(line), out long measured);
 
-            var disposition = SharedWorkerHostProtocol.ClassifyOversizedFrame(
-                line, out string id, ByteCount(line));
+            var disposition = SharedWorkerHostProtocol.ClassifyOversizedFrame(prefix, out string id, measured);
 
-            Assert.Equal(SharedWorkerHostProtocol.OversizedFrameDisposition.FailClosed, disposition);
-            Assert.Null(id);
+            Assert.Equal(SharedWorkerHostProtocol.OversizedFrameDisposition.RejectRequest, disposition);
+            Assert.Equal("probe", id);
+        }
+
+        [Fact]
+        public void A_Numeric_Request_Id_Is_Recovered_From_The_Prefix()
+        {
+            string line = "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":\"" + new string('x', SharedWorkerHostProtocol.HardFrameCeilingBytes) + "\"}";
+            string prefix = BoundedPrefixOf(line, ByteCount(line), out long measured);
+
+            var disposition = SharedWorkerHostProtocol.ClassifyOversizedFrame(prefix, out string id, measured);
+
+            Assert.Equal(SharedWorkerHostProtocol.OversizedFrameDisposition.RejectRequest, disposition);
+            Assert.Equal("42", id);
+        }
+
+        [Fact]
+        public void A_Frame_Beyond_The_Ceiling_Whose_Owner_Cannot_Be_Established_Still_Fails_Closed()
+        {
+            string big = new string('x', SharedWorkerHostProtocol.HardFrameCeilingBytes + 10);
+            foreach (string line in new[]
+            {
+                // Payload before the id: the owner is not in the prefix.
+                "{\"jsonrpc\":\"2.0\",\"result\":\"" + big + "\",\"id\":\"probe\"}",
+                // Not a JSON object at all.
+                "garbage " + big,
+            })
+            {
+                string prefix = BoundedPrefixOf(line, ByteCount(line), out long measured);
+                var disposition = SharedWorkerHostProtocol.ClassifyOversizedFrame(prefix, out string id, measured);
+
+                Assert.Equal(SharedWorkerHostProtocol.OversizedFrameDisposition.FailClosed, disposition);
+                Assert.Null(id);
+            }
+        }
+
+        [Fact]
+        public void An_Oversized_Notification_Beyond_The_Ceiling_Is_Dropped_Not_Fatal()
+        {
+            string line = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/worker/x\",\"params\":\"" + new string('x', SharedWorkerHostProtocol.HardFrameCeilingBytes) + "\"}";
+            string prefix = BoundedPrefixOf(line, ByteCount(line), out long measured);
+
+            var disposition = SharedWorkerHostProtocol.ClassifyOversizedFrame(prefix, out string id, measured);
+
+            Assert.Equal(SharedWorkerHostProtocol.OversizedFrameDisposition.DropNotification, disposition);
+        }
+
+        [Fact]
+        public void The_Child_Writes_The_Request_Id_Before_The_Result()
+        {
+            // The broker recovers the owner of an over-ceiling response from its bounded prefix,
+            // so the id must precede the payload in every response envelope the child emits.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Program.cs");
+
+            Assert.Contains("new { jsonrpc = \"2.0\", id = id, result = resultObj }", source, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void The_Bounded_Reader_Retains_No_More_Than_Its_Limit_And_Reads_The_Next_Line()
+        {
+            string huge = new string('x', 1_000_000);
+            using (var reader = new System.IO.StringReader(huge + "\nnext\r\nlast"))
+            {
+                string first = SharedWorkerHostProtocol.ReadBoundedLine(reader, 1024, out long firstBytes);
+                Assert.Equal(1024, first.Length);
+                Assert.Equal(1_000_000, firstBytes);
+
+                Assert.Equal("next", SharedWorkerHostProtocol.ReadBoundedLine(reader, 1024, out _));
+                Assert.Equal("last", SharedWorkerHostProtocol.ReadBoundedLine(reader, 1024, out _));
+                Assert.Null(SharedWorkerHostProtocol.ReadBoundedLine(reader, 1024, out _));
+            }
+        }
+
+        [Fact]
+        public void The_Bounded_Reader_Measures_Utf8_Bytes_Not_Characters()
+        {
+            // 2-byte, 3-byte and a surrogate pair (4 bytes): byte length differs from char length.
+            string text = "aé€\U0001F600";
+            using (var reader = new System.IO.StringReader(text))
+            {
+                SharedWorkerHostProtocol.ReadBoundedLine(reader, 1024, out long bytes);
+                Assert.Equal(ByteCount(text), bytes);
+            }
         }
 
         [Fact]

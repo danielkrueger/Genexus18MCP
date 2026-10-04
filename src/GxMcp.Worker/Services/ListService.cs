@@ -10,7 +10,8 @@ namespace GxMcp.Worker.Services
 {
     public class ListService
     {
-        private static readonly BoundedStringCache _listCache = new BoundedStringCache(512);
+        private static readonly BoundedStringCache _listCache = new BoundedStringCache(512, 32L * 1024 * 1024);
+        internal static long ResponseCacheBytes => _listCache.EstimatedBytes;
         private static DateTime _lastIndexTime;
         private static long _lastGraphRevision;
 

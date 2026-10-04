@@ -15,7 +15,8 @@ namespace GxMcp.Worker.Services
         private readonly IndexCacheService _indexCacheService;
         private readonly ObjectService _objectService;
         private readonly VectorService _vectorService = new VectorService();
-        private static readonly BoundedStringCache _queryCache = new BoundedStringCache(512);
+        private static readonly BoundedStringCache _queryCache = new BoundedStringCache(512, 32L * 1024 * 1024);
+        internal static long ResponseCacheBytes => _queryCache.EstimatedBytes;
         private static DateTime _lastIndexTime = DateTime.MinValue;
         // The query cache must also be dropped when the object GRAPH changes. A write
         // (genexus_edit / genexus_io / pattern apply) goes through IndexCacheService.UpdateEntry,

@@ -50,6 +50,22 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ObjectService_CloneReportLayoutPart_HasCanonicalSignature()
+        {
+            // issue #406: SdkObjectCloner routes a report Procedure's Layout here instead of
+            // through the WebForm write path. Renaming it would silently restore SaveAsPartFailed.
+            var mi = typeof(ObjectService).GetMethod(
+                "CloneReportLayoutPart",
+                BindingFlags.Public | BindingFlags.Instance,
+                binder: null,
+                types: new[] { typeof(string), typeof(string), typeof(string) },
+                modifiers: null);
+
+            Assert.NotNull(mi);
+            Assert.Equal(typeof(string), mi.ReturnType);
+        }
+
+        [Fact]
         public void SdkObjectCloner_PublicSurface_StableAcrossRefactors()
         {
             // The SaveAsService dispatcher constructs the cloner with three SDK services.

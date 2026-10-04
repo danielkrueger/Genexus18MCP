@@ -394,6 +394,13 @@ namespace GxMcp.Worker.Services
                 if (dsNative != null) return dsNative;
             }
 
+            // issue #406: a report Procedure's Layout is cloned natively, not through the WebForm write path.
+            if (string.Equals(partName, "Layout", StringComparison.OrdinalIgnoreCase))
+            {
+                string layout = _objects.CloneReportLayoutPart(sourceName, newName, typeFilter);
+                if (layout != null) return layout;
+            }
+
             // Read source-part as text, write to new object via the same
             // WriteService pipeline a normal genexus_edit goes through.
             string readJson = _objects.ReadObjectSource(sourceName, partName, null, null, "mcp", false, typeFilter);
@@ -409,7 +416,7 @@ namespace GxMcp.Worker.Services
             }
 
             string code = srcToken.ToString();
-            return _writes.WriteObject(newName, partName, code);
+            return _writes.WriteObject(newName, partName, code, typeFilter);
         }
 
         public string DeleteTarget(string newName, string typeFilter)

@@ -248,7 +248,16 @@ namespace GxMcp.Worker.Services
                     ["pid"] = pid,
                     ["uptimeSec"] = uptimeSec,
                     ["memoryMb"] = memoryMb,
-                    ["threadCount"] = threadCount
+                    // issue #372: the 32-bit address space is what runs out, and the estimated
+                    // retained bytes of each response cache show which structure is holding it.
+                    ["privateMb"] = (int)(proc.PrivateMemorySize64 / (1024 * 1024)),
+                    ["threadCount"] = threadCount,
+                    ["responseCacheBytes"] = new JObject
+                    {
+                        ["list"] = ListService.ResponseCacheBytes,
+                        ["search"] = SearchService.ResponseCacheBytes,
+                        ["summary"] = SummarizeService.ResponseCacheBytes
+                    }
                 };
             }
         }

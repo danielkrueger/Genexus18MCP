@@ -1650,6 +1650,74 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // issue #406: a report Procedure's Layout is a ReportPart, not a WebForm. The textual/visual
+        // write path applies WebForm-only validation (SaveAsPartFailed) and, where it does not fail,
+        // only updates controls the target already has, so new controls are dropped silently. Copy the
+        // part natively instead and accept the copy only when its layout projection equals the
+        // source's. Returns null when the source Layout is not a report part; a copy that is not
+        // faithful is an error, never a silent partial clone.
+        public string CloneReportLayoutPart(string sourceName, string targetName, string typeFilter = null)
+        {
+            try
+            {
+                var srcObj = FindObject(sourceName, typeFilter);
+                var tgtObj = FindObject(targetName);
+                if (srcObj == null || tgtObj == null) return null;
+
+                var srcPart = WebFormXmlHelper.GetWebFormPart(srcObj);
+                var tgtPart = WebFormXmlHelper.GetWebFormPart(tgtObj);
+                if (srcPart == null || tgtPart == null) return null;
+                if (ReportLayoutHelper.IsReportPart(srcPart) == null || ReportLayoutHelper.IsReportPart(tgtPart) == null) return null;
+
+                string expected = ReportLayoutHelper.ReadLayout(srcPart);
+                string via = null;
+
+                byte[] data = ObjectMoveSnapshot.CaptureEntity(srcPart);
+                if (data != null)
+                {
+                    try { ObjectMoveSnapshot.RestoreEntity(tgtPart, data); via = "binary"; }
+                    catch (Exception ex) { Logger.Warn("CloneReportLayoutPart: binary restore failed: " + (ex.InnerException?.Message ?? ex.Message)); }
+                }
+                if (via == null || ReportLayoutHelper.ReadLayout(tgtPart) != expected)
+                {
+                    try { tgtPart.DeserializeFromXml(srcPart.SerializeToXml()); via = "xml"; }
+                    catch (Exception ex) { Logger.Warn("CloneReportLayoutPart: xml restore failed: " + (ex.InnerException?.Message ?? ex.Message)); }
+                }
+
+                string actual = ReportLayoutHelper.ReadLayout(tgtPart);
+                Logger.Info("CloneReportLayoutPart: " + sourceName + " -> " + targetName + " via=" + (via ?? "none") + " faithful=" + (actual == expected));
+                if (via == null || actual != expected)
+                {
+                    Logger.Warn("CloneReportLayoutPart: copy via " + (via ?? "none") + " did not reproduce the source layout");
+                    return McpResponse.Err(
+                        code: "LayoutCloneNotFaithful",
+                        message: "The report Layout of '" + sourceName + "' could not be copied faithfully to '" + targetName + "'.",
+                        hint: "Recreate the layout on the target with genexus_layout / genexus_io import_part; nothing was saved for this part.",
+                        target: targetName);
+                }
+
+                // The part must be saved itself: a restore does not mark it dirty, so saving only
+                // the object leaves the restored layout unpersisted (same order as ReportLayoutHelper).
+                ReportLayoutHelper.MarkLayoutDirty(tgtPart);
+                tgtPart.Save();
+                tgtObj.Save();
+
+                try { var idx = _kbService?.GetIndexCache(); if (idx != null) idx.UpdateEntry(tgtObj); }
+                catch (Exception ex) { Logger.Error("CloneReportLayoutPart: index UpdateEntry failed for " + targetName + ": " + ex.Message); }
+
+                return McpResponse.Ok(target: targetName, code: "Success",
+                    result: new JObject { ["part"] = "Layout", ["clonedVia"] = via });
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("CloneReportLayoutPart failed for " + targetName + ": " + (ex.InnerException?.Message ?? ex.Message));
+                return McpResponse.Err(
+                    code: "LayoutCloneFailed",
+                    message: "Cloning the report Layout failed: " + (ex.InnerException?.Message ?? ex.Message),
+                    target: targetName);
+            }
+        }
+
         // issue #116: DataSelector structure (Parameters, Conditions, Orders, DefinedBy)
         // cannot be cloned through the textual DSL path. Clone it natively via the SDK
         // object model (and XML deserialization fallback). Returns a McpResponse JSON
@@ -5266,6 +5334,11 @@ namespace GxMcp.Worker.Services
                         ProcessSourceContent(obj, content, offset, limit, result, client);
                         Logger.Info("ReadSource (Reflection) SUCCESS");
                     }
+                    else if (QueryStructureText.IsQueryStructurePart(part))
+                    {
+                        ProcessSourceContent(obj, QueryStructureText.Render(part), offset, limit, result, client);
+                        Logger.Info("ReadSource (QueryStructure) SUCCESS");
+                    }
                     else
                     {
                         string xml = part.SerializeToXml();
@@ -5317,6 +5390,8 @@ namespace GxMcp.Worker.Services
             // Data Selectors have no ISource part. Keep the generic alias so the
             // typed read path can return their complete persisted definition.
             if (DataSelectorReadService.IsDataSelector(obj)) return "Source";
+            // issue #404: a Query's content is its structure part, not the first part listed.
+            if (QueryStructureText.FindPart(obj) != null) return "QueryStructure";
 
             // issue #31.5: SDTs (and other objects without a Source part) previously errored
             // "Part 'Source' not found". Fall back to the object's primary part instead:

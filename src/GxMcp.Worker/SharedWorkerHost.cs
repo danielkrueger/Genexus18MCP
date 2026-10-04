@@ -657,9 +657,12 @@ namespace GxMcp.Worker
             try
             {
                 string line;
-                while (!_stop.IsCancellationRequested && (line = child.StandardOutput.ReadLine()) != null)
+                long frameBytes;
+                // Bounded read (issue #375): a line past the ceiling is never buffered whole.
+                while (!_stop.IsCancellationRequested
+                    && (line = SharedWorkerHostProtocol.ReadBoundedLine(
+                        child.StandardOutput, SharedWorkerHostProtocol.HardFrameCeilingBytes, out frameBytes)) != null)
                 {
-                    long frameBytes = Encoding.UTF8.GetByteCount(line);
                     if (frameBytes > SharedWorkerHostProtocol.MaxFrameBytes)
                     {
                         // Issue #347. This used to broadcast a host error and cancel the

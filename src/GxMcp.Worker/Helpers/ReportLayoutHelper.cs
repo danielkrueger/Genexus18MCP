@@ -522,6 +522,20 @@ namespace GxMcp.Worker.Helpers
                             b.Attribute("ControlName")?.Value ?? b.Attribute("Name")?.Value,
                             blockName, StringComparison.OrdinalIgnoreCase));
                     if (requestedBlock == null) continue;
+
+                    // issue #361: the print block's own Height was never written back, so a
+                    // geometry-only import kept every block at its old height.
+                    string requestedHeight = requestedBlock.Attribute("Height")?.Value;
+                    if (!string.IsNullOrWhiteSpace(requestedHeight)
+                        && HasBlockHeightChanged(requestedBlock, baselineDoc)
+                        && TryReadProperty(bandObj, bandObj.GetType(), "Height", out string currentHeight)
+                        && !string.Equals(currentHeight, requestedHeight, StringComparison.Ordinal)
+                        && TrySetProperty(bandObj, bandObj.GetType(), "Height", requestedHeight))
+                    {
+                        anyChange = true;
+                        appliedAssignments++;
+                    }
+
                     var items = GetCollection(bandObj, "Items", "Elements", "Controls", "Components");
                     if (items == null) continue;
                     if (ApplyRequestedControlOrder(items, requestedBlock))
@@ -584,6 +598,18 @@ namespace GxMcp.Worker.Helpers
                 Logger.Error("ReportLayoutHelper.WriteLayout Error: " + ex.Message);
                 return false;
             }
+        }
+
+        // With a baseline only a block whose Height the caller actually changed is written back, as
+        // for controls; the projection is lossy, so reapplying every block would reset untouched ones.
+        private static bool HasBlockHeightChanged(XElement requestedBlock, XDocument baselineDoc)
+        {
+            if (baselineDoc == null) return true;
+            string identity = GetXmlIdentity(requestedBlock, "ControlName", "Name");
+            var baselineBlock = baselineDoc.Descendants("PrintBlock")
+                .FirstOrDefault(b => string.Equals(GetXmlIdentity(b, "ControlName", "Name"), identity, StringComparison.OrdinalIgnoreCase));
+            return baselineBlock == null
+                || !string.Equals(baselineBlock.Attribute("Height")?.Value, requestedBlock.Attribute("Height")?.Value, StringComparison.Ordinal);
         }
 
         public static bool RenamePrintBlock(KBObjectPart part, string currentName, string newName, bool persist = true)
@@ -1834,6 +1860,19 @@ namespace GxMcp.Worker.Helpers
                 if (p != null) return p.GetValue(target, null) as System.Collections.IEnumerable;
             }
             return null;
+        }
+
+        /// <summary>
+        /// Marks a report part's layout dirty after the part was restored wholesale (save-as, issue
+        /// #406), so the next save persists it. Mutations through this helper already do this.
+        /// </summary>
+        internal static void MarkLayoutDirty(KBObjectPart part)
+        {
+            if (part == null) return;
+            var partType = part.GetType();
+            var layoutProp = partType.GetProperty("MyLayout", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)
+                          ?? partType.GetProperty("Layout", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            TryMarkLayoutDirty(part, layoutProp?.GetValue(part, null));
         }
 
         private static void TryMarkLayoutDirty(KBObjectPart part, object layout)

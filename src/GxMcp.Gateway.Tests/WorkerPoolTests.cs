@@ -125,6 +125,64 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(0, pool.InFlightCommandsForTest("alpha"));
         }
 
+        // ── issue #367: work that outlives the RPC still blocks eviction ──────────
+
+        [Fact]
+        public void Eviction_Skips_A_Worker_With_Worker_Side_Activity_After_Its_Rpc_Returned()
+        {
+            var pool = new WorkerPool(CfgWithMax(2));
+            pool.RegisterForTest(new KbHandle("alpha", "C:/Alpha"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-10), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("alpha", "C:/Alpha")));
+            pool.RegisterForTest(new KbHandle("beta", "C:/Beta"),
+                lastActivity: DateTime.UtcNow.AddMinutes(-1), worker: new WorkerProcess(CfgWithMax(2), new KbHandle("beta", "C:/Beta")));
+
+            // Alpha acknowledged an async build and returned: InFlightCommands is 0, the job is not.
+            bool alphaBuilding = true;
+            pool.WorkerSideActivity = alias => alias == "alpha" && alphaBuilding;
+            Assert.Equal("beta", pool.SelectEvictableVictimForTest()!.Alias);
+
+            // Every Worker busy: nothing is eligible, so the caller reports the pool as full.
+            pool.SetInFlightForTest("beta", 1);
+            Assert.Null(pool.SelectEvictableVictimForTest());
+
+            // The job ended: Alpha is eligible again.
+            alphaBuilding = false;
+            pool.SetInFlightForTest("beta", 0);
+            Assert.Equal("alpha", pool.SelectEvictableVictimForTest()!.Alias);
+        }
+
+        [Fact]
+        public void Begin_Command_Refuses_A_Worker_The_Entry_No_Longer_Owns()
+        {
+            var pool = new WorkerPool(CfgWithMax(2));
+            var current = new WorkerProcess(CfgWithMax(2), new KbHandle("alpha", "C:/Alpha"));
+            var stale = new WorkerProcess(CfgWithMax(2), new KbHandle("alpha", "C:/Alpha"));
+            pool.RegisterForTest(new KbHandle("alpha", "C:/Alpha"), worker: current);
+
+            // The Worker handed out before an eviction/replace must not be reserved.
+            Assert.Null(pool.BeginCommand("alpha", stale));
+            Assert.Equal(0, pool.InFlightCommandsForTest("alpha"));
+
+            var release = pool.BeginCommand("alpha", current);
+            Assert.NotNull(release);
+            Assert.Equal(1, pool.InFlightCommandsForTest("alpha"));
+            release!();
+        }
+
+        [Fact]
+        public void Job_Registry_Reports_A_Live_Job_Only_Until_It_Ends_Or_Stalls()
+        {
+            var registry = new BackgroundJobRegistry();
+            var job = registry.Start("session", "lifecycle/build", 60);
+            job.WorkerAlias = "alpha";
+
+            Assert.True(registry.HasLiveJobOnWorker("ALPHA"));
+            Assert.False(registry.HasLiveJobOnWorker("beta"));
+
+            job.Status = "stalled";
+            Assert.False(registry.HasLiveJobOnWorker("alpha"));
+        }
+
         [Fact]
         public void Begin_Command_For_An_Unknown_Alias_Is_A_NoOp()
         {

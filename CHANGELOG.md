@@ -7,9 +7,19 @@
 
 ### Added
 
+- `genexus_read` / `genexus_edit part=QueryStructure` (or the default `Source`) now read and write a Query object's structure as text: one `[Elements]`, `[Parameters]`, `[Filters]` and `[Orders]` section, one SDK-serialized item per line, through the part's own `ToSerializedStrings`/`FromSerializedStrings`. A write is saved on the part itself and reported only when the re-read has the same item counts. Output formats and the native `export_kb_to_text` renderer are not covered. https://github.com/lennix1337/Genexus18MCP/issues/404
+
 ### Changed
 
+- Capacity eviction no longer stops a Worker that is still running work after its RPC returned. A queued or running lifecycle/background job on the Worker's KB, or a pending request routed to it (kept after a client timeout), now makes the entry ineligible; a stalled job does not pin it. The command reservation is taken against the Worker the pool still owns, so an eviction between acquire and reserve is retried instead of routing the command to a stopped process. https://github.com/lennix1337/Genexus18MCP/issues/367
+- The response caches of `genexus_list_objects`, `genexus_query` and the summary are bounded by estimated UTF-16 bytes (32 MiB, 32 MiB, 16 MiB) as well as by entry count, and `genexus_doctor` reports the worker's private memory and each cache's estimated bytes. The FullSource and trigram budgets are unchanged. https://github.com/lennix1337/Genexus18MCP/issues/372
+- A shared Worker response above the 16 MiB hard ceiling no longer stops the broker for every attachment when its request id can be recovered. The broker reads the child's stdout with a bounded line reader that keeps at most the ceiling and discards the rest, answers the owning request with `WorkerResponseTooLarge`, and stays fail-closed for frames whose owner it cannot establish. The Worker now writes `id` before `result` in every response so the id is in the retained prefix. Budgeting large read/batch results before transport is not part of this change. https://github.com/lennix1337/Genexus18MCP/issues/375
+- A build now warns (`[stale-callee]`, in `warnings`, never in `errorCount`) when a callee outside the build has a generated `.cs` older than the callee's last edit. A callee with no generated file stays with `[generate-gap]`. https://github.com/lennix1337/Genexus18MCP/issues/411
+
 ### Fixed
+
+- `genexus_create action=save_as` of a report Procedure copies the `Layout` part natively and keeps its controls. The textual path either aborted with `SaveAsPartFailed` or, for new controls, dropped them without an error; the copy is now accepted only when its layout projection equals the source's, otherwise the part fails with `LayoutCloneNotFaithful`. The clone write also passes the source `typeFilter`. https://github.com/lennix1337/Genexus18MCP/issues/406
+- Importing a report Layout now writes each print block's `Height` back to the SDK when the caller changed it, instead of failing the write or keeping the old height. The variable binding, duplicate-on-reimport and `add_report_control` overlap items of the same issue are not fixed. https://github.com/lennix1337/Genexus18MCP/issues/361
 
 ### Internal
 

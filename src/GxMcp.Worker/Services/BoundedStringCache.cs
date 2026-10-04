@@ -6,6 +6,10 @@ namespace GxMcp.Worker.Services
     internal sealed class BoundedStringCache
     {
         private readonly int _capacity;
+        // issue #372: entry count alone lets a few multi-MiB responses outweigh hundreds of small
+        // ones inside a 32-bit process, so the retained UTF-16 bytes are bounded as well.
+        private readonly long _maxBytes;
+        private long _bytes;
         private readonly Dictionary<string, Entry> _map;
         private readonly LinkedList<string> _lru = new LinkedList<string>();
         private readonly object _lock = new object();
@@ -21,10 +25,12 @@ namespace GxMcp.Worker.Services
         public long Evictions => System.Threading.Interlocked.Read(ref _evictions);
         public int Count { get { lock (_lock) return _map.Count; } }
         public int Capacity => _capacity;
+        public long EstimatedBytes { get { lock (_lock) return _bytes; } }
 
-        public BoundedStringCache(int capacity)
+        public BoundedStringCache(int capacity, long maxBytes = long.MaxValue)
         {
             _capacity = Math.Max(1, capacity);
+            _maxBytes = Math.Max(1, maxBytes);
             _map = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
         }
 
@@ -54,26 +60,25 @@ namespace GxMcp.Worker.Services
 
             lock (_lock)
             {
+                long size = SizeOf(key, value);
+                // An entry larger than the whole budget would only flush the cache for nothing.
+                if (size > _maxBytes) { RemoveLocked(key); return; }
+
                 if (_map.TryGetValue(key, out var existing))
                 {
+                    _bytes += size - SizeOf(key, existing.Value);
                     existing.Value = value;
                     _lru.Remove(existing.Node);
                     _lru.AddFirst(existing.Node);
+                    EvictWhileOverBudget(keep: key);
                     return;
                 }
 
-                while (_map.Count >= _capacity)
-                {
-                    var last = _lru.Last;
-                    if (last == null) break;
-                    _map.Remove(last.Value);
-                    _lru.RemoveLast();
-                    System.Threading.Interlocked.Increment(ref _evictions);
-                }
-
+                _bytes += size;
                 var node = new LinkedListNode<string>(key);
                 _lru.AddFirst(node);
                 _map[key] = new Entry { Value = value, Node = node };
+                EvictWhileOverBudget(keep: key);
             }
         }
 
@@ -88,11 +93,32 @@ namespace GxMcp.Worker.Services
                 if (_map.TryGetValue(key, out var entry))
                 {
                     value = entry.Value;
-                    _map.Remove(key);
-                    if (entry.Node != null) _lru.Remove(entry.Node);
+                    RemoveLocked(key);
                     return true;
                 }
                 return false;
+            }
+        }
+
+        private static long SizeOf(string key, string value) => 2L * (key.Length + value.Length);
+
+        private void RemoveLocked(string key)
+        {
+            if (!_map.TryGetValue(key, out var entry)) return;
+            _bytes -= SizeOf(key, entry.Value);
+            _map.Remove(key);
+            if (entry.Node != null) _lru.Remove(entry.Node);
+        }
+
+        // Called with the lock held. The entry just written is never its own victim.
+        private void EvictWhileOverBudget(string keep)
+        {
+            while (_map.Count > _capacity || _bytes > _maxBytes)
+            {
+                var last = _lru.Last;
+                if (last == null || last.Value == keep) break;
+                RemoveLocked(last.Value);
+                System.Threading.Interlocked.Increment(ref _evictions);
             }
         }
 
@@ -102,6 +128,7 @@ namespace GxMcp.Worker.Services
             {
                 _map.Clear();
                 _lru.Clear();
+                _bytes = 0;
             }
         }
 

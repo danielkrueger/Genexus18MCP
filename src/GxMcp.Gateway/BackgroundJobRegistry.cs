@@ -325,6 +325,15 @@ namespace GxMcp.Gateway
             return "__default-worker__";
         }
 
+        /// <summary>
+        /// Whether a queued or running job belongs to the Worker (issue #367). Stalled jobs are
+        /// not live, so a job that never reports a terminal state does not pin the Worker forever.
+        /// </summary>
+        internal bool HasLiveJobOnWorker(string workerAlias)
+            => _jobs.Values.Any(j => IsLiveJob(j)
+                && (string.Equals(j.WorkerAlias, workerAlias, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(j.QueueScope, workerAlias, StringComparison.OrdinalIgnoreCase)));
+
         private static bool IsLiveJob(JobEntry? job)
             => job != null && !string.Equals(job.Status, "succeeded", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)

@@ -3419,6 +3419,23 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // issue #411: a callee outside this build keeps its old generated .cs, so the caller
+            // would run stale code. Advice only: reported in warnings, never in errorCount.
+            var staleCallees = new JArray();
+            if (_callerGraphService != null && _indexCacheService != null)
+            {
+                var builtSet = new HashSet<string>(checkList.Select(BareName), StringComparer.OrdinalIgnoreCase);
+                var callees = new List<string>();
+                foreach (var t in checkList)
+                {
+                    try { callees.AddRange(_callerGraphService.GetCallees(BareName(t)) ?? new List<string>()); } catch { }
+                }
+                staleCallees = FindStaleCallees(
+                    callees.Select(BareName).Where(c => !string.IsNullOrEmpty(c) && !builtSet.Contains(c)).Distinct(StringComparer.OrdinalIgnoreCase),
+                    c => _indexCacheService.TryGetEntryByName(c)?.LastUpdate,
+                    c => GeneratedDiffService.ProbeGeneratedFreshness(kbPath, c, DateTime.MinValue, null, activeEnvironmentWebPath));
+            }
+
             var degradedUserControls = new JArray();
             try
             {
@@ -3501,6 +3518,18 @@ namespace GxMcp.Worker.Services
                             + "Regenerate the object from the IDE and compare the setProp list against a known-good build.";
                 }
             }
+            if (staleCallees.Count > 0)
+            {
+                evidence["staleCallees"] = staleCallees;
+                lock (status._lock)
+                {
+                    if (status.Warnings.Count < 50)
+                        status.Warnings.Add("[stale-callee] Generated .cs is older than the last edit of callee(s) outside this build: "
+                            + string.Join(", ", staleCallees.Select(x => (string)x["object"]))
+                            + ". The caller may run old code; build the callee too. See generateEvidence.staleCallees.");
+                    status.WarningCount++;
+                }
+            }
             if (upToDate.Count > 0)
                 evidence["upToDate"] = upToDate;
             if (unreachable.Count > 0)
@@ -3544,6 +3573,31 @@ namespace GxMcp.Worker.Services
             Logger.Info("[GENERATE-EVIDENCE] complete action=" + action + " objects=" + checkList.Count
                 + " emitted=" + emittedCount + " stale=" + staleOrMissing.Count
                 + " webRoot=" + (activeEnvironmentWebPath ?? "<none>"));
+        }
+
+        // issue #411: callees whose generated .cs exists but predates the object's last edit. A callee
+        // with no generated file is not reported here — that is the [generate-gap] evidence.
+        internal static JArray FindStaleCallees(
+            IEnumerable<string> callees,
+            Func<string, DateTime?> objectLastUpdateUtc,
+            Func<string, GeneratedDiffService.GeneratedFileEvidence> probeGenerated)
+        {
+            var stale = new JArray();
+            foreach (var callee in callees)
+            {
+                DateTime? edited = objectLastUpdateUtc(callee);
+                GeneratedDiffService.GeneratedFileEvidence ev;
+                try { ev = probeGenerated(callee); } catch { continue; }
+                if (edited == null || !ev.Found || ev.FreshestWriteUtc == null || ev.FreshestWriteUtc >= edited) continue;
+                stale.Add(new JObject
+                {
+                    ["object"] = callee,
+                    ["path"] = ev.FreshestPath,
+                    ["generatedUtc"] = ev.FreshestWriteUtc.Value.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    ["lastUpdateUtc"] = edited.Value.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                });
+            }
+            return stale;
         }
 
         // Parse a build log for spc0217 ("Object is unreachable") diagnostics and return

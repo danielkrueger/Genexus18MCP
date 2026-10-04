@@ -131,6 +131,40 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // issue #404: the Query structure is written through the part's own deserializer, then read
+        // back; a write whose read-back differs is reported, never claimed.
+        private string WriteQueryStructure(
+            global::Artech.Architecture.Common.Objects.KBObject obj, string target, string text, bool dryRun)
+        {
+            var part = QueryStructureText.FindPart(obj);
+            try { QueryStructureText.Parse(text); }
+            catch (FormatException ex) { return CreateWriteError("Invalid query structure", target, "QueryStructure", ex.Message, obj); }
+
+            if (dryRun)
+                return Models.McpResponse.Ok(target: target, code: "DryRun", result: new JObject { ["part"] = "QueryStructure", ["savePathExercised"] = false });
+
+            try
+            {
+                QueryStructureText.Apply(part, text);
+                // The deserializer does not mark the part dirty, so without this the object save
+                // writes nothing for it and the call would report a write that never happened.
+                part.Dirty = true;
+                part.Save();
+                obj.Save();
+            }
+            catch (Exception ex)
+            {
+                return CreateWriteError("Query structure write failed", target, "QueryStructure", ex.InnerException?.Message ?? ex.Message, obj);
+            }
+
+            var submitted = QueryStructureText.Parse(text);
+            var kept = QueryStructureText.Parse(QueryStructureText.Render(QueryStructureText.FindPart(obj)));
+            if (!submitted.Select(l => l.Count).SequenceEqual(kept.Select(l => l.Count)))
+                return CreateWriteError("Query structure not persisted", target, "QueryStructure", "The SDK did not keep every submitted element, parameter, filter or order.", obj);
+
+            return Models.McpResponse.Ok(target: target, code: "Success", result: new JObject { ["part"] = "QueryStructure", ["persisted"] = true });
+        }
+
         private string WriteVisualPart(
             global::Artech.Architecture.Common.Objects.KBObject obj,
             string target,

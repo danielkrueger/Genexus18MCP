@@ -627,13 +627,21 @@ namespace GxMcp.Gateway
         /// Whether an entry can be stopped without losing or corrupting work. Callers
         /// must hold <see cref="_capacityLock"/>.
         /// </summary>
-        private static bool IsEvictable(Entry e) =>
+        private bool IsEvictable(Entry e) =>
             e.Worker != null
             && !e.Spawning
             && !e.Draining
             && !e.DrainFailed
             && Volatile.Read(ref e.Reloading) == 0
-            && Volatile.Read(ref e.InFlightCommands) == 0;
+            && Volatile.Read(ref e.InFlightCommands) == 0
+            && !(WorkerSideActivity?.Invoke(e.Handle.NormalizedAlias) ?? false);
+
+        /// <summary>
+        /// issue #367: work the Worker still runs after its RPC returned (an async build, or a
+        /// tracked command whose client timed out). It is not in <c>InFlightCommands</c>, so the
+        /// owner of that knowledge reports it here and eviction treats the entry as busy.
+        /// </summary>
+        internal Func<string, bool>? WorkerSideActivity { get; set; }
 
         /// <summary>
         /// Tracks one command as in flight on a Worker's entry, so capacity eviction
@@ -648,13 +656,22 @@ namespace GxMcp.Gateway
         /// there is no entry to protect.
         /// </para>
         /// </summary>
-        internal Action? BeginCommand(string? alias)
+        internal Action? BeginCommand(string? alias) => BeginCommand(alias, null);
+
+        /// <summary>
+        /// As <see cref="BeginCommand(string?)"/>, but when <paramref name="worker"/> is given the
+        /// reservation is only taken if the entry still owns that Worker (issue #367). An eviction
+        /// between acquiring the Worker and reserving it would otherwise route the command to a
+        /// stopped process; the caller sees null and acquires again.
+        /// </summary>
+        internal Action? BeginCommand(string? alias, WorkerProcess? worker)
         {
             if (string.IsNullOrWhiteSpace(alias)) return null;
             Entry? entry;
             lock (_capacityLock)
             {
                 if (!_entries.TryGetValue(alias.ToLowerInvariant(), out entry)) return null;
+                if (worker != null && !ReferenceEquals(entry.Worker, worker)) return null;
                 Interlocked.Increment(ref entry.InFlightCommands);
             }
             // The releaser is idempotent at this level rather than relying on the

@@ -1522,7 +1522,9 @@ namespace GxMcp.Worker
                     meta["telemetry"] = telemetryPlaceholder;
                 }
 
-                var response = new { jsonrpc = "2.0", result = resultObj, id = id };
+                // id before result: the shared broker answers an over-ceiling response from its
+                // bounded prefix, which only works while the id is the first payload-free property.
+                var response = new { jsonrpc = "2.0", id = id, result = resultObj };
                 var serializeSw = Stopwatch.StartNew();
                 string serialized = JsonConvert.SerializeObject(response, Formatting.None);
                 serializeSw.Stop();

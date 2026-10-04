@@ -12,7 +12,8 @@ namespace GxMcp.Worker.Services
 {
     public class SummarizeService
     {
-        private static readonly BoundedStringCache _summaryCache = new BoundedStringCache(256);
+        private static readonly BoundedStringCache _summaryCache = new BoundedStringCache(256, 16L * 1024 * 1024);
+        internal static long ResponseCacheBytes => _summaryCache.EstimatedBytes;
 
         public static void InvalidateCache()
         {

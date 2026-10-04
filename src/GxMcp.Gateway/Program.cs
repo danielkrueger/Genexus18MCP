@@ -54,15 +54,19 @@ namespace GxMcp.Gateway
             }
             bool legacy = string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
             bool requireOwner = _currentOperationRequiresOwner.Value;
-            var worker = await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, requireOwner, legacy);
-
             // issue #333: mark the Worker's pool entry as serving a command so capacity
             // eviction cannot select it. This is the single point every tool call goes
             // through, so registering here covers build, write and index traffic alike
             // rather than three call sites that could drift. The releaser runs in a
             // finally on the caller's side; see AcquiredWorker.
-            var release = _workerPool.BeginCommand(kb.Alias);
-            return new AcquiredWorker(worker, release);
+            // issue #367: reserve under the pool lock and re-check ownership, so a capacity eviction
+            // between acquire and reserve cannot hand back a Worker that is being stopped.
+            for (int attempt = 0; ; attempt++)
+            {
+                var worker = await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, requireOwner, legacy);
+                var release = _workerPool.BeginCommand(kb.Alias, worker);
+                if (release != null || attempt >= 2) return new AcquiredWorker(worker, release);
+            }
         }
 
         /// <summary>

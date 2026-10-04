@@ -1573,6 +1573,13 @@ namespace GxMcp.Worker.Services
                     return WriteDataSelectorConditions((Artech.Genexus.Common.Objects.DataSelector)obj, target, decodedCode, dryRun, forceWrite);
                 }
 
+                if (QueryStructureText.FindPart(obj) != null
+                    && (partName.Equals("QueryStructure", StringComparison.OrdinalIgnoreCase)
+                        || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return WriteQueryStructure(obj, target, decodedCode, dryRun);
+                }
+
                 if (ThemeStyleEditHelper.Applies(obj, partName, out object stylePart))
                 {
                     return WriteThemeStylePart(obj, target, partName, stylePart, decodedCode, dryRun, forceWrite);

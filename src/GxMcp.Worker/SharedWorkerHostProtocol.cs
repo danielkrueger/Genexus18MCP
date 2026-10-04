@@ -104,7 +104,11 @@ namespace GxMcp.Worker
         {
             correlationId = null;
             if (line == null) return OversizedFrameDisposition.FailClosed;
-            if (byteCount > HardFrameCeilingBytes) return OversizedFrameDisposition.FailClosed;
+            // Issue #375. Past the ceiling the reader keeps only a bounded prefix, so the frame is
+            // never parsed whole. A valid response still carries its id before its payload, which
+            // is enough to answer that one request; a frame whose owner cannot be established
+            // from the prefix stays fail-closed.
+            if (byteCount > HardFrameCeilingBytes) return ClassifyFromPrefix(line, out correlationId);
 
             JObject frame;
             try { frame = GxMcp.Common.JsonIngress.ParseObject(line); }
@@ -124,6 +128,63 @@ namespace GxMcp.Worker
             return string.IsNullOrEmpty(correlationId)
                 ? OversizedFrameDisposition.FailClosed
                 : OversizedFrameDisposition.RejectRequest;
+        }
+
+        /// <summary>
+        /// Reads the leading top-level properties of a truncated frame. A frame whose <c>id</c>
+        /// appears before any payload property is answerable; one that announces a <c>method</c>
+        /// with no id is a notification. Everything else cannot be attributed.
+        /// </summary>
+        private static OversizedFrameDisposition ClassifyFromPrefix(string prefix, out string correlationId)
+        {
+            correlationId = null;
+            try
+            {
+                using (var reader = new JsonTextReader(new StringReader(prefix)) { DateParseHandling = DateParseHandling.None })
+                {
+                    if (!reader.Read() || reader.TokenType != JsonToken.StartObject) return OversizedFrameDisposition.FailClosed;
+                    while (reader.Read() && reader.TokenType == JsonToken.PropertyName)
+                    {
+                        string name = (string)reader.Value;
+                        if (name == "id")
+                        {
+                            if (!reader.Read() || (reader.TokenType != JsonToken.String && reader.TokenType != JsonToken.Integer))
+                                return OversizedFrameDisposition.FailClosed;
+                            correlationId = Convert.ToString(reader.Value, System.Globalization.CultureInfo.InvariantCulture);
+                            return string.IsNullOrEmpty(correlationId) ? OversizedFrameDisposition.FailClosed : OversizedFrameDisposition.RejectRequest;
+                        }
+                        if (name == "method") return OversizedFrameDisposition.DropNotification;
+                        if (name != "jsonrpc") return OversizedFrameDisposition.FailClosed;
+                        reader.Read();
+                    }
+                }
+            }
+            catch (JsonException) { }
+            return OversizedFrameDisposition.FailClosed;
+        }
+
+        /// <summary>
+        /// Reads one line while retaining at most <paramref name="maxRetainedChars"/> characters;
+        /// the rest of an over-long line is consumed and discarded, so an oversized child frame
+        /// cannot grow the broker's memory (issue #375). <paramref name="totalBytes"/> is the
+        /// UTF-8 size of the whole line. Returns null at end of stream.
+        /// </summary>
+        internal static string ReadBoundedLine(TextReader reader, int maxRetainedChars, out long totalBytes)
+        {
+            totalBytes = 0;
+            var retained = new StringBuilder();
+            bool any = false;
+            int c;
+            while ((c = reader.Read()) >= 0)
+            {
+                any = true;
+                if (c == '\n') break;
+                if (c == '\r' && reader.Peek() == '\n') continue;
+                // A high surrogate counts the pair's 4 bytes; its low half then adds nothing.
+                totalBytes += c < 0x80 ? 1 : c < 0x800 ? 2 : char.IsHighSurrogate((char)c) ? 4 : char.IsLowSurrogate((char)c) ? 0 : 3;
+                if (retained.Length < maxRetainedChars) retained.Append((char)c);
+            }
+            return any ? retained.ToString() : null;
         }
 
         /// <summary>
