@@ -328,6 +328,56 @@ namespace GxMcp.Worker.Tests
                 source, "public string FindCallerSites(");
         }
 
+        // ---- Issue #366: the cursor and the budgets never reached the service.
+
+        [Fact]
+        public void The_First_Caller_Of_A_Page_Is_Always_Attempted()
+        {
+            // The livelock: the budget refuses its first unit when that unit alone exceeds
+            // it, so the page stopped with callersScanned=0 and nextCursor equal to the
+            // incoming cursor. Every retry returned the same partial page.
+            string body = FindCallerSitesBody();
+
+            Assert.Contains("bool firstOfPage = budget.CallersScanned == 0", body, StringComparison.Ordinal);
+            Assert.Contains("skippedCallers", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("if (!budget.TryBeginCaller()) break;", body, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void An_Oversized_First_Caller_Is_Reported_Rather_Than_Dropped()
+        {
+            string body = FindCallerSitesBody();
+
+            Assert.Contains("larger than maxSourceBytes", body, StringComparison.Ordinal);
+            Assert.Contains("[\"skippedCallers\"] = skippedCallers", body, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void The_Caller_Resume_Takes_A_Cursor_And_The_Scan_Budgets()
+        {
+            // The cursor was accepted by the service and thrown away at the dispatcher, so
+            // `genexus_analyze` mode=callers always answered the first page.
+            string dispatcher = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "CommandDispatcher.cs");
+
+            Assert.Contains("FindCallerSites(target, callerCursor, callerMax, callerBytes)",
+                dispatcher, StringComparison.Ordinal);
+            Assert.Contains("args?[\"cursor\"]", dispatcher, StringComparison.Ordinal);
+            Assert.Contains("args?[\"maxCallers\"]", dispatcher, StringComparison.Ordinal);
+            Assert.Contains("args?[\"maxSourceBytes\"]", dispatcher, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void The_Router_Forwards_The_Cursor_And_The_Scan_Budgets()
+        {
+            string router = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Gateway", "Routers", "AnalyzeRouter.cs");
+
+            Assert.Contains("cursor = args?[\"cursor\"]?.ToObject<int?>()", router, StringComparison.Ordinal);
+            Assert.Contains("maxCallers = args?[\"maxCallers\"]?.ToObject<int?>()", router, StringComparison.Ordinal);
+            Assert.Contains("maxSourceBytes = args?[\"maxSourceBytes\"]?.ToObject<long?>()", router, StringComparison.Ordinal);
+        }
+
         [Fact]
         public void The_Loop_Uses_The_Budget_Rather_Than_Walking_Every_Caller()
         {
@@ -369,16 +419,34 @@ namespace GxMcp.Worker.Tests
             // scan can have: the response looks complete and is wrong.
             string body = FindCallerSitesBody();
 
-            int advance = body.IndexOf("budget.CompleteCaller()", StringComparison.Ordinal);
-            Assert.True(advance > 0, "the resume offset never advances");
+            // Two guards carry the same flag: one leaves the parts loop, one leaves the
+            // caller loop. Only the second one guards the offset, so the property is
+            // "some guard is immediately followed by the advance" rather than "the
+            // first CompleteCaller is preceded by a guard" - which #366's second advance
+            // made ambiguous.
+            const string guardText = "if (!callerFullyScanned) break;";
+            const string advanceText = "budget.CompleteCaller();";
+            bool adjacent = false;
+            int search = 0;
+            while (true)
+            {
+                int guard = body.IndexOf(guardText, search, StringComparison.Ordinal);
+                if (guard < 0) break;
+                int after = guard + guardText.Length;
+                int next = body.IndexOf(advanceText, after, StringComparison.Ordinal);
+                bool nothingBetween = next > after
+                    && body.Substring(after, next - after).Trim().Length == 0;
+                if (nothingBetween)
+                {
+                    adjacent = true;
+                    break;
+                }
+                search = guard + 1;
+            }
 
-            // The guard has to be the statement immediately preceding the advance, not
-            // merely somewhere earlier in the method: there are two `break`s on this
-            // flag (one leaving the parts loop, one leaving the caller loop), and only the
-            // second one guards the offset.
-            int windowStart = Math.Max(0, advance - 200);
-            var before = body.Substring(windowStart, advance - windowStart);
-            Assert.Contains("if (!callerFullyScanned) break;", before, StringComparison.Ordinal);
+            Assert.True(adjacent,
+                "no `if (!callerFullyScanned) break;` is immediately followed by the resume advance, "
+                + "so a partially scanned caller would be skipped on the next page");
         }
 
         [Fact]

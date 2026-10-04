@@ -233,7 +233,12 @@ namespace GxMcp.Gateway.Tests
         // 82000 -> 82500 for the same issue #356/#357 additions as the token budget
         // above (genexus_read.ifUnchangedSince; genexus_query kbs/cursors/
         // maxConcurrency/maxTotalResults/perKbTimeoutMs). Measured 82032 bytes.
-        [InlineData("all", 82500)]
+        //
+        // 82500 -> 83000 for issue #366 (genexus_analyze.maxCallers/maxSourceBytes plus
+        // the mode=callers half of `cursor`). Without the two budget arguments the
+        // documented resume hint on `cursor` is unreachable, so this is the schema cost of
+        // making caller paging usable rather than new surface. Measured 82572 bytes.
+        [InlineData("all", 83000)]
         [InlineData("core", 25000)]
         [InlineData("standard", 60000)]
         [InlineData("authoring", 60000)]

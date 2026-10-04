@@ -92,7 +92,21 @@ namespace GxMcp.Gateway.Routers
                             return new { module = "Analyze", action = "ExplainCode", target = target, payload = args?["code"]?.ToString(), type = type };
                         case "callers":
                             // Item 24: per-call-site detail with line + context.
-                            return new { module = "Analyze", action = "FindCallerSites", target = target, type = type };
+                            //
+                            // Issue #366. The Worker already accepts a cursor and byte/caller
+                            // budgets and answers with a resumable `nextCursor`, but none of
+                            // it was forwarded, so a high-fan-in target always returned the
+                            // first page. Worse, `genexus_analyze` already declares a generic
+                            // `cursor` argument for other modes, so a caller following the
+                            // hint did send `cursor=N` and it was silently dropped here.
+                            return new {
+                                module = "Analyze",
+                                action = "FindCallerSites",
+                                target = target,
+                                type = type,
+                                cursor = args?["cursor"]?.ToObject<int?>(),
+                                maxCallers = args?["maxCallers"]?.ToObject<int?>(),
+                                maxSourceBytes = args?["maxSourceBytes"]?.ToObject<long?>()};
                         case "event_flow":
                             // Item 23: ASCII event-flow diagram for WebPanel/SDPanel.
                             return new { module = "Analyze", action = "GetEventFlow", target = target, type = type };

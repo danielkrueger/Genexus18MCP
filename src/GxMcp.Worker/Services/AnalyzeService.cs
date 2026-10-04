@@ -2638,9 +2638,29 @@ namespace GxMcp.Worker.Services
                 budget.Start();
 
                 int resumeFrom = cursor > 0 ? Math.Min(cursor, distinctCallers.Count) : 0;
+                var skippedCallers = new JArray();
                 for (int callerIndex = resumeFrom; callerIndex < distinctCallers.Count; callerIndex++)
                 {
-                    if (!budget.TryBeginCaller()) break;
+                    // Issue #366. The budget refuses the first unit of a page when that unit
+                    // alone exceeds it, so the page stopped with `callersScanned=0` and a
+                    // `nextCursor` equal to the incoming cursor: a livelock, because every
+                    // retry returned the same partial page. The first caller of a page is
+                    // always attempted - it is charged whether or not it fits - and if it
+                    // cannot be processed at all it is reported as skipped with a reason and
+                    // the cursor moves past it. A page therefore either advances or is
+                    // complete.
+                    bool firstOfPage = budget.CallersScanned == 0;
+                    if (!budget.TryBeginCaller())
+                    {
+                        if (!firstOfPage) break;
+                        skippedCallers.Add(new JObject
+                        {
+                            ["object"] = distinctCallers[callerIndex],
+                            ["reason"] = "The caller budget was already spent when this page started; raise maxCallers to include it."
+                        });
+                        budget.CompleteCaller();
+                        continue;
+                    }
 
                     var callerName = distinctCallers[callerIndex];
 
@@ -2686,6 +2706,21 @@ namespace GxMcp.Worker.Services
                         if (!budget.TryChargeBytes(System.Text.Encoding.UTF8.GetByteCount(src)))
                         {
                             callerFullyScanned = false;
+                            // Issue #366: the first caller of a page is processed even when
+                            // it alone overruns the byte budget. Charging it and stopping
+                            // keeps the cursor moving; skipping it silently would drop a
+                            // real caller from the answer.
+                            if (budget.CallersScanned == 1 && callerIndex == resumeFrom)
+                            {
+                                skippedCallers.Add(new JObject
+                                {
+                                    ["object"] = callerName,
+                                    ["part"] = partName,
+                                    ["reason"] = "This caller's source is larger than maxSourceBytes, so its call sites were not scanned."
+                                });
+                                callerFullyScanned = true;
+                                break;
+                            }
                             break;
                         }
 
@@ -2751,6 +2786,14 @@ namespace GxMcp.Worker.Services
                     scanMeta["nextCursor"] = nextCursor;
                     scanMeta["hint"] = "Scan stopped before covering every caller. Resume with cursor="
                         + nextCursor + "; this result is partial and must not be read as the full set of call sites.";
+                }
+                // Issue #366: callers this page could not process are named, so a caller
+                // skipped for being oversized is distinguishable from one with no call
+                // sites - the difference between a hole and an answer.
+                if (skippedCallers.Count > 0)
+                {
+                    scanMeta["skippedCallers"] = skippedCallers;
+                    scanMeta["skippedCallersNote"] = "These callers were not scanned (see each reason). Raise maxCallers/maxSourceBytes to include them.";
                 }
 
                 // issue #25 follow-up (P0): a zero result here is dangerous — the

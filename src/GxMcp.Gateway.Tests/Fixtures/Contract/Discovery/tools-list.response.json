@@ -17,7 +17,7 @@
             "type": "string"
           },
           "cursor": {
-            "description": "mode=context: continuation cursor…",
+            "description": "Continuation cursor from a budgeted…",
             "type": "string"
           },
           "dryRun": {
@@ -42,6 +42,14 @@
           },
           "maxBytes": {
             "description": "mode=context: maximum UTF-8 bytes for…",
+            "type": "integer"
+          },
+          "maxCallers": {
+            "description": "mode=callers: callers to scan in this…",
+            "type": "integer"
+          },
+          "maxSourceBytes": {
+            "description": "mode=callers: UTF-8 bytes of caller…",
             "type": "integer"
           },
           "mode": {

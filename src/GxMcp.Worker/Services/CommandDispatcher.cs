@@ -2359,7 +2359,16 @@ namespace GxMcp.Worker.Services
             // Wave-3 SOTA: mode=cross_platform_impact — Web vs SmartDevices divergence.
             if (action == "CrossPlatformImpact") return _analyzeService.CrossPlatformImpact(target);
             // Item 24: mode=callers — per-call-site detail with line + context.
-            if (action == "FindCallerSites") return _analyzeService.FindCallerSites(target);
+            //
+            // Issue #366: the cursor and the scan budgets are forwarded, so the resume
+            // hint the response gives is actually reachable from the public tool.
+            if (action == "FindCallerSites")
+            {
+                int callerCursor = args?["cursor"]?.ToObject<int?>() ?? 0;
+                int callerMax = args?["maxCallers"]?.ToObject<int?>() ?? 0;
+                long callerBytes = args?["maxSourceBytes"]?.ToObject<long?>() ?? 0L;
+                return _analyzeService.FindCallerSites(target, callerCursor, callerMax, callerBytes);
+            }
             if (action == "GetEventFlow") return _analyzeService.GetEventFlow(target, analyzeType);
             // Wave-3 item 87: KB-wide dependency heat rankings.
             if (action == "DependencyHeatmap")

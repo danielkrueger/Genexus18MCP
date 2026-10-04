@@ -178,7 +178,8 @@ namespace GxMcp.Gateway
                 "- `naming` — naming-convention audit.\n" +
                 "- `summary` — LLM-oriented summary of the object.\n" +
                 "- `theme_classes` — the KB's theme classes, so you can pick one by name instead of guessing. Returns `name` + `objectGuid`, sorted, with `truncated` marking a cut; `limit` caps the result (default 200).\n" +
-                "- `explain` — legacy compatibility route; returns a typed NotImplemented envelope instead of inventing an explanation.\n\n" +
+                "- `explain` - legacy compatibility route; returns a typed NotImplemented envelope instead of inventing an explanation.\n" +
+                "- `callers` - per-call-site detail for every recorded caller of `target`, with line text and surrounding context.\n\n" +
                 "## When to use what\n" +
                 "- Raw source: `genexus_read`.\n" +
                 "- Single-object metadata: `genexus_inspect`.\n" +
@@ -186,6 +187,7 @@ namespace GxMcp.Gateway
                 "## Notes\n" +
                 "- `impact` waits up to 30s for the index to be ready unless `waitForIndex: false`; set `waitTimeoutMs` to override that wait bound.\n" +
                 "- Returns `callersTruncated: true` and `_meta.partial` when the graph is incomplete.\n" +
+                "- `callers` is budgeted: `maxCallers` (default 50) and `maxSourceBytes` (default 4194304) bound one page. When a page stops early, `scan.nextCursor` is the resume offset - send it back as `cursor` (an integer for this mode) and the scan continues where it left off. A caller whose source alone exceeds `maxSourceBytes` is listed in `scan.skippedCallers` with a reason rather than silently dropped, so a skipped caller is never confused with one that has no call sites. A page always makes progress: it either advances `nextCursor` or reports `scan.complete: true`. A partial scan never reports a verified zero.\n" +
                 "- `theme_classes` returns `objectGuid`, which is the class KB object's GUID and is **not** the value a layout `class` attribute takes — a measured layout class attribute (`<guid>-<suffix>`) matched none of the KB's class GUIDs. There is no `class=<name>` shorthand, and authoring a layout class stays on the layout-document path. A wrong class value silently loses styling. `controlTypesAvailable` is false because the index does not carry it. A KB whose index has no ThemeClass objects answers `ThemeClassesUnavailable` with a reason rather than a partial list.\n\n" +
                 "## Examples\n" +
                 "- `{ mode: 'impact', target: 'InvoiceProc' }`\n" +
