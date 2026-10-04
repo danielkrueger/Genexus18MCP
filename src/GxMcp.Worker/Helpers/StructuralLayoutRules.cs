@@ -70,6 +70,14 @@ namespace GxMcp.Worker.Helpers
                     "attribute", "caption", "labelPosition", "visible", "styleClass",
                     "tag", "contextSensitive") },
 
+                // issue #408: a variable (or attribute) shown as a control - edit, combo box, radio.
+                // This is the element PopupLayoutBuilder emits for a combo bound to a variable, with the
+                // control type and values in PATTERN_ELEMENT_CUSTOM_PROPERTIES; it is addressed by its
+                // `attribute` reference, not by a controlName (the SDK strips controlName).
+                { "data", new Kind("attribute",
+                    "attribute", "labelCaption", "labelPosition", "class", "visible", "styleClass",
+                    "tag", "PATTERN_ELEMENT_CUSTOM_PROPERTIES") },
+
                 // NOTE: gridAttribute and gridVariable are deliberately absent.
                 //
                 // Not an oversight: they are already governed, more narrowly, by

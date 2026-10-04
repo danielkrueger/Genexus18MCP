@@ -58,6 +58,34 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(1, (int)change["index"]);
         }
 
+        // issue #408: a variable shown as a combo box is a <data> element, as PopupLayoutBuilder emits it.
+        private const string ComboData = "<data attribute=\"&amp;Status\" labelCaption=\"Status\" class=\"Attribute\""
+            + " PATTERN_ELEMENT_CUSTOM_PROPERTIES=\"&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlType&lt;/Name&gt;&lt;Value&gt;Combo Box&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;\" />";
+
+        [Fact]
+        public void Adding_A_Combo_Data_Element_Bound_To_A_Variable_Is_Permitted()
+        {
+            var plan = PatternXmlEditPlan.Create(Before, WithExtraChild(ComboData));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("data", (string)change["element"]);
+            Assert.Equal("&Status", (string)change["identity"]);
+        }
+
+        [Fact]
+        public void A_Data_Element_With_Children_Or_Unknown_Attributes_Is_Still_Refused()
+        {
+            var withChild = PatternXmlEditPlan.Create(Before,
+                WithExtraChild("<data attribute=\"&amp;Status\"><x /></data>"));
+            var withUnknown = PatternXmlEditPlan.Create(Before,
+                WithExtraChild("<data attribute=\"&amp;Status\" bogus=\"1\" />"));
+
+            Assert.Equal("PatternStructureChangeUnsupported", withChild.ErrorCode);
+            Assert.Equal("PatternStructureChangeUnsupported", withUnknown.ErrorCode);
+            Assert.Contains("bogus", withUnknown.Error, StringComparison.Ordinal);
+        }
+
         [Fact]
         public void The_Change_Records_That_Ordering_Is_Not_Authored()
         {

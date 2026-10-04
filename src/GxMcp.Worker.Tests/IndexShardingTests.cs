@@ -246,6 +246,29 @@ namespace GxMcp.Worker.Tests
             finally { cache.DeleteOnDiskSnapshot(); }
         }
 
+        // issue #372: a 32-bit Worker under private-memory pressure keeps sources in the store only.
+        [Fact]
+        public void SourcePromotion_IsSkippedWhileThePrivateMemoryCeilingIsExceeded()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                var entry = Entry("Procedure", "SourcePressure");
+                cache.ReplaceAll(new[] { entry });
+
+                cache.PrivateBytesProbe = () => IndexCacheService.PromotionPrivateBytesCeiling + 1;
+                Assert.False(cache.PromoteSourceForSearch(entry, "parm(in:&Value);"));
+                Assert.Equal(0, cache.FullSourceChars);
+
+                cache.PrivateBytesProbe = () => IndexCacheService.PromotionPrivateBytesCeiling;
+                Assert.True(cache.PromoteSourceForSearch(entry, "parm(in:&Value);"));
+                Assert.Equal("parm(in:&Value);".Length, cache.FullSourceChars);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
         [Fact]
         public void SourcePromotion_PreservesCertifiedSidecarAcrossSnapshotGeneration()
         {

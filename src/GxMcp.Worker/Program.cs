@@ -1537,8 +1537,23 @@ namespace GxMcp.Worker
                     telemetry["responseBytes"] = System.Text.Encoding.UTF8.GetByteCount(serialized);
                     serialized = SpliceTelemetry(serialized, telemetryPlaceholder, telemetry);
                 }
+                if (string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_CHILD"), "1", StringComparison.Ordinal))
+                    serialized = LimitSharedFrame(serialized, id);
                 WriteLine(serialized);
             } catch (Exception ex) { Logger.Error("SendResponse Error: " + ex.Message); }
+        }
+
+        // issue #375: a shared child's response above the transport frame bound would cross the pipe
+        // only to be refused by the broker, so the child answers the request itself with the same
+        // bounded error, carrying the measured size, before the large frame is written at all.
+        internal static string LimitSharedFrame(string serialized, string id)
+        {
+            // Every UTF-8 byte is at least one char: a frame this short cannot exceed the bound.
+            if (serialized == null || serialized.Length * 3L <= SharedWorkerHostProtocol.MaxFrameBytes) return serialized;
+            long bytes = System.Text.Encoding.UTF8.GetByteCount(serialized);
+            if (bytes <= SharedWorkerHostProtocol.MaxFrameBytes) return serialized;
+            Logger.Warn("SendResponse: " + bytes + " byte response for id=" + id + " exceeds the shared frame bound; sending a size error.");
+            return SharedWorkerHostProtocol.BuildOversizedResponse(id, bytes, SharedWorkerHostProtocol.MaxFrameBytes).ToString(Formatting.None);
         }
 
         // Replaces the reserved placeholder with the final telemetry object. The search is

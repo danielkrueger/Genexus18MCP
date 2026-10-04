@@ -153,6 +153,32 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void A_Shared_Child_Answers_An_Oversized_Response_Itself_With_The_Measured_Size()
+        {
+            string big = ValidFrame("req-1", new string('x', SharedWorkerHostProtocol.MaxFrameBytes));
+
+            var limited = JObject.Parse(Program.LimitSharedFrame(big, "req-1"));
+
+            Assert.Equal("req-1", (string)limited["id"]);
+            Assert.Equal("WorkerResponseTooLarge", (string)limited["error"]["code"]);
+            Assert.Equal(ByteCount(big), (long)limited["error"]["data"]["responseBytes"]);
+            Assert.False((bool)limited["error"]["data"]["truncated"]);
+        }
+
+        [Fact]
+        public void A_Frame_Within_The_Bound_Is_Left_Untouched_Even_With_Multibyte_Text()
+        {
+            // 3-byte characters: char count is a third of the byte count, so the cheap pre-check
+            // must not be mistaken for the real measurement.
+            string wide = ValidFrame("req-2", new string('€', SharedWorkerHostProtocol.MaxFrameBytes / 3 - 100));
+            Assert.True(ByteCount(wide) <= SharedWorkerHostProtocol.MaxFrameBytes);
+            Assert.Same(wide, Program.LimitSharedFrame(wide, "req-2"));
+
+            string tooWide = ValidFrame("req-3", new string('€', SharedWorkerHostProtocol.MaxFrameBytes / 3 + 100));
+            Assert.Equal("WorkerResponseTooLarge", (string)JObject.Parse(Program.LimitSharedFrame(tooWide, "req-3"))["error"]["code"]);
+        }
+
+        [Fact]
         public void The_Child_Writes_The_Request_Id_Before_The_Result()
         {
             // The broker recovers the owner of an over-ceiling response from its bounded prefix,

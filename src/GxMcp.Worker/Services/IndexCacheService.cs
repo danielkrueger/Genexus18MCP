@@ -2850,6 +2850,16 @@ namespace GxMcp.Worker.Services
 
         /// <summary>Applies a delta to the promoted-character total.</summary>
         private void AddFullSourceChars(long chars) => Interlocked.Add(ref _fullSourceChars, chars);
+        // issue #372: the Worker is a 32-bit process, so the character budget alone does not keep it
+        // clear of its address space (256 Mi chars is about 512 MiB before indexes and caches). Past
+        // this much private memory a source stays in the persistent source store only.
+        internal const long PromotionPrivateBytesCeiling = 1400L * 1024 * 1024;
+
+        internal Func<long> PrivateBytesProbe { get; set; } = () =>
+        {
+            using (var process = System.Diagnostics.Process.GetCurrentProcess()) return process.PrivateMemorySize64;
+        };
+
         internal bool PromoteSourceForSearch(SearchIndex.IndexEntry entry, string source)
         {
             if (entry == null || source == null || source.Length > PersistedFullSourceMaxChars) return false;
@@ -2870,6 +2880,9 @@ namespace GxMcp.Worker.Services
                     current.LastUpdate > DateTime.MinValue ? (DateTime?)current.LastUpdate : null,
                     null);
             }
+
+            // The source is already persisted above; only the in-memory copy is skipped.
+            if (PrivateBytesProbe() > PromotionPrivateBytesCeiling) return false;
 
             // Issue #364: the budget reads a running total instead of re-summing every
             // indexed object's FullSource length. See ReconcileFullSourceChars.
