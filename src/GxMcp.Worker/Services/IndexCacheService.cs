@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Text;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Helpers;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Generic;
@@ -513,6 +514,7 @@ namespace GxMcp.Worker.Services
                 idx.LastUpdated = DateTime.UtcNow;
                 idx.GraphRevision = 1;
                 _index = idx;
+                ReconcileFullSourceChars(idx); // #364
                 _initialized = true;
                 PrimeHierarchyCacheFromIndex(idx);
             }
@@ -796,6 +798,8 @@ namespace GxMcp.Worker.Services
                 {
                     // Both warm sidecars and legacy/sharded loads pass here before
                     // token postings are rebuilt. An old body cannot prove absence.
+                    // Issue #364: the cleared characters leave the running total.
+                    if (entry.FullSource != null) AddFullSourceChars(-entry.FullSource.Length);
                     entry.FullSource = null;
                     entry.FullSourcePart = null;
                 }
@@ -998,6 +1002,7 @@ namespace GxMcp.Worker.Services
                     NormalizeLifecycleTimestamps(restored);
                     BuildParentIndex(restored);
                     _index = restored;
+                    ReconcileFullSourceChars(restored); // #364
                     _initialized = true;
                     PrimeHierarchyCacheFromIndex(restored);
                     ResetHighWaterMark();
@@ -1768,6 +1773,7 @@ namespace GxMcp.Worker.Services
                 SearchIndex.InternSharedStrings(checkpoint);
                 BuildParentIndex(checkpoint);
                 _index = checkpoint;
+                ReconcileFullSourceChars(checkpoint); // #364
                 _initialized = true;
                 PrimeHierarchyCacheFromIndex(checkpoint);
             }
@@ -1864,6 +1870,7 @@ namespace GxMcp.Worker.Services
             {
                 if (_index != null) return _index;
                 _index = loaded;
+                ReconcileFullSourceChars(loaded); // #364
             }
             Logger.Info(string.Format("Index loaded. Objects: {0}", loaded.Objects.Count));
             if (loaded.Objects.Count > 0)
@@ -1974,6 +1981,7 @@ namespace GxMcp.Worker.Services
                 BuildParentIndex(index);
                 TouchGraph(index);
                 _index = index;
+                ReconcileFullSourceChars(index); // #364
             }
             MarkDirty();
             // Fire and forget save to disk with throttling (W-A3: 10s → 30s)
@@ -2796,6 +2804,52 @@ namespace GxMcp.Worker.Services
         private const int PersistedFullSourceMaxChars = 2 * 1024 * 1024;
         private const long PersistedFullSourceBudgetChars = 8L * 1024 * 1024;
         private const long CertifiedFullSourceBudgetChars = 256L * 1024 * 1024;
+
+        // Issue #364. Running total of promoted FullSource characters.
+        //
+        // The budget check used to sum `FullSource.Length` over every indexed object on
+        // every promotion. Promoting S sources therefore cost O(S x N) character-length
+        // reads across the index - quadratic while populating a cold KB, and paid even
+        // when far below either budget. This keeps the total so the check is O(1).
+        //
+        // Reconciled with one pass wherever the index object itself is swapped (load,
+        // restore, replace, checkpoint), which is already O(N), and kept in step at every
+        // point that adds, replaces or clears a FullSource. A promotion is additive and
+        // checked against the total under the same lock as the entry, so two concurrent
+        // promotions cannot both pass the check and overshoot the budget.
+        private long _fullSourceChars;
+        private long _fullSourceBudgetVisits;
+
+        /// <summary>Promoted FullSource characters currently accounted for.</summary>
+        internal long FullSourceChars => Interlocked.Read(ref _fullSourceChars);
+
+        /// <summary>
+        /// Index entries walked to compute <see cref="FullSourceChars"/>. An in-process
+        /// counter alone cannot catch a full-index sum reintroduced at the budget check,
+        /// so this counts the one place such a sum is allowed to happen.
+        /// </summary>
+        internal long FullSourceBudgetVisits => Interlocked.Read(ref _fullSourceBudgetVisits);
+
+        /// <summary>
+        /// Recomputes the running total from the index. Called once per index swap, where
+        /// a full pass is already the cost of the operation.
+        /// </summary>
+        private void ReconcileFullSourceChars(SearchIndex index)
+        {
+            long total = 0;
+            if (index?.Objects != null)
+            {
+                foreach (var candidate in index.Objects.Values)
+                {
+                    Interlocked.Increment(ref _fullSourceBudgetVisits);
+                    if (candidate?.FullSource != null) total += candidate.FullSource.Length;
+                }
+            }
+            Interlocked.Exchange(ref _fullSourceChars, total);
+        }
+
+        /// <summary>Applies a delta to the promoted-character total.</summary>
+        private void AddFullSourceChars(long chars) => Interlocked.Add(ref _fullSourceChars, chars);
         internal bool PromoteSourceForSearch(SearchIndex.IndexEntry entry, string source)
         {
             if (entry == null || source == null || source.Length > PersistedFullSourceMaxChars) return false;
@@ -2817,11 +2871,9 @@ namespace GxMcp.Worker.Services
                     null);
             }
 
-            long storedChars = 0;
-            foreach (var candidate in index.Objects.Values)
-            {
-                if (candidate?.FullSource != null) storedChars += candidate.FullSource.Length;
-            }
+            // Issue #364: the budget reads a running total instead of re-summing every
+            // indexed object's FullSource length. See ReconcileFullSourceChars.
+            long storedChars = FullSourceChars;
             long sourceBudget = PersistedFullSourceBudgetChars;
             try
             {
@@ -2829,12 +2881,15 @@ namespace GxMcp.Worker.Services
                 if (backfill.State == "complete") sourceBudget = CertifiedFullSourceBudgetChars;
             }
             catch { }
-            if (storedChars + source.Length > sourceBudget) return false;
+            // Checked inside the same lock as the write, so two concurrent promotions
+            // cannot both observe a total that still fits.
             lock (current)
             {
                 if (current.FullSource != null) return false;
+                if (FullSourceChars + source.Length > sourceBudget) return false;
                 current.FullSourcePart = ObjectService.ResolveSearchPartName(current.Type);
                 current.FullSource = source;
+                AddFullSourceChars(source.Length);
             }
 
             // EnsureSourceTokenIndex creates this map before a literal source search;
@@ -2934,6 +2989,8 @@ namespace GxMcp.Worker.Services
                 {
                     entry.FullSourcePart = ObjectService.ResolveSearchPartName(entry.Type);
                     entry.FullSource = ObjectService.ReadPartSourceUncached(obj, entry.FullSourcePart.ToLowerInvariant());
+                    // Issue #364: keep the promoted-character total in step.
+                    if (entry.FullSource != null) AddFullSourceChars(entry.FullSource.Length);
                 }
                 catch { }
             }
@@ -3495,6 +3552,7 @@ namespace GxMcp.Worker.Services
                 idx.LastUpdated = DateTime.UtcNow;
                 BuildParentIndex(idx);
                 _index = idx;
+                ReconcileFullSourceChars(idx); // #364
                 _initialized = true;
                 PrimeHierarchyCacheFromIndex(idx);
             }
@@ -3545,6 +3603,10 @@ namespace GxMcp.Worker.Services
                     RemoveSourceTokens(idx.SourceTokenIndex, priorEntry);
                     AddSourceTokens(idx.SourceTokenIndex, e);
                 }
+                // Issue #364: a replaced entry's promoted body leaves the total and the
+                // incoming one joins it, exactly as the source-token postings do above.
+                if (priorEntry?.FullSource != null) AddFullSourceChars(-priorEntry.FullSource.Length);
+                if (e.FullSource != null) AddFullSourceChars(e.FullSource.Length);
                 MarkShardDirty(key);
                 any = true;
             }

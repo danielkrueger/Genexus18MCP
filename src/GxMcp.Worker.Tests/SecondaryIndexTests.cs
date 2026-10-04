@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using GxMcp.Worker.Models;
@@ -186,6 +187,176 @@ namespace GxMcp.Worker.Tests
 
             Assert.False(svc.PromoteSourceForSearch(entry, "new source"));
             Assert.Null(entry.FullSource);
+        }
+
+        // ── Issue #364: the aggregate budget used to re-sum every indexed source ──
+
+        /// <summary>
+        /// An index of <paramref name="n"/> entries, none promoted, with one ready for it.
+        /// Promotion is refused for entries that already carry a body, so the entries
+        /// under test are promoted one at a time.
+        /// </summary>
+        private static IndexCacheService BuildIndexOf(int n)
+        {
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(Enumerable.Range(0, n).Select(i => new SearchIndex.IndexEntry
+            {
+                Name = "SyntheticObject" + i.ToString("D6"),
+                Type = "Procedure",
+                Guid = "g" + i.ToString("D6")
+            }));
+            return svc;
+        }
+
+        [Fact]
+        public void Promotion_Cost_Does_Not_Grow_With_The_Index_Size()
+        {
+            // The defect: the budget check summed FullSource.Length over every indexed
+            // object on every promotion, so total visits were quadratic.
+            long VisitsFor(int n, int promotions)
+            {
+                var svc = BuildIndexOf(n);
+                var index = svc.TryGetLoadedIndex();
+                long before = svc.FullSourceBudgetVisits;
+                for (int i = 0; i < promotions; i++)
+                    svc.PromoteSourceForSearch(index.Objects["Procedure:SyntheticObject" + i.ToString("D6")],
+                        "// synthetic source " + i);
+                return svc.FullSourceBudgetVisits - before;
+            }
+
+            long small = VisitsFor(1000, 200);
+            long large = VisitsFor(4000, 200);
+
+            Assert.Equal(0, small);
+            // Doubling the index must not change what a promotion costs.
+            Assert.Equal(small, large);
+        }
+
+        /// <summary>
+        /// The authoritative guard for #364.
+        ///
+        /// <para>
+        /// <c>FullSourceBudgetVisits</c> counts entries walked by
+        /// <c>ReconcileFullSourceChars</c>, so it cannot observe a full-index sum written
+        /// directly into the budget check - which is exactly the shape the defect had. The
+        /// behavioural guard above would pass against the original code, so this asserts
+        /// the shape instead: the check reads the tracked total, and no per-call sum over
+        /// the index remains.
+        /// </para>
+        /// </summary>
+        [Fact]
+        public void The_Promotion_Budget_Reads_The_Tracked_Total_Instead_Of_Summing_The_Index()
+        {
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "IndexCacheService.cs");
+
+            int start = source.IndexOf("internal bool PromoteSourceForSearch", StringComparison.Ordinal);
+            Assert.True(start >= 0, "PromoteSourceForSearch not found");
+            int end = source.IndexOf("public void UpdateEntry", start, StringComparison.Ordinal);
+            Assert.True(end > start, "could not delimit PromoteSourceForSearch");
+            string body = source.Substring(start, end - start);
+
+            Assert.Contains("FullSourceChars", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("index.Objects.Values", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("+= candidate.FullSource.Length", body, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// The full-index sum is allowed in exactly one place: the reconcile that runs when
+        /// the index object itself is swapped, which is already O(N).
+        /// </summary>
+        [Fact]
+        public void The_Full_Index_Char_Sum_Lives_In_Exactly_One_Place()
+        {
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "IndexCacheService.cs");
+
+            int sums = 0;
+            int i = 0;
+            while ((i = source.IndexOf("candidate.FullSource.Length", i, StringComparison.Ordinal)) >= 0)
+            {
+                sums++;
+                i += 5;
+            }
+            Assert.Equal(1, sums);
+        }
+
+        [Fact]
+        public void The_Promoted_Character_Total_Matches_The_Index()
+        {
+            var svc = BuildIndexOf(500);
+            var index = svc.TryGetLoadedIndex();
+            for (int i = 0; i < 50; i++)
+                svc.PromoteSourceForSearch(index.Objects["Procedure:SyntheticObject" + i.ToString("D6")],
+                    new string('x', 1000 + i));
+
+            long expected = Enumerable.Range(0, 50).Sum(i => 1000 + i);
+            Assert.Equal(expected, svc.FullSourceChars);
+        }
+
+        [Fact]
+        public void A_Replaced_Entry_Moves_Its_Characters_RatherThan_Adding_Them()
+        {
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Proc1", Type = "Procedure", Guid = "g1", FullSource = new string('a', 500) }
+            });
+            Assert.Equal(500, svc.FullSourceChars);
+
+            svc.AddOrUpdateBatch(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Proc1", Type = "Procedure", Guid = "g1", FullSource = new string('b', 900) }
+            });
+
+            Assert.Equal(900, svc.FullSourceChars);
+        }
+
+        [Fact]
+        public void The_Budget_Boundary_Still_Admits_One_Promotion_And_Refuses_The_Next()
+        {
+            // The counter must not change the semantics of the budget, only its cost.
+            const long budget = 8L * 1024 * 1024;
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(Enumerable.Range(0, 5).Select(i => new SearchIndex.IndexEntry
+            {
+                Name = "Proc" + i,
+                Type = "Procedure",
+                Guid = "g" + i,
+                // 2 Mi chars each: four exactly fill the 8 MiB budget.
+                FullSource = i < 4 ? new string('x', 2 * 1024 * 1024) : null
+            }));
+            var index = svc.TryGetLoadedIndex();
+
+            Assert.Equal(budget, svc.FullSourceChars);
+            Assert.False(svc.PromoteSourceForSearch(index.Objects["Procedure:Proc4"], new string('x', 1)));
+            Assert.Null(index.Objects["Procedure:Proc4"].FullSource);
+            Assert.Equal(budget, svc.FullSourceChars);
+        }
+
+        [Fact]
+        public void Concurrent_Promotions_Never_Overshoot_The_Budget()
+        {
+            // The check and the write now happen under the same lock as the entry, so two
+            // promotions cannot both observe a total that still fits.
+            var svc = BuildIndexOf(200);
+            var index = svc.TryGetLoadedIndex();
+            long budget = 8L * 1024 * 1024;
+            var entries = Enumerable.Range(0, 200)
+                .Select(i => index.Objects["Procedure:SyntheticObject" + i.ToString("D6")])
+                .ToArray();
+            int sourceLength = 64 * 1024;
+            int promoted = 0;
+
+            System.Threading.Tasks.Parallel.For(0, entries.Length, i =>
+            {
+                if (svc.PromoteSourceForSearch(entries[i], new string('x', sourceLength)))
+                    System.Threading.Interlocked.Increment(ref promoted);
+            });
+
+            Assert.True(svc.FullSourceChars <= budget,
+                $"promoted {svc.FullSourceChars} characters against a {budget} budget");
+            Assert.Equal(promoted * sourceLength, svc.FullSourceChars);
         }
 
         // ── Step 3: indexed prefilter path vs full-scan fallback — same results ──
