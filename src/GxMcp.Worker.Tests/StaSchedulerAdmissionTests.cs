@@ -358,6 +358,26 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void A_Queued_Command_Does_Not_Retain_Its_Payload_Twice()
+        {
+            // issue #369: the queued item holds RawLine, which is the whole command text.
+            // Retaining the parsed JObject as well held the same content twice, so the
+            // backlog the admission byte budget exists to bound was twice as large as the
+            // budget assumed - and EstimateBytes charges the text once, because Obj was
+            // never counted. The item is built in Program.EnqueueSdkCommand, so this is
+            // pinned structurally: the charge is only honest while the second copy is gone.
+            var source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Program.cs");
+
+            int start = source.IndexOf("new GxMcp.Worker.Services.ScheduledCommandItem", StringComparison.Ordinal);
+            Assert.True(start > 0, "the ScheduledCommandItem construction was not found");
+
+            string body = source.Substring(start, Math.Min(900, source.Length - start));
+            Assert.DoesNotContain("Obj = obj", body);
+            Assert.Contains("RawLine = line", body);
+        }
+
+        [Fact]
         public void Cancelling_A_Queued_Command_Releases_Its_Capacity_And_It_Never_Executes()
         {
             // A cancel that lands while the command is still queued used to be recorded as

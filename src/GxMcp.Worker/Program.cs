@@ -657,7 +657,15 @@ namespace GxMcp.Worker
 
             var item = new GxMcp.Worker.Services.ScheduledCommandItem
             {
-                Obj = obj,
+                // issue #369: Obj is deliberately NOT retained on the queued item. The
+                // item already holds RawLine, which is the same content, so retaining both
+                // doubled the backlog's memory on exactly the path the admission byte
+                // budget exists to bound - and EstimateBytes charges the retained text
+                // once, so the budget was ~2x optimistic. Every field the scheduler needs
+                // (priority, busyWait, clientId, id, method, action, cancelToken) is
+                // resolved from obj here, before queuing; dequeue re-parses RawLine, which
+                // ProcessCommand(string) already does and which is the same parse-then-
+                // dispatch the obj overload performed.
                 RawLine = line,
                 Priority = priority,
                 ClientId = clientId,

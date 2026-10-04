@@ -1431,9 +1431,16 @@ namespace GxMcp.Gateway
         /// <para>
         /// Issue #369. On expiry the command is refused with
         /// <see cref="WorkerCommandQueueFullException"/> instead of being buffered
-        /// indefinitely. The queued-command counter is decremented here, because the
-        /// increment above has already happened: refusing without the decrement would leak
-        /// queue depth for a command that was never enqueued.
+        /// indefinitely. The queued-command counter is decremented on the refusal, because
+        /// the increment above has already happened: refusing without the decrement would
+        /// leak queue depth for a command that was never enqueued.
+        /// </para>
+        ///
+        /// <para>
+        /// Only the timeout is caught. The channel is never completed, so there is no
+        /// closed-channel case to handle - and if one is ever introduced it must not be
+        /// reported as "queue full", because a completed channel means the Worker is gone,
+        /// which is a different failure with a different remedy.
         /// </para>
         /// </summary>
         private async Task EnqueueCommandAsync(QueuedCommand cmd, string? id, string? method)
@@ -1444,12 +1451,6 @@ namespace GxMcp.Gateway
                 await _commandChannel.Writer.WriteAsync(cmd, timeout.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
-            {
-                Interlocked.Decrement(ref _queuedCommands);
-                throw new WorkerCommandQueueFullException(Kb.Alias, id, method,
-                    CommandChannelCapacity, CommandQueueEnqueueTimeout.TotalMilliseconds);
-            }
-            catch (ChannelClosedException)
             {
                 Interlocked.Decrement(ref _queuedCommands);
                 throw new WorkerCommandQueueFullException(Kb.Alias, id, method,
@@ -1916,7 +1917,11 @@ namespace GxMcp.Gateway
         /// drain test needs; no Worker process is involved.
         /// </summary>
         internal bool ReleaseOneQueuedCommandForTest()
-            => _commandChannel.Reader.TryRead(out _) && Interlocked.Decrement(ref _queuedCommands) >= 0;
+        {
+            if (!_commandChannel.Reader.TryRead(out _)) return false;
+            Interlocked.Decrement(ref _queuedCommands);
+            return true;
+        }
 
         /// <summary>
         /// Blocks the command writer loop at its next iteration, modelling a Worker whose

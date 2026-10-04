@@ -2724,8 +2724,8 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        // modify without a type: change only the description in place (no delete+add), so the
-        // variable keeps its type, binding, collection and dimensions untouched.
+        // modify without a type: change the description and/or the collection flag in place
+        // (no delete+add), so the variable keeps its type, binding and dimensions.
         /// <summary>
         /// Whether <paramref name="typeName"/> resolves to something other than a Domain:
         /// an SDT or Business Component object, a built-in GeneXus data type, or a built-in

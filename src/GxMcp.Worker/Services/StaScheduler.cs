@@ -316,6 +316,13 @@ namespace GxMcp.Worker.Services
         /// hundreds of megabytes inside a 32-bit process. The byte budget has to charge
         /// what is actually retained, or it is not a budget.
         /// </para>
+        ///
+        /// <para>
+        /// <see cref="ScheduledCommandItem.Obj"/> is not counted because it is no longer
+        /// retained: it held the same content as <c>RawLine</c>, so keeping both doubled the
+        /// backlog the budget is meant to bound while charging for it once. Adding it back
+        /// here would be correct only together with dropping it there.
+        /// </para>
         /// </summary>
         private static long EstimateBytes(ScheduledCommandItem item)
         {
