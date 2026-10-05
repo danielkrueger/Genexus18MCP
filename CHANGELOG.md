@@ -11,7 +11,7 @@
 
 ### Fixed
 
-- `genexus_run_object` no longer returns a made-up `http://localhost/portal3_desenv/...` URL. The base URL is now the `baseUrl` the user set in `preview.config.json`, else `http://localhost/<active environment WebRoot>` (generator property `WebRoot`, "Web Root" in the IDE); the auto-generated legacy default is ignored. When neither exists it returns `BaseUrlUnresolved` with a hint. The response reports `baseUrlSource` (`config` | `environment`).
+- `genexus_run_object` no longer returns a made-up `http://localhost/portal3_desenv/...` URL. The base URL is now the `baseUrl` the user set in `preview.config.json`, else the active environment's Web Root (the generator property `WebRoot`, read from the main generator of the target model; a full URL is used as-is, a bare virtual directory is served from `http://localhost/`); the auto-generated legacy default is ignored. When neither exists it returns `BaseUrlUnresolved` with a hint. The response reports `baseUrlSource` (`config` | `environment`).
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
