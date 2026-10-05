@@ -1,5 +1,4 @@
 using System;
-using System.ComponentModel;
 using System.Drawing;
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -41,7 +40,9 @@ namespace GxMcp.Worker.Helpers
 
             try
             {
-                var font = TypeDescriptor.GetConverter(typeof(Font)).ConvertFromInvariantString(raw.Trim()) as Font;
+                // Not TypeDescriptor.GetConverter: inside the Worker the GeneXus SDK registers its
+                // own Font converter, which does not read the invariant "Arial, 12pt" form.
+                var font = new FontConverter().ConvertFromInvariantString(raw.Trim()) as Font;
                 if (font == null) return false;
                 // FontConverter silently substitutes a default family when the name is not installed.
                 string requested = raw.Split(',')[0].Trim();

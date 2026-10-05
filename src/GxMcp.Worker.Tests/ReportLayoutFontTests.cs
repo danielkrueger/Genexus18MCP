@@ -40,6 +40,38 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(style, font.Style);
         }
 
+        // Inside the Worker the GeneXus SDK registers its own Font converter; the
+        // invariant "Arial, 12pt" form must not depend on which converter is registered.
+        [Fact]
+        public void ConvertValue_IgnoresAForeignRegisteredFontConverter()
+        {
+            var provider = new ForeignFontConverterProvider();
+            System.ComponentModel.TypeDescriptor.AddProvider(provider, typeof(Font));
+            try
+            {
+                using var font = Assert.IsType<Font>(Convert("Arial, 12pt"));
+                Assert.Equal(12f, font.Size);
+            }
+            finally
+            {
+                System.ComponentModel.TypeDescriptor.RemoveProvider(provider, typeof(Font));
+            }
+        }
+
+        private sealed class ForeignFontConverterProvider : System.ComponentModel.TypeDescriptionProvider
+        {
+            public ForeignFontConverterProvider() : base(System.ComponentModel.TypeDescriptor.GetProvider(typeof(Font))) { }
+
+            public override System.ComponentModel.ICustomTypeDescriptor GetTypeDescriptor(Type objectType, object instance)
+                => new Descriptor(base.GetTypeDescriptor(objectType, instance));
+
+            private sealed class Descriptor : System.ComponentModel.CustomTypeDescriptor
+            {
+                public Descriptor(System.ComponentModel.ICustomTypeDescriptor parent) : base(parent) { }
+                public override System.ComponentModel.TypeConverter GetConverter() => new System.ComponentModel.TypeConverter();
+            }
+        }
+
         [Theory]
         [InlineData("")]
         [InlineData("not a font")]
