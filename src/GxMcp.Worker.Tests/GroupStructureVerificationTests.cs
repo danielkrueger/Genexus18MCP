@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using GxMcp.Worker.Services.Structure;
 using Newtonsoft.Json.Linq;
@@ -12,6 +13,26 @@ namespace GxMcp.Worker.Tests
     // regression in the diff can't silently turn a dropped write back into a false success.
     public class GroupStructureVerificationTests
     {
+        // genexus_read part=GroupStructure used to return only the IsDefault property XML.
+        [Fact]
+        public void RenderMembers_ListsEachSubtypeWithItsSupertype()
+        {
+            var text = GroupStructureService.RenderMembers(new[]
+            {
+                ("SampleCode", "BaseCode"),
+                ("SampleName", (string)null),
+                ((string)null, "Ignored")
+            });
+
+            Assert.Equal("SampleCode -> BaseCode" + Environment.NewLine + "SampleName", text);
+        }
+
+        [Fact]
+        public void RenderMembers_NoMembers_IsEmpty()
+        {
+            Assert.Equal(string.Empty, GroupStructureService.RenderMembers(null));
+        }
+
         [Fact]
         public void CompareGroupMembership_AllRequestedPersisted_EmptyDiff()
         {

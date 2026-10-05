@@ -5334,6 +5334,14 @@ namespace GxMcp.Worker.Services
                         ProcessSourceContent(obj, content, offset, limit, result, client);
                         Logger.Info("ReadSource (Reflection) SUCCESS");
                     }
+                    else if (part is global::Artech.Genexus.Common.Parts.GroupStructurePart groupPart)
+                    {
+                        // The generic XML fallback only carries IsDefault; members and their
+                        // supertypes are rendered as "Subtype -> Supertype" lines.
+                        ProcessSourceContent(obj, GxMcp.Worker.Services.Structure.GroupStructureService.RenderMembers(
+                            groupPart.Members.Select(m => (m?.Subtype?.Name, m?.Supertype?.Name))), offset, limit, result, client);
+                        Logger.Info("ReadSource (GroupStructure) SUCCESS");
+                    }
                     else if (QueryStructureText.IsQueryStructurePart(part))
                     {
                         ProcessSourceContent(obj, QueryStructureText.Render(part), offset, limit, result, client);
@@ -5392,6 +5400,8 @@ namespace GxMcp.Worker.Services
             if (DataSelectorReadService.IsDataSelector(obj)) return "Source";
             // issue #404: a Query's content is its structure part, not the first part listed.
             if (QueryStructureText.FindPart(obj) != null) return "QueryStructure";
+            // A Group's content is its member list, not the first part listed.
+            if (obj is Artech.Genexus.Common.Objects.Group) return "GroupStructure";
 
             // issue #31.5: SDTs (and other objects without a Source part) previously errored
             // "Part 'Source' not found". Fall back to the object's primary part instead:

@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_read part=GroupStructure` on a Group returned only the `IsDefault` property XML; it now returns one `Subtype -> Supertype` line per member, and a Group read without a part defaults to that part.
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
