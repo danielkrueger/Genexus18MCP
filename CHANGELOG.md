@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_layout set_property` / `set_properties` with `propertyName=Font` on a Procedure report control no longer fails with `LayoutWriteVerificationFailed` and a rollback. The Font is a `System.Drawing.Font`: the writer had no conversion for it and the read-back (`Font.ToString()`) never string-matched the request. It now accepts the `get_tree` form (`[Font: Name=Arial, Size=12, Units=3, ...]`) and the invariant `Arial, 12pt[, style=Bold]` form, and verifies by name, size and units (style when both sides state one).
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).

@@ -1910,6 +1910,12 @@ namespace GxMcp.Worker.Services
                 return true;
             }
 
+            // A Font reads back as Font.ToString(); compare by name/size/units (style when both state it).
+            if (FontHelper.IsFontAttributeName(propertyName) && FontHelper.AreEquivalent(normalizedExpected, normalizedActual))
+            {
+                return true;
+            }
+
             // The report SDK often serializes colors as nested "Color [ ... ]" descriptors or RGB tokens.
             if (ColorHelper.IsColorAttributeName(propertyName))
             {

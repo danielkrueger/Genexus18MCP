@@ -1070,6 +1070,12 @@ namespace GxMcp.Worker.Helpers
                 }
             }
 
+            if (targetType == typeof(System.Drawing.Font))
+            {
+                // Accepts the get_tree "[Font: Name=..., Size=...]" projection and the FontConverter form.
+                return FontHelper.TryParse(value, out var fontSpec) ? FontHelper.ToFont(fontSpec) : null;
+            }
+
             if (targetType == typeof(System.Drawing.Color))
             {
                 try
@@ -1478,6 +1484,9 @@ namespace GxMcp.Worker.Helpers
         {
             if (currentValue == null && rawValue == null) return true;
             if (currentValue == null || rawValue == null) return false;
+
+            // The ToString() projection of a Font drops its style, so a string match can hide a style change.
+            if (FontHelper.IsFontAttributeName(aName) || FontHelper.IsFontAttributeName(sdkPropName)) return false;
 
             if (string.Equals(currentValue, rawValue, StringComparison.Ordinal)) return true;
 

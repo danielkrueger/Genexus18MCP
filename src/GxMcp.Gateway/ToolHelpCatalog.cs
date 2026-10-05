@@ -399,6 +399,7 @@ namespace GxMcp.Gateway
                 "- `find_controls` — search controls by name, caption, or query string.\n" +
                 "- `list_controls` — list all controls with type and key attributes.\n" +
                 "- `set_property` — set single property on a layout control (Caption, Visible, Enabled, Class).\n" +
+                "  On a Procedure report control, `Font` takes the get_tree form (`[Font: Name=Arial, Size=12, Units=3, ...]`) or `Arial, 12pt` / `Arial, 12pt, style=Bold`; the family must be installed.\n" +
                 "- `set_properties` — batch property updates via `changes: [{control, propertyName, value}]`.\n" +
                 "- `inspect_surface` — analyze layout structure, grid bindings, and responsive layout rows.\n" +
                 "- `get_preview` — get visual representation or HTML mockup preview.\n" +
