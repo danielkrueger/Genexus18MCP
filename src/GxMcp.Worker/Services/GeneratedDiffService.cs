@@ -365,6 +365,63 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// Every generated file of <paramref name="target"/>, restricted to the active environment's
+        /// web root once it is known. A KB can retain generated files for several environments, and a
+        /// newer file from a different environment must never count as evidence for this build.
+        /// </summary>
+        private static List<string> FindGeneratedFilesInEnvironment(string kbPath, string target, string preferredWebPath)
+        {
+            var files = FindGeneratedFiles(kbPath, target, allRoots: true);
+            if (string.IsNullOrWhiteSpace(preferredWebPath)) return files;
+            string preferred = Path.GetFullPath(preferredWebPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return files.Where(f =>
+            {
+                try
+                {
+                    string full = Path.GetFullPath(f);
+                    return full.StartsWith(preferred, StringComparison.OrdinalIgnoreCase);
+                }
+                catch { return false; }
+            }).ToList();
+        }
+
+        /// <summary>
+        /// Every file the generator can emit for <paramref name="target"/>: the matching
+        /// .cs/.aspx/.js/.html (including the Main-object "a" variant) plus the compiled
+        /// bin\NAME.dll and bin\aNAME.dll next to them. A Main procedure with
+        /// Call protocol HTTP is a stub (NAME.cs) plus the real program (aNAME.cs and
+        /// bin\aNAME.dll), so reporting only the freshest file hid the program itself.
+        /// Each entry carries its last write time and whether it was written during the build
+        /// (last write at or after <paramref name="buildStartUtc"/>).
+        /// </summary>
+        internal static JArray ListGeneratedFiles(string kbPath, string target, DateTime buildStartUtc, string preferredWebPath = null)
+        {
+            var result = new JArray();
+            var files = FindGeneratedFilesInEnvironment(kbPath, target, preferredWebPath);
+            foreach (var dir in files.Select(Path.GetDirectoryName).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+            {
+                foreach (var name in new[] { target, MainFilePrefix + target })
+                {
+                    string dll = Path.Combine(dir, "bin", name + ".dll");
+                    if (File.Exists(dll) && !files.Contains(dll, StringComparer.OrdinalIgnoreCase)) files.Add(dll);
+                }
+            }
+            foreach (var f in files.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            {
+                DateTime w;
+                try { w = File.GetLastWriteTimeUtc(f); }
+                catch { continue; }
+                result.Add(new JObject
+                {
+                    ["path"] = MakeRelative(kbPath, f),
+                    ["lastWriteUtc"] = w.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    ["writtenDuringBuild"] = w >= buildStartUtc
+                });
+            }
+            return result;
+        }
+
+        /// <summary>
         /// Probe whether an object's generated files exist and were (re)written at or
         /// after <paramref name="sinceUtc"/> (the build start). Used by the build
         /// evidence gate: a build can report Succeeded while the .cs on disk is stale
@@ -379,23 +436,7 @@ namespace GxMcp.Worker.Services
         internal static GeneratedFileEvidence ProbeGeneratedFreshness(string kbPath, string target, DateTime sinceUtc, DateTime? priorMtimeUtc = null, string preferredWebPath = null)
         {
             var ev = new GeneratedFileEvidence { Target = target };
-            var files = FindGeneratedFiles(kbPath, target, allRoots: true);
-            // A KB can retain generated files for several environments. Once the
-            // active environment's web root is known, never use a newer file from a
-            // different environment as evidence for this build.
-            if (!string.IsNullOrWhiteSpace(preferredWebPath))
-            {
-                string preferred = Path.GetFullPath(preferredWebPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                files = files.Where(f =>
-                {
-                    try
-                    {
-                        string full = Path.GetFullPath(f);
-                        return full.StartsWith(preferred, StringComparison.OrdinalIgnoreCase);
-                    }
-                    catch { return false; }
-                }).ToList();
-            }
+            var files = FindGeneratedFilesInEnvironment(kbPath, target, preferredWebPath);
             ev.FileCount = files.Count;
             ev.Found = files.Count > 0;
             foreach (var f in files)

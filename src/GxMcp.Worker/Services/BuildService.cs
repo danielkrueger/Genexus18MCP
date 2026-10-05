@@ -3347,7 +3347,8 @@ namespace GxMcp.Worker.Services
                     {
                         ["object"] = bare,
                         ["path"] = ev.FreshestPath,
-                        ["writtenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                        ["writtenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                        ["files"] = GeneratedDiffService.ListGeneratedFiles(kbPath, bare, status.StartedAt, activeEnvironmentWebPath)
                     });
                 }
                 else if (ev.Found && !dirtySet.Contains(bare))
@@ -3358,7 +3359,8 @@ namespace GxMcp.Worker.Services
                     {
                         ["object"] = bare,
                         ["path"] = ev.FreshestPath,
-                        ["lastWrittenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                        ["lastWrittenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                        ["files"] = GeneratedDiffService.ListGeneratedFiles(kbPath, bare, status.StartedAt, activeEnvironmentWebPath)
                     });
                 }
                 else if (!ev.Found && unreachableSet.Contains(bare))

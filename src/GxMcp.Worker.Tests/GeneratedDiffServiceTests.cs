@@ -249,6 +249,58 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ListGeneratedFiles_MainProcedure_ListsStubProgramAndDlls_WithBuildFlag()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            string bin = Path.Combine(web, "bin");
+            Directory.CreateDirectory(bin);
+            var buildStart = DateTime.UtcNow.AddMinutes(-5);
+            string stub = Path.Combine(web, "sampleproc.cs");
+            string program = Path.Combine(web, "asampleproc.cs");
+            string dll = Path.Combine(bin, "asampleproc.dll");
+            string oldDll = Path.Combine(bin, "sampleproc.dll");
+            foreach (var f in new[] { stub, program, dll, oldDll }) File.WriteAllText(f, "x");
+            File.SetLastWriteTimeUtc(oldDll, buildStart.AddHours(-1));
+            File.WriteAllText(Path.Combine(web, "sampleprocother.cs"), "x");
+            try
+            {
+                var files = GeneratedDiffService.ListGeneratedFiles(tempKb, "sampleproc", buildStart);
+                var byName = new Dictionary<string, JToken>(StringComparer.OrdinalIgnoreCase);
+                foreach (JObject o in files) byName[Path.GetFileName((string)o["path"])] = o;
+
+                Assert.Equal(4, files.Count);
+                Assert.True((bool)byName["sampleproc.cs"]["writtenDuringBuild"]);
+                Assert.True((bool)byName["asampleproc.cs"]["writtenDuringBuild"]);
+                Assert.True((bool)byName["asampleproc.dll"]["writtenDuringBuild"]);
+                Assert.False((bool)byName["sampleproc.dll"]["writtenDuringBuild"]);
+                Assert.NotNull(byName["asampleproc.cs"]["lastWriteUtc"]);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void ListGeneratedFiles_ScopesToPreferredEnvironment()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string devWeb = Path.Combine(tempKb, "DevelopmentWeb", "web");
+            string prodWeb = Path.Combine(tempKb, "ProductionWeb", "web");
+            Directory.CreateDirectory(Path.Combine(devWeb, "bin"));
+            Directory.CreateDirectory(Path.Combine(prodWeb, "bin"));
+            File.WriteAllText(Path.Combine(devWeb, "Scoped.cs"), "x");
+            File.WriteAllText(Path.Combine(devWeb, "bin", "Scoped.dll"), "x");
+            File.WriteAllText(Path.Combine(prodWeb, "Scoped.cs"), "x");
+            File.WriteAllText(Path.Combine(prodWeb, "bin", "Scoped.dll"), "x");
+            try
+            {
+                var files = GeneratedDiffService.ListGeneratedFiles(tempKb, "Scoped", DateTime.UtcNow.AddMinutes(-5), devWeb);
+                Assert.Equal(2, files.Count);
+                foreach (JObject o in files) Assert.Contains("DevelopmentWeb", (string)o["path"]);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
         public void ProbeGeneratedFreshness_ScopesEvidenceToPreferredEnvironment()
         {
             string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
