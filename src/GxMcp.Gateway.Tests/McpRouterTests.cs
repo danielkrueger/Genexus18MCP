@@ -868,6 +868,20 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("printBlock3Renamed", json["newName"]?.ToString());
         }
 
+        [Theory]
+        [InlineData("false", false)]
+        [InlineData("true", true)]
+        public void ConvertToolCall_ShouldForwardAppendPrintToSourceForAddPrintBlock(string raw, bool expected)
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_layout","arguments":{"action":"add_printblock","name":"SampleProc","printBlockName":"PbSample","appendPrintToSource":""" + raw + """}}}"""
+            );
+
+            var json = JObject.FromObject(McpRouter.ConvertToolCall(request)!);
+
+            Assert.Equal(expected, json["appendPrintToSource"]?.Value<bool>());
+        }
+
         [Fact]
         public void ConvertToolCall_ShouldMapLayoutAddPrintBlockTool()
         {

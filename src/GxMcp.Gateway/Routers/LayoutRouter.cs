@@ -71,6 +71,7 @@ namespace GxMcp.Gateway.Routers
                 newName = args?["newName"]?.ToString(),
                 printBlockName = args?["printBlockName"]?.ToString(),
                 height = args?["height"]?.ToObject<int?>(),
+                appendPrintToSource = args?["appendPrintToSource"]?.ToObject<bool?>(),
                 kind = args?["kind"]?.ToString(),
                 controlName = args?["controlName"]?.ToString(),
                 controlType = args?["controlType"]?.ToString(),

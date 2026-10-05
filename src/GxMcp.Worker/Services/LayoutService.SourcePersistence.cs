@@ -392,6 +392,37 @@ namespace GxMcp.Worker.Services
             return partName ?? "Layout";
         }
 
+        /// <summary>
+        /// Describes the Procedure Source edit a print block mutation performed as a side
+        /// effect, as the lines that differ between the two snapshots (common leading and
+        /// trailing lines are trimmed). Lets callers see the otherwise silent Source change.
+        /// </summary>
+        internal static JObject BuildSourceChange(string before, string after)
+        {
+            before = before ?? string.Empty;
+            after = after ?? string.Empty;
+            if (string.Equals(before, after, StringComparison.Ordinal))
+            {
+                return new JObject { ["changed"] = false };
+            }
+
+            string[] b = before.Replace("\r\n", "\n").Split('\n');
+            string[] a = after.Replace("\r\n", "\n").Split('\n');
+            int prefix = 0;
+            while (prefix < b.Length && prefix < a.Length && b[prefix] == a[prefix]) prefix++;
+            int suffix = 0;
+            while (suffix < b.Length - prefix && suffix < a.Length - prefix
+                && b[b.Length - 1 - suffix] == a[a.Length - 1 - suffix]) suffix++;
+
+            return new JObject
+            {
+                ["changed"] = true,
+                ["line"] = prefix + 1,
+                ["removedLines"] = new JArray(b.Skip(prefix).Take(b.Length - prefix - suffix)),
+                ["addedLines"] = new JArray(a.Skip(prefix).Take(a.Length - prefix - suffix))
+            };
+        }
+
         private static string GetProcedureSourceSnapshot(KBObject obj)
         {
             var sourcePart = PartAccessor.GetPart(obj, "Source") as ISource;

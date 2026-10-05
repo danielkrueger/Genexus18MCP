@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_layout` `add_printblock` / `rename_printblock` / `delete_printblock` silently edited the Procedure Source (add inserted `print <name>`) without saying so. The response now reports `result.sourceChanged` and `result.sourceChange` (`line`, `removedLines`, `addedLines`), and `add_printblock` accepts `appendPrintToSource=false` (default `true`) to leave Source untouched. Documented in the tool help and schema.
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).

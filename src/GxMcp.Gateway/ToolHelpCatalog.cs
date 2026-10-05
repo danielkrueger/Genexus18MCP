@@ -403,7 +403,7 @@ namespace GxMcp.Gateway
                 "- `inspect_surface` — analyze layout structure, grid bindings, and responsive layout rows.\n" +
                 "- `get_preview` — get visual representation or HTML mockup preview.\n" +
                 "- `scan_mutators` — inspect potential mutations and event-binding risks.\n" +
-                "- `add_printblock` / `rename_printblock` / `delete_printblock` — manage Procedure printblocks.\n" +
+                "- `add_printblock` / `rename_printblock` / `delete_printblock` — manage Procedure printblocks. They also edit the Procedure Source (add inserts `print <name>` before `print printblock2`/Footer or at the end; rename rewrites the print command; delete removes it); the response reports it as `result.sourceChanged` plus `result.sourceChange` (`line`, `removedLines`, `addedLines`). `add_printblock` accepts `appendPrintToSource=false` to leave Source untouched.\n" +
                 "- `add_report_control` / `move_report_control` / `remove_report_control` - typed report-band controls with geometry, relative placement, optimistic `baseVersion` (required, including dryRun), dry-run diff, independent reread and rollback. `get_tree` includes geometry, font metadata, and the authoritative `versionToken`.\n" +
                 "- `design_system` - inspect applied design system tokens and styling.\n",
 

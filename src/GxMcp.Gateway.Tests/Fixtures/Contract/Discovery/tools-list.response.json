@@ -2703,6 +2703,10 @@
             "description": "Optional report text alignment.",
             "type": "string"
           },
+          "appendPrintToSource": {
+            "description": "add_printblock: also insert `print…",
+            "type": "boolean"
+          },
           "baseVersion": {
             "description": "Version token from get_tree; required…",
             "type": "string"

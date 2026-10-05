@@ -2613,7 +2613,8 @@ namespace GxMcp.Worker.Services
                 return _layoutService.AddPrintBlock(
                     target,
                     args?["printBlockName"]?.ToString(),
-                    args?["height"]?.ToObject<int?>());
+                    args?["height"]?.ToObject<int?>(),
+                    args?["appendPrintToSource"]?.ToObject<bool?>() ?? true);
             }
             if (action == "DeletePrintBlock")
             {
