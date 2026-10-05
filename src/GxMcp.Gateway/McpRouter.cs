@@ -1990,7 +1990,10 @@ namespace GxMcp.Gateway
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
                 "nearMatches", "nearMatchHint", "nearMatchHintDetail", "eolDiff",
-                "did_you_mean", "noNearMatchHint"
+                "did_you_mean", "noNearMatchHint",
+                // Save+specify (SpecificationFailed): the itemized spc/gen diagnostics and
+                // the stale-environment-copy warning are the whole point of the error.
+                "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId"
             };
             foreach (var k in diagnosticKeys)
             {

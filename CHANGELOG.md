@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_edit validationMode="specify"` now returns the itemized diagnostics (raw line, code, object, line) in the `SpecificationFailed` error instead of only a count, because the Gateway terse error projection dropped them. The edit response (error and `_meta.specification`) also carries the specify pass warnings and `staleEnvironmentCopy: true` when GeneXus specified the environment copy that changed since the last build.
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
