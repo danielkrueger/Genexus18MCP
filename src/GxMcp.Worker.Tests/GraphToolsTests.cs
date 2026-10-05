@@ -84,7 +84,7 @@ namespace GxMcp.Worker.Tests
             ImpactResult all = Run(Calls, "Log", ImpactAnalyzer.Up);
             ImpactResult webPanels = Run(Calls, "Log", ImpactAnalyzer.Up, filter: "WebPanel");
             Assert.Equal(new[] { "Main" }, webPanels.Nodes.Select(n => n.Name));
-            Assert.Equal(all.Nodes.Count, 4);
+            Assert.Equal(4, all.Nodes.Count);
             Assert.Equal(1, webPanels.CountsByType["WebPanel"]);
             // Main is two hops above Post: the walk still crossed the filtered-out nodes to reach it.
             Assert.Equal(3, webPanels.Nodes.Single().Depth);
@@ -122,7 +122,7 @@ namespace GxMcp.Worker.Tests
         public void EdgesAndTablesAreExactlyTheReportedRelations()
         {
             JObject graph = DfdGraph.Build("Order", 1, 100, Relations);
-            Assert.Equal("genexus-dfd/1", (string?)graph["schema"]);
+            Assert.Equal("genexus-dfd/1", (string)graph["schema"]);
             Assert.Equal(new[] { "Order", "Customer", "Currency", "OrderLine" }, graph["tables"]!.Select(t => (string)t!));
             Assert.Equal(new[] { "Order>Customer:extends:CustomerId", "Order>Currency:extends:CurrencyId", "OrderLine>Order:subordinates:OrderId" },
                 graph["edges"]!.Select(e => $"{e["from"]}>{e["to"]}:{e["kind"]}:{e["joinOn"]}"));

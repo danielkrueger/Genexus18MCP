@@ -31,14 +31,14 @@ namespace GxMcp.Worker.Tests
         {
             JObject first = (JObject)WwpActionService.ListTabs(XDocument.Parse(Instance))["tabs"]![0]!;
             Assert.Null(first["attributes"]!["defaultX"]);
-            Assert.Equal("Tab", (string?)first["attributes"]!["tabClass"]);
+            Assert.Equal("Tab", (string)first["attributes"]!["tabClass"]);
         }
 
         [Fact]
         public void ConventionsReportOnlyWhatAllTabsOfAKindShare()
         {
             JObject conventions = (JObject)WwpActionService.ListTabs(XDocument.Parse(Instance))["conventions"]!;
-            Assert.Equal("Tab", (string?)conventions["grid"]!["tabClass"]);
+            Assert.Equal("Tab", (string)conventions["grid"]!["tabClass"]);
             Assert.Null(conventions["grid"]!["title"]);          // differs between the two grid tabs
             Assert.Null(conventions["grid"]!["ControlName"]);
             Assert.Null(conventions["webcomponent"]);            // one tab has nothing to agree with
