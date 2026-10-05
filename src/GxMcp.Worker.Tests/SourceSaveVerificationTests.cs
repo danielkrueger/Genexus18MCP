@@ -181,6 +181,33 @@ namespace GxMcp.Worker.Tests
             Assert.False(WriteService.EvaluatePersistedVerification(expected, actual, false, null, "exact", "WebForm").Matches);
         }
 
+        [Theory]
+        [InlineData(null, "Structure")]
+        [InlineData("", "Structure")]
+        [InlineData("  ", "WebForm")]
+        public void OmittedOrBlankVerifyMode_TreatsLineEndingOnlyDifferenceAsVerified_ForXmlParts(string mode, string part)
+        {
+            var result = WriteService.EvaluatePersistedVerification("<a>\n  <b/>\n</a>", "<a>\r\n  <b/>\r\n</a>", false, null, mode, part);
+            Assert.True(result.Matches);
+            Assert.Equal("verified", result.State);
+        }
+
+        [Fact]
+        public void ExplicitExactVerifyMode_StillReportsLineEndingsForXmlParts()
+        {
+            var result = WriteService.EvaluatePersistedVerification("<a>\n  <b/>\n</a>", "<a>\r\n  <b/>\r\n</a>", false, null, "exact", "Structure");
+            Assert.False(result.Matches);
+            Assert.Equal("lineEndings", result.Reason);
+        }
+
+        [Fact]
+        public void BlankVerifyMode_StillReportsContentMismatchForGenuinelyDifferentStructure()
+        {
+            var result = WriteService.EvaluatePersistedVerification("Name\n  Description = New", "Name\r\n  Description = Old", false, null, "", "Structure");
+            Assert.False(result.Matches);
+            Assert.Equal("contentMismatch", result.Reason);
+        }
+
         [Fact]
         public void DryRunMatchingText_HasConsistentComparisonButNoSave()
         {

@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_edit` full-mode writes of an XML part (Structure, WebForm) with `verifyMode` omitted no longer fail with `WriteNotPersisted` / `reason: lineEndings` when only the line endings differ from the SDK re-read (the SDK always stores CRLF). The gateway forwards an omitted `verifyMode` as a blank string, which was resolved to a strict `exact` check for XML parts; blank now means omitted (`normalized`). An explicit `verifyMode: "exact"` is unchanged and genuine content differences still report `contentMismatch`.
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).

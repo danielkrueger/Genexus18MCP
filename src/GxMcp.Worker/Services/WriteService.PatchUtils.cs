@@ -838,7 +838,7 @@ namespace GxMcp.Worker.Services
             // explicit exact mode opts into strict byte-level verification; otherwise
             // Variables (and other rendered parts) must tolerate harmless SDK casing,
             // whitespace, and line-ending normalization.
-            bool explicitMode = verifyMode != null;
+            bool explicitMode = !string.IsNullOrWhiteSpace(verifyMode);
             string mode = explicitMode
                 ? TextPersistenceVerifier.ResolveMode(verifyMode, partName)
                 : "normalized";
