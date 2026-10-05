@@ -97,9 +97,9 @@ namespace GxMcp.Gateway.Tests
 
             foreach (var step in steps)
             {
-                if (!string.Equals((string)step["tool"], "genexus_edit", StringComparison.Ordinal)) continue;
+                if (!string.Equals((string?)step["tool"], "genexus_edit", StringComparison.Ordinal)) continue;
                 var args = (Newtonsoft.Json.Linq.JObject)step["args"]!;
-                var operation = (string)args["operation"];
+                var operation = (string?)args["operation"];
 
                 // Adding a node through the raw route is rejected as
                 // PatternStructureChangeUnsupported, so the recipe must not show it.
@@ -107,7 +107,7 @@ namespace GxMcp.Gateway.Tests
                 Assert.NotEqual("Insert_Before", operation);
                 // mode=full is only a problem when it is presented as a group insert;
                 // a property-only full rewrite stays acceptable.
-                var content = (string)args["content"];
+                var content = (string?)args["content"];
                 Assert.False(content != null && content.Contains("isGroup", StringComparison.OrdinalIgnoreCase),
                     "the recipe must not demonstrate inserting a <table isGroup> group through raw PatternInstance XML");
             }

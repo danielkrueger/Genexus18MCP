@@ -43,8 +43,8 @@ namespace GxMcp.Gateway.Tests
 
             Assert.NotNull(refusal);
             var frame = JObject.Parse(refusal!);
-            Assert.Equal("req-A", (string)frame["id"]);
-            Assert.Equal("WorkerResponseTooLarge", (string)frame["error"]!["code"]);
+            Assert.Equal("req-A", (string?)frame["id"]);
+            Assert.Equal("WorkerResponseTooLarge", (string?)frame["error"]!["code"]);
             // The frame is delivered in place of the oversized one, so the requester's
             // pending request is completed with a real answer rather than left hanging.
             Assert.True(ByteCount(refusal!) < SharedWorkerConnection.MaxFrameBytes);
@@ -175,11 +175,11 @@ namespace GxMcp.Gateway.Tests
             string routedB = JObject.Parse(smallB).ToString(Newtonsoft.Json.Formatting.None);
 
             Assert.NotNull(refusalA);
-            Assert.Equal("req-A", (string)JObject.Parse(refusalA!)["id"]);
+            Assert.Equal("req-A", (string?)JObject.Parse(refusalA!)["id"]);
 
             // B is untouched: still a normal result frame, not a refusal.
             var bFrame = JObject.Parse(routedB);
-            Assert.Equal("req-B", (string)bFrame["id"]);
+            Assert.Equal("req-B", (string?)bFrame["id"]);
             Assert.Null(bFrame["error"]);
             Assert.NotNull(bFrame["result"]);
         }
@@ -212,7 +212,7 @@ namespace GxMcp.Gateway.Tests
                 line, bytes, SharedWorkerConnection.MaxFrameBytes,
                 SharedWorkerConnection.HardFrameCeilingBytes);
             Assert.NotNull(refusal);
-            Assert.Equal("req-U", (string)JObject.Parse(refusal!)["id"]);
+            Assert.Equal("req-U", (string?)JObject.Parse(refusal!)["id"]);
         }
     }
 }

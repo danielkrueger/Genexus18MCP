@@ -9,7 +9,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void FullSourceEdit_PreservesDryRunConcurrencyAndRollbackArguments()
         {
-            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", new JObject
+            var routedCall = new ObjectRouter().ConvertToolCall("genexus_edit", new JObject
             {
                 ["name"] = "SyntheticProcedure",
                 ["part"] = "Source",
@@ -18,7 +18,9 @@ namespace GxMcp.Gateway.Tests
                 ["dryRun"] = true,
                 ["expectedVersion"] = "version-before",
                 ["rollbackOnFailure"] = true
-            }));
+            });
+            Assert.NotNull(routedCall);
+            var routed = JObject.FromObject(routedCall);
 
             Assert.Equal("Write", routed["module"]?.ToString());
             Assert.Equal("Source", routed["action"]?.ToString());

@@ -368,7 +368,7 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(alpha);
             Assert.NotNull(beta);
             Assert.Equal(2, alpha!["results"]!.Count());
-            Assert.Equal(0, beta!["results"]!.Count());
+            Assert.Empty(beta!["results"]!);
             Assert.False(beta!["complete"]!.Value<bool>());
             Assert.Equal(MultiKbDiscovery.StatusNotOpen, beta!["error"]!["code"]!.ToString());
             // Federated identities are per-KB; a flat name would be meaningless.
@@ -406,7 +406,7 @@ namespace GxMcp.Gateway.Tests
             var beta = (JObject)envelope["results"]![1]!;
 
             Assert.Equal(4, alpha["results"]!.Count());
-            Assert.Equal(1, beta["results"]!.Count());
+            Assert.Single(beta["results"]!);
             // The KB that lost its tail is the one that says so.
             Assert.Equal(MultiKbDiscovery.StatusBudgetExceeded, beta["status"]!.ToString());
             Assert.False(beta["complete"]!.Value<bool>());

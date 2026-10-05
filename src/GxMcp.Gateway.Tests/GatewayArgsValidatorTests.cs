@@ -134,7 +134,7 @@ namespace GxMcp.Gateway.Tests
             GatewayArgsValidator.ClearCache();
             // genexus_edit mode: enum [full, patch, ops]
             GatewayArgsValidator.PrimeCache("genexus_edit", MakeSchema(
-                props: new[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
+                props: new (string, string, string[]?)[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
             ));
 
             var result = GatewayArgsValidator.Validate("genexus_edit", new JObject { ["mode"] = "invalid_mode" });
@@ -148,7 +148,7 @@ namespace GxMcp.Gateway.Tests
         {
             GatewayArgsValidator.ClearCache();
             GatewayArgsValidator.PrimeCache("genexus_edit", MakeSchema(
-                props: new[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
+                props: new (string, string, string[]?)[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
             ));
 
             var result = GatewayArgsValidator.Validate("genexus_edit", new JObject { ["mode"] = "patch" });
@@ -204,7 +204,7 @@ namespace GxMcp.Gateway.Tests
         {
             GatewayArgsValidator.ClearCache();
             GatewayArgsValidator.PrimeCache("genexus_edit", MakeSchema(
-                props: new[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
+                props: new (string, string, string[]?)[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
             ));
 
             var result = GatewayArgsValidator.Validate("genexus_edit", new JObject { ["mode"] = "patche" });
@@ -220,7 +220,7 @@ namespace GxMcp.Gateway.Tests
         {
             GatewayArgsValidator.ClearCache();
             GatewayArgsValidator.PrimeCache("genexus_edit", MakeSchema(
-                props: new[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
+                props: new (string, string, string[]?)[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
             ));
 
             var result = GatewayArgsValidator.Validate("genexus_edit", new JObject { ["mode"] = "completely_wrong" });

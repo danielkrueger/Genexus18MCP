@@ -24,7 +24,8 @@ namespace GxMcp.Gateway.Tests
                 }
             };
 
-            object routed = new OperationsRouter().ConvertToolCall("genexus_structure", args);
+            object? routed = new OperationsRouter().ConvertToolCall("genexus_structure", args);
+            Assert.NotNull(routed);
             var json = JObject.FromObject(routed);
 
             Assert.Equal("Structure", json["module"]?.ToString());
@@ -38,12 +39,13 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void StructureCreateIndex_DefaultsRollbackOnFailureToTrue()
         {
-            object routed = new OperationsRouter().ConvertToolCall("genexus_structure", new JObject
+            object? routed = new OperationsRouter().ConvertToolCall("genexus_structure", new JObject
             {
                 ["action"] = "create_index",
                 ["name"] = "Queue",
                 ["payload"] = new JObject { ["attributes"] = new JArray("QueueId") }
             });
+            Assert.NotNull(routed);
 
             Assert.True(JObject.FromObject(routed)["rollbackOnFailure"]?.Value<bool>());
         }

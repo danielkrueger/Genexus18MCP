@@ -475,7 +475,7 @@ namespace GxMcp.Gateway
                         if (method == "notifications/progress")
                         {
                             var pp = val["params"];
-                            string opId = pp?["progressToken"]?.ToString();
+                            string? opId = pp?["progressToken"]?.ToString();
                             if (!string.IsNullOrWhiteSpace(opId))
                                 _operationTracker.TouchProgress(opId, pp?["stage"]?.ToString(), pp?["message"]?.ToString());
 
@@ -486,7 +486,7 @@ namespace GxMcp.Gateway
                             // transport errored ("progress notification for an unknown token") and
                             // drop the whole MCP connection. Progress for a live op still flows; the
                             // async progress channel is the self-scoped lifecycle status poll.
-                            if (!_operationTracker.IsProgressTokenActive(opId))
+                            if (string.IsNullOrWhiteSpace(opId) || !_operationTracker.IsProgressTokenActive(opId))
                             {
                                 Log($"[Gateway] Dropped stale/unknown progress token '{opId}' (op not active) — not relayed to client.");
                                 return;
@@ -689,7 +689,7 @@ namespace GxMcp.Gateway
         private static bool IsWorkerCrashEnvelope(JObject workerResponse)
         {
             var err = workerResponse?["error"];
-            string msg = err is JObject eo ? eo["message"]?.ToString() : err?.ToString();
+            string? msg = err is JObject eo ? eo["message"]?.ToString() : err?.ToString();
             return !string.IsNullOrEmpty(msg) &&
                    msg.IndexOf("crashed/exited", StringComparison.OrdinalIgnoreCase) >= 0;
         }
@@ -766,7 +766,7 @@ namespace GxMcp.Gateway
             {
                 workerAttempt++;
                 string attemptRequestId = workerAttempt == 1 ? requestId : Guid.NewGuid().ToString();
-                string effectiveSessionId = mcpSessionId;
+                string? effectiveSessionId = mcpSessionId;
                 if (string.IsNullOrWhiteSpace(effectiveSessionId))
                     effectiveSessionId = _currentSessionContext.Value?.OwnerScopeId;
                 var workerRequest = BuildWorkerRpcRequest(workerCommand, attemptRequestId, operationId, effectiveSessionId);

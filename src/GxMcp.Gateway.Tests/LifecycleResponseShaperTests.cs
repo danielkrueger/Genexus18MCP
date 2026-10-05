@@ -43,10 +43,10 @@ namespace GxMcp.Gateway.Tests
             var obj = JObject.Parse(compact);
 
             Assert.Null(obj["Output"]);
-            Assert.Equal(30, obj["errorCount"].Value<int>());
-            Assert.Equal(5, obj["warningCount"].Value<int>());
-            Assert.True(((JArray)obj["errors"]).Count <= 10);
-            Assert.True(obj["truncated"].Value<bool>());
+            Assert.Equal(30, obj["errorCount"]!.Value<int>());
+            Assert.Equal(5, obj["warningCount"]!.Value<int>());
+            Assert.True(((JArray)obj["errors"]!).Count <= 10);
+            Assert.True(obj["truncated"]!.Value<bool>());
         }
 
         [Fact]
@@ -56,10 +56,10 @@ namespace GxMcp.Gateway.Tests
             var compact = LifecycleResponseShaper.Compact(raw, compact: true);
             var obj = JObject.Parse(compact);
 
-            var warns = (JArray)obj["warnings"];
+            var warns = (JArray)obj["warnings"]!;
             Assert.Single(warns);
-            Assert.Equal(6, warns[0]["count"].Value<int>());
-            Assert.Equal("GAM nao sera reorganizado", warns[0]["message"].ToString());
+            Assert.Equal(6, warns[0]["count"]!.Value<int>());
+            Assert.Equal("GAM nao sera reorganizado", warns[0]["message"]!.ToString());
         }
 
         [Fact]
@@ -158,8 +158,8 @@ namespace GxMcp.Gateway.Tests
         {
             var raw = MakeBuildStatus(2, 1);
             var obj = JObject.Parse(LifecycleResponseShaper.Compact(raw, compact: true));
-            Assert.False(obj["truncated"].Value<bool>());
-            Assert.Equal(2, ((JArray)obj["errors"]).Count);
+            Assert.False(obj["truncated"]!.Value<bool>());
+            Assert.Equal(2, ((JArray)obj["errors"]!).Count);
         }
 
         [Fact]
@@ -245,7 +245,7 @@ namespace GxMcp.Gateway.Tests
         public void ClassifyBuildOutcome_NullPayload_IsError()
         {
             Assert.Equal(LifecycleResponseShaper.BuildOutcome.Error,
-                LifecycleResponseShaper.ClassifyBuildOutcome(null));
+                LifecycleResponseShaper.ClassifyBuildOutcome(null!));
         }
 
         [Fact]

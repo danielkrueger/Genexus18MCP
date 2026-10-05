@@ -49,7 +49,7 @@ namespace GxMcp.Gateway.Tests
 
             // Unknown / literal tokens (e.g. the bulk-index constant) are never relayed.
             Assert.False(tracker.IsProgressTokenActive("genexus-mcp-bulk-index"));
-            Assert.False(tracker.IsProgressTokenActive(null));
+            Assert.False(tracker.IsProgressTokenActive(null!));
             Assert.False(tracker.IsProgressTokenActive(""));
 
             // Once the op completes (final response sent, client token retired), stale

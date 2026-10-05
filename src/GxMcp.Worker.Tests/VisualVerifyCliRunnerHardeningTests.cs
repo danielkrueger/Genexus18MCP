@@ -112,7 +112,7 @@ namespace GxMcp.Worker.Tests
             Assert.Null(result.ScreenshotPath);
             // Only the open step was attempted: the refusal short-circuits rather
             // than falling through to a screenshot call with the same bad value.
-            Assert.Equal(1, recorder.Calls.Count);
+            Assert.Single(recorder.Calls);
             Assert.Contains("%username%", recorder.Calls[0], StringComparison.OrdinalIgnoreCase);
 
             var envelope = svc.VerifyAsJObject("Panel%username%Off", "WebForm");

@@ -402,6 +402,7 @@ namespace GxMcp.Gateway.Tests
             var router = new SystemRouter();
             var res = router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'build',target:'MyProc',environment:'NetCore'}"));
             AssertRoute(res, "Build", "Build");
+            Assert.NotNull(res);
             var prop = res.GetType().GetProperty("environment");
             Assert.NotNull(prop);
             Assert.Equal("NetCore", prop.GetValue(res)?.ToString());

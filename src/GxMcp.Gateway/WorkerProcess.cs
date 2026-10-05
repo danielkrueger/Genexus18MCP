@@ -454,7 +454,7 @@ namespace GxMcp.Gateway
 
                         // Progressing SDK work is never a recovery target, whoever owns the
                         // child. Recycling here destroys the operation, not just the Worker.
-                        string sdkState = _sharedSupervision?["sdkState"]?.ToString();
+                        string? sdkState = _sharedSupervision?["sdkState"]?.ToString();
                         bool sdkProgressing = string.Equals(sdkState, "busy-progressing", StringComparison.Ordinal);
 
                         if (mayRecycle && ShouldStopForIdle() && !sdkProgressing)

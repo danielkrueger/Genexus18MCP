@@ -72,7 +72,7 @@ namespace GxMcp.Gateway.Tests
 
         private static JObject ToolNamed(string path, string name)
         {
-            JObject tool = JArray.Parse(File.ReadAllText(path))
+            JObject? tool = JArray.Parse(File.ReadAllText(path))
                 .OfType<JObject>()
                 .FirstOrDefault(t => (string?)t["name"] == name);
             Assert.True(tool != null, name + " is not in " + path);
@@ -81,18 +81,18 @@ namespace GxMcp.Gateway.Tests
 
         private static JObject Properties()
         {
-            JToken schema = ApplyPatternTool()["inputSchema"];
+            JToken? schema =ApplyPatternTool()["inputSchema"];
             Assert.True(schema is JObject, "genexus_apply_pattern has no inputSchema object");
-            JToken properties = ((JObject)schema!)["properties"];
+            JToken? properties =((JObject)schema!)["properties"];
             Assert.True(properties is JObject, "genexus_apply_pattern has no properties object");
             return (JObject)properties!;
         }
 
         private static string Description(string name)
         {
-            JToken property = Properties()[name];
+            JToken? property =Properties()[name];
             Assert.True(property != null, $"genexus_apply_pattern no longer declares a '{name}' parameter");
-            string description = (string?)property!["description"];
+            string? description = (string?)property!["description"];
             Assert.False(string.IsNullOrWhiteSpace(description), $"'{name}' has no description");
             return description!;
         }
@@ -180,7 +180,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void TheSchemaStillAdvertisesReapplyAsAParameter()
         {
-            JToken reapply = Properties()["reapply"];
+            JToken? reapply =Properties()["reapply"];
             Assert.True(reapply != null,
                 "reapply must stay in the schema: CommandDispatcher dispatches it, and removing "
                 + "it hides the WorkWithPlus route that is supported");

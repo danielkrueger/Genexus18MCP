@@ -1992,7 +1992,7 @@ namespace GxMcp.Gateway
                 : BuildIndexSuggestion(snap.Status, snap.TotalObjects);
         }
 
-        internal static JObject BuildIndexSuggestion(string status, int totalObjects)
+        internal static JObject? BuildIndexSuggestion(string status, int totalObjects)
         {
             string s = status ?? string.Empty;
             bool indexCold = string.Equals(s, "Cold", StringComparison.OrdinalIgnoreCase)

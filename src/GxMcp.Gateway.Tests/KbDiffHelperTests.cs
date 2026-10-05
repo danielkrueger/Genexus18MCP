@@ -63,8 +63,8 @@ namespace GxMcp.Gateway.Tests
             File.SetLastWriteTimeUtc(Path.Combine(b, "Objects", "WebPanel", "Home", "part.xml"), t);
 
             var diff = KbDiffHelper.Diff(a, b);
-            Assert.Equal("Success", (string)diff["status"]);
-            Assert.True((bool)diff["complete"]);
+            Assert.Equal("Success", (string?)diff["status"]);
+            Assert.True((bool)diff["complete"]!);
             Assert.Empty((JArray)diff["onlyInA"]!);
             Assert.Empty((JArray)diff["onlyInB"]!);
             Assert.Empty((JArray)diff["modified"]!);
@@ -128,7 +128,7 @@ namespace GxMcp.Gateway.Tests
             var diff = KbDiffHelper.Diff(a, b);
 
             Assert.False((bool)diff["complete"]!);
-            Assert.Equal("Incomplete", (string)diff["status"]);
+            Assert.Equal("Incomplete", (string?)diff["status"]);
             Assert.Equal("unavailable", (string)diff["inventoryA"]!["state"]!);
             Assert.Equal("unavailable", (string)diff["inventoryB"]!["state"]!);
             Assert.False(string.IsNullOrWhiteSpace((string)diff["inventoryA"]!["reason"]!));
@@ -163,7 +163,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("empty", (string)diff["inventoryA"]!["state"]!);
             Assert.Equal("empty", (string)diff["inventoryB"]!["state"]!);
             Assert.True((bool)diff["complete"]!);
-            Assert.Equal("Success", (string)diff["status"]);
+            Assert.Equal("Success", (string?)diff["status"]);
         }
 
         // ---- #354 reproduced case 2: equal metadata, different bytes ----
@@ -181,7 +181,7 @@ namespace GxMcp.Gateway.Tests
 
             var diff = KbDiffHelper.Diff(a, b);
 
-            Assert.Equal("Success", (string)diff["status"]);
+            Assert.Equal("Success", (string?)diff["status"]);
             var mod = (JArray)diff["modified"]!;
             Assert.Single(mod);
             Assert.Equal("Procedure:SyntheticOrder", (string)mod[0]!["key"]!);
@@ -312,7 +312,7 @@ namespace GxMcp.Gateway.Tests
             var diff = KbDiffHelper.Diff(a, b, KbDiffHelper.ContentMode, 2);
 
             Assert.False((bool)diff["complete"]!);
-            Assert.Equal("Incomplete", (string)diff["status"]);
+            Assert.Equal("Incomplete", (string?)diff["status"]);
             Assert.True((bool)diff["inventoryA"]!["truncated"]!);
             Assert.True((bool)diff["inventoryB"]!["truncated"]!);
         }

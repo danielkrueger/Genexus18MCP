@@ -22,9 +22,9 @@ namespace GxMcp.Gateway.Tests
                 return ("Prototype", "1.0");
             }, TimeSpan.FromSeconds(60));
 
-            string first = h.ActiveEnvironment;
-            string second = h.ActiveEnvironment;
-            string thirdVer = h.ActiveEnvironmentVersion;
+            string? first = h.ActiveEnvironment;
+            string? second = h.ActiveEnvironment;
+            string? thirdVer =h.ActiveEnvironmentVersion;
 
             Assert.Equal("Prototype", first);
             Assert.Equal("Prototype", second);
@@ -45,11 +45,11 @@ namespace GxMcp.Gateway.Tests
                 return ("Env" + fetchCount, "v" + fetchCount);
             }, TimeSpan.FromMilliseconds(50));
 
-            string first = h.ActiveEnvironment;
+            string? first = h.ActiveEnvironment;
             Assert.Equal("Env1", first);
 
             Thread.Sleep(120);
-            string second = h.ActiveEnvironment;
+            string? second = h.ActiveEnvironment;
             Assert.Equal("Env2", second);
             Assert.Equal(2, fetchCount);
         }
@@ -71,7 +71,7 @@ namespace GxMcp.Gateway.Tests
             h.Invalidate();
             Assert.False(h.IsEnvCacheFresh);
 
-            string after = h.ActiveEnvironment;
+            string? after =h.ActiveEnvironment;
             Assert.Equal("Env2", after);
             Assert.Equal(2, fetchCount);
         }

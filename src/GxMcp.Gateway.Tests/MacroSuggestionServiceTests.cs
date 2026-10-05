@@ -52,9 +52,9 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(candidates);
             Assert.NotEmpty(candidates);
             var first = candidates.OfType<JObject>().FirstOrDefault(c =>
-                ((JArray)c["steps"]).Count == 2);
+                ((JArray)c["steps"]!).Count == 2);
             Assert.NotNull(first);
-            Assert.Equal(3, (int)first["observedRepetitions"]);
+            Assert.Equal(3, (int)first["observedRepetitions"]!);
         }
 
         [Fact]
@@ -94,7 +94,7 @@ namespace GxMcp.Gateway.Tests
             foreach (var c in candidates.OfType<JObject>())
             {
                 bool hasMutating = false;
-                foreach (var s in (JArray)c["steps"])
+                foreach (var s in (JArray)c["steps"]!)
                 {
                     string tool = s["tool"]?.ToString() ?? "";
                     if (!IsReadOnlyTool(tool)) { hasMutating = true; break; }
@@ -127,21 +127,21 @@ namespace GxMcp.Gateway.Tests
             var svc = new MacroSuggestionService(t, MakeTempUserMacroDir());
             JObject result = svc.Suggest(60, 3);
 
-            var candidates = (JArray)result["candidateMacros"];
-            var twoStep = candidates.OfType<JObject>().First(c => ((JArray)c["steps"]).Count == 2);
-            var step0 = (JObject)((JArray)twoStep["steps"])[0];
-            var step1 = (JObject)((JArray)twoStep["steps"])[1];
+            var candidates = (JArray)result["candidateMacros"]!;
+            var twoStep = candidates.OfType<JObject>().First(c => ((JArray)c["steps"]!).Count == 2);
+            var step0 = (JObject)((JArray)twoStep["steps"]!)[0];
+            var step1 = (JObject)((JArray)twoStep["steps"]!)[1];
 
             // type is constant → literal
-            Assert.Equal("WebPanel", step0["args_template"]["type"]?.ToString());
+            Assert.Equal("WebPanel", step0["args_template"]!["type"]?.ToString());
             // name varies → parameterized
-            Assert.Equal("<arg:name>", step0["args_template"]["name"]?.ToString());
+            Assert.Equal("<arg:name>", step0["args_template"]!["name"]?.ToString());
             // pattern is constant
-            Assert.Equal("WorkWithPlus", step1["args_template"]["pattern"]?.ToString());
+            Assert.Equal("WorkWithPlus", step1["args_template"]!["pattern"]?.ToString());
             // name varies in step 2 too
-            Assert.Equal("<arg:name>", step1["args_template"]["name"]?.ToString());
+            Assert.Equal("<arg:name>", step1["args_template"]!["name"]?.ToString());
 
-            var varying = (JArray)twoStep["argsToParameterize"];
+            var varying = (JArray)twoStep["argsToParameterize"]!;
             Assert.Contains(varying.Select(v => v.ToString()), n => string.Equals(n, "name", StringComparison.OrdinalIgnoreCase));
         }
 
@@ -167,7 +167,7 @@ namespace GxMcp.Gateway.Tests
             JObject result = svc.Crystallize("create_and_apply_wwp", "Create a WebPanel + apply WWP.", steps);
             Assert.Equal("Success", result["status"]?.ToString());
 
-            string path = result["path"]?.ToString();
+            string? path = result["path"]?.ToString();
             Assert.NotNull(path);
             Assert.True(File.Exists(path));
 
@@ -176,7 +176,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("create_and_apply_wwp", parsed["name"]?.ToString());
             Assert.Equal("user-macro", parsed["source"]?.ToString());
             Assert.NotNull(parsed["crystallizedAt"]);
-            Assert.Equal(2, ((JArray)parsed["steps"]).Count);
+            Assert.Equal(2, ((JArray)parsed["steps"]!).Count);
         }
 
         [Fact]
@@ -201,7 +201,7 @@ namespace GxMcp.Gateway.Tests
             // doesn't surface it through Get — at least it shouldn't return an "error"
             // envelope when we run through Dispatch:list, where user macros are listed.
             JObject list = RecipeCatalog.Dispatch("list", null);
-            var recipes = (JArray)list["recipes"];
+            var recipes = (JArray)list["recipes"]!;
             bool found = recipes.OfType<JObject>().Any(r =>
                 string.Equals(r["name"]?.ToString(), uniqueName, StringComparison.OrdinalIgnoreCase));
             Assert.True(found, "Crystallized user macro was not discovered by RecipeCatalog.");

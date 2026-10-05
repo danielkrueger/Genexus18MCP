@@ -98,7 +98,7 @@ namespace GxMcp.Gateway
         private static int TryReconcileMutationRecoveryFromOperation(string operationId, JToken? payload)
         {
             if (_mutationRecovery == null || string.IsNullOrWhiteSpace(operationId) || !IsTerminalPersistedReread(payload)) return 0;
-            string trackedStatus = _operationTracker.BuildOperationStatus(operationId)["status"]?.ToString();
+            string? trackedStatus =_operationTracker.BuildOperationStatus(operationId)["status"]?.ToString();
             if (string.Equals(trackedStatus, "Cancelled", StringComparison.OrdinalIgnoreCase))
                 return 0;
             JObject envelope = payload as JObject ?? new JObject();
@@ -130,20 +130,20 @@ namespace GxMcp.Gateway
         {
             if (MutationRecoveryRegistry.IsKbLevelRecovery(requirement))
                 return true;
-            string observedTarget = evidence["target"]?.ToString()
+            string? observedTarget = evidence["target"]?.ToString()
                 ?? evidence["name"]?.ToString()
                 ?? operationArgs?["name"]?.ToString()
                 ?? operationArgs?["target"]?.ToString();
-            string observedGuid = evidence["guid"]?.ToString()
+            string? observedGuid = evidence["guid"]?.ToString()
                 ?? evidence["targetGuid"]?.ToString()
                 ?? operationArgs?["guid"]?.ToString()
                 ?? operationArgs?["objectGuid"]?.ToString();
-            string observedEntityKey = evidence["entityKey"]?.ToString()
+            string? observedEntityKey = evidence["entityKey"]?.ToString()
                 ?? operationArgs?["entityKey"]?.ToString();
-            string observedType = evidence["type"]?.ToString()
+            string? observedType = evidence["type"]?.ToString()
                 ?? operationArgs?["type"]?.ToString()
                 ?? operationArgs?["typeFilter"]?.ToString();
-            string observedPart = evidence["part"]?.ToString()
+            string? observedPart = evidence["part"]?.ToString()
                 ?? operationArgs?["part"]?.ToString();
 
             if (!string.IsNullOrWhiteSpace(requirement.TargetGuid)
@@ -165,7 +165,7 @@ namespace GxMcp.Gateway
             return true;
         }
 
-        internal static JObject BuildAsyncLifecycleCommand(string lifecycleAction, JObject args, string cancelToken)
+        internal static JObject BuildAsyncLifecycleCommand(string? lifecycleAction, JObject? args, string cancelToken)
         {
             string action = (lifecycleAction ?? string.Empty).Trim().ToLowerInvariant();
             string workerAction;
@@ -596,7 +596,7 @@ namespace GxMcp.Gateway
                         int waitSeconds = Math.Min(Math.Max(
                             requestedWait ?? (waitUntilDone ? McpRouter.MaxLongPollSeconds : 0),
                             0), McpRouter.MaxLongPollSeconds);
-                        string until = args?["until"]?.ToString();
+                        string? until = args?["until"]?.ToString();
                         if (string.IsNullOrWhiteSpace(until))
                             until = waitUntilDone ? "terminal" : "change";
                         JObject opPayload = string.Equals(lifecycleAction, "result", StringComparison.OrdinalIgnoreCase)
@@ -844,7 +844,7 @@ namespace GxMcp.Gateway
                             int waitSeconds = Math.Min(Math.Max(
                                 requestedWait ?? (waitUntilDone ? McpRouter.MaxLongPollSeconds : 0),
                                 0), McpRouter.MaxLongPollSeconds);
-                            string until = args?["until"]?.ToString();
+                            string? until = args?["until"]?.ToString();
                             if (string.IsNullOrWhiteSpace(until))
                                 until = waitUntilDone ? "terminal" : "change";
                             var clientProgressToken = (request["params"] as JObject)?["_meta"]?["progressToken"];

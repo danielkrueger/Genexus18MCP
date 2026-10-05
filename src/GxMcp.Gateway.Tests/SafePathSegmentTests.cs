@@ -30,9 +30,10 @@ namespace GxMcp.Gateway.Tests
         [InlineData(" ")]
         [InlineData("   ")]
         [InlineData(null)]
-        public void RejectsEmptyAndWhitespace(string value)
+        public void RejectsEmptyAndWhitespace(string? value)
         {
-            Assert.False(SafePathSegment.IsSafe(value));
+            // null is a deliberate input: IsSafe must reject it despite its non-nullable signature.
+            Assert.False(SafePathSegment.IsSafe(value!));
         }
 
         [Theory]

@@ -47,7 +47,7 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void A_Slow_Section_Is_Named_And_The_Fast_One_Is_Not()
+        public async System.Threading.Tasks.Task A_Slow_Section_Is_Named_And_The_Fast_One_Is_Not()
         {
             // The property the discarded bool used to hide: a section that missed the
             // budget has to be identifiable in the response, or its absence reads as
@@ -67,7 +67,7 @@ namespace GxMcp.Worker.Tests
 
             var unfinished = sections.Where(s => !s.Value.IsCompleted).Select(s => s.Key).ToList();
             gate.Set();
-            slow.Wait(TimeSpan.FromSeconds(5));
+            await slow;
 
             Assert.Equal(new[] { "callers" }, unfinished);
         }

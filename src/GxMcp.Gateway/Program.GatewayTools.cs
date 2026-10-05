@@ -127,7 +127,7 @@ namespace GxMcp.Gateway
                 string? telAction = args?["action"]?.ToString()?.ToLowerInvariant();
                 if (telAction == "executions")
                 {
-                    string targetName = args?["target"]?.ToString() ?? args?["name"]?.ToString();
+                    string? targetName = args?["target"]?.ToString() ?? args?["name"]?.ToString();
                     int lastN = args?["last"]?.ToObject<int?>() ?? 10;
                     JObject historyPayload = _operationTracker?.BuildExecutionHistory(targetName, lastN)
                         ?? new JObject { ["status"] = "Unwired", ["code"] = "TrackerUnavailable", ["runs"] = new JArray() };
@@ -135,8 +135,8 @@ namespace GxMcp.Gateway
                 }
                 if (telAction == "watch_event")
                 {
-                    string watchTarget = args?["target"]?.ToString() ?? args?["name"]?.ToString();
-                    string watchEvent = args?["event"]?.ToString();
+                    string? watchTarget = args?["target"]?.ToString() ?? args?["name"]?.ToString();
+                    string? watchEvent =args?["event"]?.ToString();
                     int watchLast = args?["last"]?.ToObject<int?>() ?? 10;
                     JObject watchPayload = _operationTracker?.BuildWatchEvent(watchTarget, watchEvent, watchLast)
                         ?? new JObject { ["status"] = "Unwired", ["code"] = "TrackerUnavailable", ["runs"] = new JArray() };
@@ -591,7 +591,7 @@ namespace GxMcp.Gateway
                                 SetSessionSelectedKb,
                                 TriggerIndexBootstrapOnce);
 
-                            if (string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase))
+                            if (string.Equals(payload["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase))
                             {
                                 isError = true;
                             }
@@ -836,7 +836,7 @@ namespace GxMcp.Gateway
                 try
                 {
                     string action = args?["action"]?.ToString()?.ToLowerInvariant() ?? "create";
-                    string name = args?["name"]?.ToString();
+                    string? name = args?["name"]?.ToString();
                     if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Missing 'name'.");
                     // Sanitize: alphanumeric + dash/underscore only.
                     if (!System.Text.RegularExpressions.Regex.IsMatch(name, "^[A-Za-z0-9_-]+$"))
@@ -865,12 +865,12 @@ namespace GxMcp.Gateway
                     }
                     else if (action == "create")
                     {
-                        string from = args?["from"]?.ToString();
+                        string? from = args?["from"]?.ToString();
                         if (string.IsNullOrWhiteSpace(from)) throw new ArgumentException("Missing 'from' (source KB alias or path).");
                         bool overwrite = args?["overwrite"]?.ToObject<bool?>() ?? false;
 
                         // Resolve `from` as alias against config, else treat as path.
-                        string sourcePath = null;
+                        string? sourcePath = null;
                         var fromKb = _activeConfig?.Environment?.KBs?.FirstOrDefault(
                             k => string.Equals(k.Alias, from, StringComparison.OrdinalIgnoreCase));
                         if (fromKb != null) sourcePath = fromKb.Path;
@@ -932,8 +932,8 @@ namespace GxMcp.Gateway
                 bool isError = false;
                 try
                 {
-                    string kbA = args?["kbA"]?.ToString();
-                    string kbB = args?["kbB"]?.ToString();
+                    string? kbA = args?["kbA"]?.ToString();
+                    string? kbB =args?["kbB"]?.ToString();
                     if (string.IsNullOrWhiteSpace(kbA) || string.IsNullOrWhiteSpace(kbB))
                         throw new ArgumentException("Both 'kbA' and 'kbB' are required (alias or path).");
                     string pathA = ResolveKbPath(kbA) ?? throw new ArgumentException($"'kbA'='{kbA}' not a declared alias and not an existing directory.");
@@ -969,9 +969,9 @@ namespace GxMcp.Gateway
                 bool isError = false;
                 try
                 {
-                    string from = args?["from"]?.ToString();
-                    string name = args?["name"]?.ToString();
-                    string type = args?["type"]?.ToString();
+                    string? from = args?["from"]?.ToString();
+                    string? name = args?["name"]?.ToString();
+                    string? type = args?["type"]?.ToString();
                     if (string.IsNullOrWhiteSpace(from)) throw new ArgumentException("Missing 'from' (source KB alias or path).");
                     if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Missing 'name' (object name to import).");
                     if (string.IsNullOrWhiteSpace(type)) throw new ArgumentException("Missing 'type' (object type, e.g. WebPanel, Procedure).");
@@ -980,8 +980,8 @@ namespace GxMcp.Gateway
                     // import isn't silently pointed at whichever KB happens to be first in
                     // the open-worker list; fall back to first-open / DefaultKb for
                     // back-compat when 'to' is omitted.
-                    string to = args?["to"]?.ToString();
-                    string targetPath = null;
+                    string? to = args?["to"]?.ToString();
+                    string? targetPath = null;
                     if (!string.IsNullOrWhiteSpace(to))
                     {
                         targetPath = ResolveKbPath(to) ?? throw new ArgumentException($"'to'='{to}' not a declared alias and not an existing directory.");

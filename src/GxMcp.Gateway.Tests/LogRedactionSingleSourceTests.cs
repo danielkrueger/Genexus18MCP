@@ -133,7 +133,7 @@ namespace GxMcp.Gateway.Tests
         {
             // This runs on the logging path: throwing here would replace the log
             // line with the failure to log it.
-            Assert.Equal(string.Empty, LogRedaction.Redact(null));
+            Assert.Equal(string.Empty, LogRedaction.Redact(null!));
             Assert.Equal(string.Empty, LogRedaction.Redact(string.Empty));
         }
 
@@ -148,15 +148,15 @@ namespace GxMcp.Gateway.Tests
         {
             // The two assemblies cannot share a type. They can still be asserted
             // equal - which is the check the five divergent copies never had.
-            string gwPattern = ExtractPattern(RepoSource.Read("src", "GxMcp.Gateway", "Helpers", "LogRedaction.cs"));
-            string wkPattern = ExtractPattern(RepoSource.Read("src", "GxMcp.Worker", "Helpers", "LogRedaction.cs"));
+            string? gwPattern = ExtractPattern(RepoSource.Read("src", "GxMcp.Gateway", "Helpers", "LogRedaction.cs"));
+            string? wkPattern =ExtractPattern(RepoSource.Read("src", "GxMcp.Worker", "Helpers", "LogRedaction.cs"));
 
             Assert.NotNull(gwPattern);
             Assert.NotNull(wkPattern);
             Assert.Equal(wkPattern, gwPattern);
         }
 
-        private static string ExtractPattern(string helperSource)
+        private static string? ExtractPattern(string helperSource)
         {
             const string marker = "internal const string Pattern =";
             int at = helperSource.IndexOf(marker, StringComparison.Ordinal);

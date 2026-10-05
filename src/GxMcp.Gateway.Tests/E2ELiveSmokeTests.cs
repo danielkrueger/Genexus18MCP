@@ -156,7 +156,7 @@ namespace GxMcp.Gateway.Tests
                 ["limit"] = 1
             });
             var listPayload = LiveGatewayHarness.ParseToolPayload(list);
-            string procName = listPayload?["results"]?[0]?["name"]?.ToString()
+            string? procName = listPayload?["results"]?[0]?["name"]?.ToString()
                            ?? listPayload?["items"]?[0]?["name"]?.ToString();
             Assert.False(string.IsNullOrEmpty(procName), "KB must contain at least one procedure");
 
@@ -205,7 +205,7 @@ namespace GxMcp.Gateway.Tests
                 ["typeFilter"] = "Procedure",
                 ["limit"] = 1
             });
-            string procName = LiveGatewayHarness.ParseToolPayload(list)?["results"]?[0]?["name"]?.ToString()
+            string? procName = LiveGatewayHarness.ParseToolPayload(list)?["results"]?[0]?["name"]?.ToString()
                            ?? LiveGatewayHarness.ParseToolPayload(list)?["items"]?[0]?["name"]?.ToString();
             Assert.False(string.IsNullOrEmpty(procName));
 
@@ -372,7 +372,7 @@ namespace GxMcp.Gateway.Tests
                 ["typeFilter"] = "Procedure",
                 ["limit"] = 1
             });
-            string proc = LiveGatewayHarness.ParseToolPayload(list)?["results"]?[0]?["name"]?.ToString()
+            string? proc = LiveGatewayHarness.ParseToolPayload(list)?["results"]?[0]?["name"]?.ToString()
                        ?? LiveGatewayHarness.ParseToolPayload(list)?["items"]?[0]?["name"]?.ToString();
             Assert.False(string.IsNullOrEmpty(proc));
 

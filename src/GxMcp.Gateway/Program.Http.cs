@@ -573,7 +573,7 @@ namespace GxMcp.Gateway
                 }
                 catch (Exception ex)
                 {
-                    string operationId = request.Headers["X-GXMCP-Operation-Id"].FirstOrDefault();
+                    string? operationId = request.Headers["X-GXMCP-Operation-Id"].FirstOrDefault();
                     if (string.IsNullOrWhiteSpace(operationId)) operationId = Guid.NewGuid().ToString("N");
                     Log($"{{\"event\":\"http_request_failed\",\"correlationId\":\"{LogValue(operationId)}\",\"operationId\":\"{LogValue(id)}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
                     return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32603, message = "Gateway request failed. See server logs for details.", data = new { operationId = operationId } } });
@@ -616,7 +616,7 @@ namespace GxMcp.Gateway
 
         internal static bool IsHttpTokenValid(HttpContext context, string expected)
         {
-            string presented = null;
+            string? presented = null;
             var auth = context.Request.Headers["Authorization"].FirstOrDefault();
             if (!string.IsNullOrEmpty(auth) && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
                 presented = auth.Substring("Bearer ".Length).Trim();
@@ -629,7 +629,7 @@ namespace GxMcp.Gateway
         {
             var serverConfig = config.Server ?? new ServerConfig();
             string bindAddress = string.IsNullOrWhiteSpace(serverConfig.BindAddress) ? "0.0.0.0" : serverConfig.BindAddress;
-            string httpToken = Environment.GetEnvironmentVariable("GXMCP_HTTP_TOKEN");
+            string? httpToken = Environment.GetEnvironmentVariable("GXMCP_HTTP_TOKEN");
             bool loopbackBind = IsLoopbackBind(serverConfig.BindAddress);
             if (string.IsNullOrEmpty(httpToken) && !loopbackBind)
                 Log($"[HTTP] WARNING: binding to non-loopback '{bindAddress}' with no GXMCP_HTTP_TOKEN — /mcp requests will be refused. Set GXMCP_HTTP_TOKEN or bind to 127.0.0.1.");

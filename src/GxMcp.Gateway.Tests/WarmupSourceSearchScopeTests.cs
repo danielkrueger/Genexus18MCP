@@ -62,7 +62,7 @@ namespace GxMcp.Gateway.Tests
 
             var known = Newtonsoft.Json.JsonConvert
                     .DeserializeObject<JArray>(System.IO.File.ReadAllText(
-                        GxMcp.TestSupport.RepoSource.PathOf("src", "GxMcp.Gateway", "tool_definitions.json")))
+                        GxMcp.TestSupport.RepoSource.PathOf("src", "GxMcp.Gateway", "tool_definitions.json")))!
                 .Select(t => (string)t["name"]!)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 

@@ -66,8 +66,8 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void Scope_Key_Handles_Missing_Identity_Without_Collapsing_Kbs()
         {
-            Assert.Equal(Key(null, null), Key("", ""));
-            Assert.Equal("(no-kb)|-", Key(null, null));
+            Assert.Equal(Key(null!, null), Key("", ""));
+            Assert.Equal("(no-kb)|-", Key(null!, null));
             // Two KBs must not collapse into one scope just because a generation is absent.
             Assert.NotEqual(Key("KbAlpha", null), Key("KbBeta", null));
         }

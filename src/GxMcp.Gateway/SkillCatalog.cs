@@ -15,10 +15,10 @@ namespace GxMcp.Gateway
     {
         public sealed class Entry
         {
-            public string Key { get; set; }
-            public string Title { get; set; }
-            public string Description { get; set; }
-            public string Body { get; set; }
+            public required string Key { get; set; }
+            public required string Title { get; set; }
+            public required string Description { get; set; }
+            public required string Body { get; set; }
         }
 
         public static readonly IReadOnlyList<Entry> All = new List<Entry>
@@ -307,7 +307,7 @@ Applicable to:
             },
         };
 
-        public static Entry FindByKey(string key)
+        public static Entry? FindByKey(string? key)
         {
             if (string.IsNullOrWhiteSpace(key)) return null;
             foreach (var e in All)

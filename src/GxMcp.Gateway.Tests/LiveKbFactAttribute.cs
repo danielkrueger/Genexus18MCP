@@ -17,7 +17,7 @@ namespace GxMcp.Gateway.Tests
             bool requiresTeamDevelopmentFixture = false,
             bool requiresDesignSystemFixture = false)
         {
-            string kb = Environment.GetEnvironmentVariable("GXMCP_TEST_KB");
+            string? kb = Environment.GetEnvironmentVariable("GXMCP_TEST_KB");
             if (string.IsNullOrEmpty(kb))
             {
                 Skip = "GXMCP_TEST_KB env var not set — set to a KB folder path to run live E2E tests.";
@@ -25,7 +25,7 @@ namespace GxMcp.Gateway.Tests
             }
             if (requiresWWP)
             {
-                string wwp = Environment.GetEnvironmentVariable("GXMCP_REQUIRE_WWP");
+                string? wwp = Environment.GetEnvironmentVariable("GXMCP_REQUIRE_WWP");
                 if (string.IsNullOrEmpty(wwp) || wwp == "0")
                 {
                     Skip = "GXMCP_REQUIRE_WWP not set — set to 1 to run WorkWithPlus-licensed E2E tests.";

@@ -169,8 +169,8 @@ namespace GxMcp.Worker.Tests
 
         private static bool Matches(XElement block, string name)
         {
-            return string.Equals((string?)block.Attribute("Name"), name, StringComparison.OrdinalIgnoreCase)
-                || string.Equals((string?)block.Attribute("ControlName"), name, StringComparison.OrdinalIgnoreCase);
+            return string.Equals((string)block.Attribute("Name"), name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals((string)block.Attribute("ControlName"), name, StringComparison.OrdinalIgnoreCase);
         }
 
     }

@@ -13,6 +13,8 @@
 
 ### Internal
 
+- Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
+
 ## v3.11.1 - 2026-10-05
 
 

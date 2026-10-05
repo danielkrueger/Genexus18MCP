@@ -120,7 +120,7 @@ namespace GxMcp.Gateway.Routers
                                     ?? (waitUntilDone ? McpRouter.MaxLongPollSeconds : 0);
                                 if (wait < 0) wait = 0;
                                 if (wait > McpRouter.MaxLongPollSeconds) wait = McpRouter.MaxLongPollSeconds;
-                                string until = args?["until"]?.ToString();
+                                string? until = args?["until"]?.ToString();
                                 if (string.IsNullOrWhiteSpace(until) && waitUntilDone)
                                     until = "terminal";
                                 return new {
@@ -185,7 +185,7 @@ namespace GxMcp.Gateway.Routers
                 // set_default) are handled directly in Program.cs.
                 case "genexus_kb":
                 {
-                    string kbAction = args?["action"]?.ToString();
+                    string? kbAction = args?["action"]?.ToString();
                     if (string.Equals(kbAction, "set_startup", System.StringComparison.OrdinalIgnoreCase))
                     {
                         return new

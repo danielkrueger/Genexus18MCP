@@ -23,7 +23,9 @@ namespace GxMcp.Gateway.Tests
                 }
             };
 
-            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            var routedCall = new ObjectRouter().ConvertToolCall("genexus_edit", args);
+            Assert.NotNull(routedCall);
+            var routed = JObject.FromObject(routedCall);
 
             Assert.Equal("Mutation", routed["module"]?.ToString());
             Assert.Equal("ChangeSet", routed["action"]?.ToString());

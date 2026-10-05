@@ -149,7 +149,7 @@ namespace GxMcp.Gateway.Tests
             }
 
             var block = tracker.BuildToolStatsBlock();
-            var edit = (JObject)((JObject)block["tools"])["genexus_edit"];
+            var edit = (JObject?)((JObject)block["tools"]!)["genexus_edit"];
             Assert.NotNull(edit);
 
             var tokensIn = edit["tokensIn"] as JObject;

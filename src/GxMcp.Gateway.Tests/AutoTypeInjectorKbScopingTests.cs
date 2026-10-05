@@ -22,8 +22,8 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void TryInject_TwoKbsWithSameName_ResolveToTheirOwnType_NoCrossContamination()
         {
-            AutoTypeInjector.PrimeIndex(KbA, new[] { ("Customer", "Transaction") });
-            AutoTypeInjector.PrimeIndex(KbB, new[] { ("Customer", "BusinessComponent") });
+            AutoTypeInjector.PrimeIndex(KbA, new (string, string?)[] { ("Customer", "Transaction") });
+            AutoTypeInjector.PrimeIndex(KbB, new (string, string?)[] { ("Customer", "BusinessComponent") });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
             var argsA = new JObject { ["name"] = "Customer" };
@@ -44,7 +44,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void TryInject_SingleKb_RegressionUnchanged()
         {
-            AutoTypeInjector.PrimeIndex(KbA, new[] { ("WPMain", "WebPanel") });
+            AutoTypeInjector.PrimeIndex(KbA, new (string, string?)[] { ("WPMain", "WebPanel") });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
             var args = new JObject { ["name"] = "WPMain" };
@@ -57,8 +57,8 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ClearAll_WithAlias_OnlyClearsThatKb()
         {
-            AutoTypeInjector.PrimeIndex(KbA, new[] { ("Customer", "Transaction") });
-            AutoTypeInjector.PrimeIndex(KbB, new[] { ("Customer", "BusinessComponent") });
+            AutoTypeInjector.PrimeIndex(KbA, new (string, string?)[] { ("Customer", "Transaction") });
+            AutoTypeInjector.PrimeIndex(KbB, new (string, string?)[] { ("Customer", "BusinessComponent") });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
             AutoTypeInjector.ClearAll(KbA);
@@ -76,8 +76,8 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void CompleteName_ScopedPerKb_NoCrossContamination()
         {
-            AutoTypeInjector.PrimeIndex(KbA, new[] { ("CustomerOrder", "Transaction") });
-            AutoTypeInjector.PrimeIndex(KbB, new[] { ("CustomerInvoice", "BusinessComponent") });
+            AutoTypeInjector.PrimeIndex(KbA, new (string, string?)[] { ("CustomerOrder", "Transaction") });
+            AutoTypeInjector.PrimeIndex(KbB, new (string, string?)[] { ("CustomerInvoice", "BusinessComponent") });
 
             var matchesA = AutoTypeInjector.CompleteName(KbA, "Customer");
             var matchesB = AutoTypeInjector.CompleteName(KbB, "Customer");

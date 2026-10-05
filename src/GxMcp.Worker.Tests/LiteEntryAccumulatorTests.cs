@@ -96,7 +96,7 @@ namespace GxMcp.Worker.Tests
             accumulator.Upsert(Entry("AABBCCDD-0000-0000-0000-000000000000", "First"));
             accumulator.Upsert(Entry("aabbccdd-0000-0000-0000-000000000000", "Second"));
 
-            Assert.Equal(1, accumulator.Entries.Count);
+            Assert.Single(accumulator.Entries);
         }
 
         [Fact]
@@ -172,7 +172,7 @@ namespace GxMcp.Worker.Tests
             var accumulator = new LiteEntryAccumulator();
             for (int i = 0; i < 5000; i++) accumulator.Upsert(Entry(Guid(7), "Rev" + i));
 
-            Assert.Equal(1, accumulator.Entries.Count);
+            Assert.Single(accumulator.Entries);
             Assert.Equal("Rev4999", accumulator.Entries[0].Name);
             Assert.True(accumulator.Comparisons <= 5000 + 16, "replacement must not rescan the list");
         }

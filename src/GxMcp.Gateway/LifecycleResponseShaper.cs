@@ -109,7 +109,8 @@ namespace GxMcp.Gateway
             {
                 var sample = g.Take(WarningSampleCap)
                     .Select(w => w is JObject jo ? (jo["location"]?.ToString() ?? jo.ToString(Newtonsoft.Json.Formatting.None)) : w?.ToString())
-                    .Where(s => !string.IsNullOrEmpty(s))
+                    .OfType<string>()
+                    .Where(s => s.Length > 0)
                     .ToArray();
                 dedupedWarnings.Add(new JObject
                 {
@@ -313,7 +314,7 @@ namespace GxMcp.Gateway
                             ?? 0;
             int? exitCode = buildPayload["ExitCode"]?.ToObject<int?>()
                             ?? buildPayload["exitCode"]?.ToObject<int?>();
-            string status = (buildPayload["status"] ?? buildPayload["Status"])?.ToString();
+            string? status = (buildPayload["status"] ?? buildPayload["Status"])?.ToString();
             bool partial = buildPayload["partial_success"]?.ToObject<bool?>()
                            ?? buildPayload["PartialSuccess"]?.ToObject<bool?>()
                            ?? false;
@@ -355,7 +356,7 @@ namespace GxMcp.Gateway
             return BuildOutcome.Error;
         }
 
-        public static bool ShouldCompact(JObject toolArgs)
+        public static bool ShouldCompact(JObject? toolArgs)
         {
             if (toolArgs == null) return true;
             var v = toolArgs["compact"];

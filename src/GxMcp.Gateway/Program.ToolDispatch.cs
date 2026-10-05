@@ -219,7 +219,7 @@ namespace GxMcp.Gateway
             // so side-effectful action parameters cannot be cached accidentally.
             // Skip caching for live-progress lifecycle reads (status/result/cancel) and logs —
             // these must always reflect current worker state, not a stale snapshot.
-            string lcAction = tArgs?["action"]?.ToString()?.ToLowerInvariant();
+            string? lcAction = tArgs?["action"]?.ToString()?.ToLowerInvariant();
             // Live diagnostics and progress reads must always reflect current state.
             bool isLiveTool = IsLiveToolForCache(tName, lcAction);
             var recoveryReads = new List<(string Target, string Part, RecoveryRequirement? Observed)>();
@@ -239,8 +239,8 @@ namespace GxMcp.Gateway
                 _mutationRecovery.RefreshIfChanged();
                 bool ReadCoversPart(string part)
                 {
-                    if (tArgs?["part"] != null && tArgs["part"].Type != JTokenType.Null)
-                        return string.Equals(tArgs["part"]?.ToString(), part, StringComparison.OrdinalIgnoreCase);
+                    if (tArgs?["part"] is { } partToken && partToken.Type != JTokenType.Null)
+                        return string.Equals(partToken.ToString(), part, StringComparison.OrdinalIgnoreCase);
                     if (tArgs?["parts"] is JArray requestedParts)
                         return requestedParts.OfType<JToken>().Any(item =>
                             string.Equals(item.ToString(), part, StringComparison.OrdinalIgnoreCase));
@@ -802,9 +802,9 @@ namespace GxMcp.Gateway
                 // by BuildToolResultContent inside SendWorkerCommandAsync's sync onSuccess
                 // lambda (after truncation/normalization) and no parsed payload survives;
                 // we must parse to read patternHost AND to fold the validation block back in.
-                JObject applyPayload = null;
+                JObject? applyPayload = null;
                 try { applyPayload = JObject.Parse(applyText); } catch { }
-                string hostName = applyPayload?["patternHost"]?.ToString();
+                string? hostName =applyPayload?["patternHost"]?.ToString();
 
                 var vBlock = new JObject { ["target"] = hostName };
                 if (string.IsNullOrWhiteSpace(hostName))
@@ -834,15 +834,15 @@ namespace GxMcp.Gateway
                         toolName: "genexus_apply_pattern.validate.start",
                         toolArgs: null, trackOperation: false);
 
-                    string taskId = null;
-                    JObject startInner = startEnv?["result"] as JObject;
+                    string? taskId = null;
+                    JObject? startInner = startEnv?["result"] as JObject;
                     if (startInner == null && startEnv?["result"] is JValue sjv && sjv.Type == JTokenType.String)
                     {
                         try { startInner = JObject.Parse(sjv.ToString()); } catch { }
                     }
                     taskId = startInner?["TaskId"]?.ToString() ?? startInner?["taskId"]?.ToString();
 
-                    JObject terminal = null;
+                    JObject? terminal = null;
                     if (!string.IsNullOrEmpty(taskId))
                     {
                         // Poll up to 180s. Adaptive interval: most validation
@@ -864,12 +864,12 @@ namespace GxMcp.Gateway
                                 (_, cid) => new JObject { ["__timeout"] = true, ["correlationId"] = cid },
                                 toolName: "genexus_apply_pattern.validate.poll",
                                 toolArgs: null, trackOperation: false);
-                            JObject sObj = statusEnv?["result"] as JObject;
+                            JObject? sObj = statusEnv?["result"] as JObject;
                             if (sObj == null && statusEnv?["result"] is JValue pjv && pjv.Type == JTokenType.String)
                             {
                                 try { sObj = JObject.Parse(pjv.ToString()); } catch { }
                             }
-                            string sStatus = sObj?["Status"]?.ToString() ?? sObj?["status"]?.ToString();
+                            string? sStatus = sObj?["Status"]?.ToString() ?? sObj?["status"]?.ToString();
                             if (!string.IsNullOrEmpty(sStatus) && !string.Equals(sStatus, "Running", StringComparison.OrdinalIgnoreCase))
                             {
                                 terminal = sObj;
@@ -974,7 +974,7 @@ namespace GxMcp.Gateway
 
             if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
             {
-                string action = tArgs?["action"]?.ToString()?.ToLowerInvariant();
+                string? action = tArgs?["action"]?.ToString()?.ToLowerInvariant();
                 JObject payload;
                 bool isErr;
 
@@ -984,12 +984,12 @@ namespace GxMcp.Gateway
                     int minReps = tArgs?["minRepetitions"]?.ToObject<int?>() ?? 3;
                     var svc = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
                     payload = svc.Suggest(windowMinutes, minReps);
-                    isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                    isErr = string.Equals(payload["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
                 }
                 else if (string.Equals(action, "crystallize", StringComparison.OrdinalIgnoreCase))
                 {
-                    string macroName = tArgs?["macroName"]?.ToString();
-                    string description = tArgs?["description"]?.ToString();
+                    string? macroName = tArgs?["macroName"]?.ToString();
+                    string? description =tArgs?["description"]?.ToString();
                     var steps = tArgs?["steps"] as JArray;
 
                     // If steps were not supplied, try to re-derive from current history
@@ -1002,7 +1002,7 @@ namespace GxMcp.Gateway
                         {
                             foreach (var c in arr)
                             {
-                                if (string.Equals(c?["proposedName"]?.ToString(), macroName, StringComparison.OrdinalIgnoreCase))
+                                if (string.Equals(c["proposedName"]?.ToString(), macroName, StringComparison.OrdinalIgnoreCase))
                                 {
                                     steps = c["steps"] as JArray;
                                     if (string.IsNullOrWhiteSpace(description))
@@ -1015,13 +1015,13 @@ namespace GxMcp.Gateway
 
                     var svc2 = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
                     payload = svc2.Crystallize(macroName, description, steps);
-                    isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                    isErr = string.Equals(payload["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
                 }
                 else
                 {
                     // Default: legacy behavior. action=list/describe via RecipeCatalog.Get.
                     // If action is provided and is list/describe, route via Dispatch.
-                    string recipeName = tArgs?["name"]?.ToString();
+                    string? recipeName = tArgs?["name"]?.ToString();
                     if (string.Equals(action, "list", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(action, "describe", StringComparison.OrdinalIgnoreCase))
                     {
@@ -1040,7 +1040,7 @@ namespace GxMcp.Gateway
                     {
                         payload = RecipeCatalog.Get(recipeName);
                     }
-                    isErr = payload?["error"] != null || string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                    isErr = payload["error"] != null || string.Equals(payload["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
                 }
 
                 return BuildToolResultContent(payload, isErr, tName, tArgs);
@@ -1366,7 +1366,7 @@ namespace GxMcp.Gateway
                 // in an error envelope. Fix routes the inner BuildTaskStatus
                 // through ClassifyBuildOutcome so 0/0/exit=0 = success and
                 // partial_success surfaces as a warning marker, not an error.
-                string terminalStatus = pollResult["status"]?.ToString();
+                string? terminalStatus = pollResult["status"]?.ToString();
                 bool stillRunning = string.Equals(terminalStatus, "running", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(terminalStatus, "queued", StringComparison.OrdinalIgnoreCase);
                 bool isErr;
@@ -1464,7 +1464,7 @@ namespace GxMcp.Gateway
             Log($"[AsyncEdit] Dispatching job={editJob.Id} tool={tName} estimated={estEdit}s");
             // v2.6.2 (Item B): inject cancelToken=jobId so the worker's
             // blanket-register at dispatch entry makes lifecycle cancel resolvable.
-            if (workerCmd?["params"] is JObject capturedParams)
+            if (workerCmd["params"] is JObject capturedParams)
                 capturedParams["cancelToken"] = editJob.Id;
             var capturedCmd = workerCmd;
             var capturedName = tName;

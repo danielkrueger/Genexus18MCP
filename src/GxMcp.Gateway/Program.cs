@@ -40,7 +40,11 @@ namespace GxMcp.Gateway
         // depend on which of the two static fields is assigned first.
         private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(
             new StopwatchMonotonicClock(),
-            token => _sessionKbContexts.IsLeaseTokenReferenced(token));
+            IsSessionLeaseTokenReferenced);
+        // A method (not a lambda over the field) so the nullable analysis does not treat
+        // _sessionKbContexts as unassigned while this initializer is still running.
+        private static bool IsSessionLeaseTokenReferenced(string token)
+            => _sessionKbContexts.IsLeaseTokenReferenced(token);
         // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
         // otherwise the worker for the DefaultKb (acquiring it lazily).
         private static async Task<AcquiredWorker> GetActiveWorkerAsync()

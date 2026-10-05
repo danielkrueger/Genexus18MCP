@@ -142,7 +142,7 @@ namespace GxMcp.Gateway.Routers
                     // Item 45: mode=diagnose routes to read-only Diagnose action; default → Apply.
                     // Item 21 (friction 2026-05-22): dryRun=true is an alias for mode=diagnose
                     // — both return the same read-only findings without mutating the KB.
-                    string apPatMode = args?["mode"]?.ToString();
+                    string? apPatMode =args?["mode"]?.ToString();
                     bool isDiagnose = string.Equals(apPatMode, "diagnose", System.StringComparison.OrdinalIgnoreCase);
                     bool isActions = string.Equals(apPatMode, "actions", System.StringComparison.OrdinalIgnoreCase);
                     bool isDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
@@ -156,7 +156,7 @@ namespace GxMcp.Gateway.Routers
                 }
 
                 case "genexus_sdk_probe":
-                    string sdkProbeMode = args?["mode"]?.ToString();
+                    string? sdkProbeMode =args?["mode"]?.ToString();
                     return new
                     {
                         module = "SdkProbe",
@@ -192,7 +192,7 @@ namespace GxMcp.Gateway.Routers
                 // Replaces genexus_db_drift, _db_optimize, _sql, _generate_sample_data, _types, _translations.
                 case "genexus_edit_form":
                 {
-                    string editAction = args?["action"]?.ToString();
+                    string? editAction =args?["action"]?.ToString();
                     string normalised = string.IsNullOrEmpty(editAction)
                         ? string.Empty
                         : editAction.Trim();

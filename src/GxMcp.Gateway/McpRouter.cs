@@ -173,7 +173,7 @@ namespace GxMcp.Gateway
                 var routerByTool = new Dictionary<string, IMcpModuleRouter>(StringComparer.OrdinalIgnoreCase);
                 foreach (var def in _toolDefinitions.OfType<JObject>())
                 {
-                    string toolName = def["name"]?.ToString();
+                    string? toolName = def["name"]?.ToString();
                     if (string.IsNullOrEmpty(toolName)) continue;
                     int hits = 0;
                     var claimers = new List<string>();
@@ -184,7 +184,7 @@ namespace GxMcp.Gateway
                         {
                             // empty JObject probe — safer than null; routers that gate on
                             // required args will return null without throwing.
-                            object result = router.ConvertToolCall(toolName, new JObject());
+                            object? result = router.ConvertToolCall(toolName, new JObject());
                             if (result != null)
                             {
                                 hits++;
@@ -550,7 +550,7 @@ namespace GxMcp.Gateway
                     .OfType<JObject>()
                     .FirstOrDefault(item => string.Equals(item["name"]?.ToString(), toolName, StringComparison.OrdinalIgnoreCase));
                 values = tool?["inputSchema"]?["properties"]?["action"]?["enum"] is JArray actions
-                    ? actions.Values<string>().Where(value => !string.IsNullOrWhiteSpace(value))
+                    ? actions.Values<string>().OfType<string>().Where(value => !string.IsNullOrWhiteSpace(value))
                     : refName == "genexus_asset"
                         ? new[] { "find", "read", "write" }
                         : Enumerable.Empty<string>();
@@ -1774,7 +1774,7 @@ namespace GxMcp.Gateway
             var content = toolResult["content"] as JArray;
             var first = content?[0] as JObject;
             var textToken = first?["text"];
-            if (textToken != null)
+            if (first != null && textToken != null)
             {
                 JObject? inner;
                 try { inner = JObject.Parse(textToken.ToString()); }
@@ -1818,7 +1818,7 @@ namespace GxMcp.Gateway
                 var content = toolResult["content"] as JArray;
                 var first = content?[0] as JObject;
                 var textToken = first?["text"];
-                if (textToken == null) return;
+                if (first == null || textToken == null) return;
 
                 string textStr = textToken.ToString();
 
@@ -1882,7 +1882,7 @@ namespace GxMcp.Gateway
         // but JobRegistry keys are the raw GUID. Without stripping here, Cancel falls
         // through to the OperationTracker path and returns NotFound even when the job
         // is registered.
-        private static string StripOpPrefix(string s)
+        private static string? StripOpPrefix(string? s)
         {
             if (s == null) return null;
             return s.StartsWith("op:", StringComparison.OrdinalIgnoreCase) ? s.Substring(3) : s;
@@ -1901,19 +1901,19 @@ namespace GxMcp.Gateway
         // envelope and the old `?? error["error"]?.ToString()` fallback serialized the
         // entire sub-object — whose first line is "{" — producing the {"message":"{"}
         // false error that masked every validation diagnostic (issue #24).
-        private static JToken ResolveErrorField(JObject error, string key)
+        private static JToken? ResolveErrorField(JObject? error, string key)
         {
             if (error == null) return null;
             if (error["error"] is JObject inner && inner[key] != null) return inner[key];
             return error[key];
         }
 
-        private static string ResolveErrorMessage(JObject error)
+        private static string ResolveErrorMessage(JObject? error)
         {
-            string msg = ResolveErrorField(error, "message")?.ToString();
+            string? msg = ResolveErrorField(error, "message")?.ToString();
             // Last-resort legacy shape: `error` is a bare string, not a sub-object.
-            if (string.IsNullOrEmpty(msg) && error?["error"]?.Type == JTokenType.String)
-                msg = error["error"].ToString();
+            if (string.IsNullOrEmpty(msg) && error?["error"] is { Type: JTokenType.String } legacyError)
+                msg = legacyError.ToString();
             return string.IsNullOrEmpty(msg) ? "Unknown error" : msg;
         }
 
@@ -2015,7 +2015,7 @@ namespace GxMcp.Gateway
                     "stateChangedSincePlan", "outsidePlanChangeDetected", "sdkCache", "warnings", "stage", "verificationScope", "retryable", "reconciliationRequired",
                     "persisted", "persistedStateKnown", "verifiedByReadback", "implicitLifecycleOperations" })
                 {
-                    JToken value = ResolveErrorField(error, key);
+                    JToken? value = ResolveErrorField(error, key);
                     if (value != null) trimmed[key] = value;
                 }
                 if (ResolveErrorField(error, "diagnostic") is JObject diagnostic)
@@ -2026,7 +2026,7 @@ namespace GxMcp.Gateway
                     trimmed["diagnostic"] = safeDiagnostic;
                 }
             }
-            string status = error["status"]?.ToString();
+            string? status = error["status"]?.ToString();
             if (!string.IsNullOrEmpty(status) &&
                 !string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase))
             {
@@ -2036,7 +2036,7 @@ namespace GxMcp.Gateway
             // hint on every error envelope. Pre-existing suggested_next_step
             // (e.g. from the worker's write_not_persisted path) is preserved;
             // otherwise we synthesize one from the error code / message text.
-            JToken existing = error["suggested_next_step"] ?? AttachSuggestedNextStep(error);
+            JToken? existing = error["suggested_next_step"] ?? AttachSuggestedNextStep(error);
             if (existing != null) trimmed["suggested_next_step"] = existing;
             return trimmed;
         }
@@ -2047,10 +2047,10 @@ namespace GxMcp.Gateway
         /// I/O. Returns null when the error doesn't match any registered
         /// recovery shape (TrimErrorEnvelope then falls back to message+hint).
         /// </summary>
-        public static JObject AttachSuggestedNextStep(JObject error)
+        public static JObject? AttachSuggestedNextStep(JObject? error)
         {
             if (error == null) return null;
-            string code = ResolveErrorField(error, "code")?.ToString() ?? error["status"]?.ToString();
+            string? code =ResolveErrorField(error, "code")?.ToString() ?? error["status"]?.ToString();
             string msg = ResolveErrorMessage(error);
             if (string.Equals(msg, "Unknown error", StringComparison.Ordinal)) msg = "";
 

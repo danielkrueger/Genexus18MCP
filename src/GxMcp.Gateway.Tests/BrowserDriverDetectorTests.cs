@@ -10,7 +10,7 @@ namespace GxMcp.Gateway.Tests
         {
             private readonly Dictionary<string, string> _map;
             public FakeProbe(Dictionary<string, string> map) { _map = map; }
-            public string Which(string command) =>
+            public string? Which(string command) =>
                 _map.TryGetValue(command, out var v) ? v : null;
             public bool FileExists(string path) => !string.IsNullOrEmpty(path);
         }

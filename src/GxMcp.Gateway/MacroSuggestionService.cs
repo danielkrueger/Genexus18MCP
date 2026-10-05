@@ -100,7 +100,7 @@ namespace GxMcp.Gateway
         }
 
         // --- crystallize ---
-        public JObject Crystallize(string macroName, string description, JArray steps)
+        public JObject Crystallize(string? macroName, string? description, JArray? steps)
         {
             if (string.IsNullOrWhiteSpace(macroName))
                 return ErrorEnvelope("macroName is required.");
@@ -153,7 +153,7 @@ namespace GxMcp.Gateway
 
         // --- helpers ---
 
-        private static JObject ErrorEnvelope(string message, string operationId = null)
+        private static JObject ErrorEnvelope(string message, string? operationId = null)
         {
             var result = new JObject
             {
@@ -209,7 +209,7 @@ namespace GxMcp.Gateway
             int k = occurrences[0].Count;
             var stepTemplates = new JArray();
             var allVaryingArgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string firstToolDiscriminator = null;
+            string? firstToolDiscriminator = null;
 
             for (int step = 0; step < k; step++)
             {
@@ -222,10 +222,10 @@ namespace GxMcp.Gateway
                 {
                     // Collect all observed values for this (step, arg).
                     var values = new HashSet<string>(StringComparer.Ordinal);
-                    JToken firstToken = null;
+                    JToken? firstToken = null;
                     foreach (var occ in occurrences)
                     {
-                        JToken val = occ[step].ToolArguments?[argKey];
+                        JToken? val = occ[step].ToolArguments?[argKey];
                         firstToken ??= val;
                         values.Add(val?.ToString(Newtonsoft.Json.Formatting.None) ?? "");
                     }
@@ -268,7 +268,7 @@ namespace GxMcp.Gateway
             };
         }
 
-        private static string BuildProposedName(List<OperationTracker.OperationSnapshot> sample, string discriminator)
+        private static string BuildProposedName(List<OperationTracker.OperationSnapshot> sample, string? discriminator)
         {
             // Strip "genexus_" prefix from each tool, join with "_and_".
             var verbs = sample.Select(s =>

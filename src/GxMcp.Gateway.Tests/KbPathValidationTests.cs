@@ -76,7 +76,7 @@ namespace GxMcp.Gateway.Tests
         {
             Assert.False(Configuration.IsPlausibleKbPath(Path.Combine(Path.GetTempPath(), "gxmcp-does-not-exist-" + Guid.NewGuid().ToString("N"))));
             Assert.False(Configuration.IsPlausibleKbPath(""));
-            Assert.False(Configuration.IsPlausibleKbPath(null));
+            Assert.False(Configuration.IsPlausibleKbPath(null!));
         }
     }
 }

@@ -42,7 +42,7 @@ namespace GxMcp.Gateway.Tests
         {
             var path = FindUp("src", "GxMcp.Gateway.Tests", "Fixtures", "Contract", "Discovery", "tools-list.response.json");
             var obj = JObject.Parse(File.ReadAllText(path));
-            var tools = (JArray)obj["tools"];
+            var tools = (JArray?)obj["tools"];
             Assert.NotNull(tools);
             return tools.Select(t => (string?)t["name"]).Where(n => !string.IsNullOrEmpty(n)).Select(n => n!).ToArray();
         }

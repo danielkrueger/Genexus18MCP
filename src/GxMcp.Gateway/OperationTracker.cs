@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -85,7 +86,7 @@ namespace GxMcp.Gateway
             }
         }
 
-        internal bool TryGetOperationIdForRequest(string requestId, out string operationId)
+        internal bool TryGetOperationIdForRequest(string requestId, [NotNullWhen(true)] out string? operationId)
         {
             operationId = null;
             return !string.IsNullOrWhiteSpace(requestId)
@@ -652,7 +653,7 @@ namespace GxMcp.Gateway
         // Item 36: ring-buffer view of recent invocations filtered by target object name.
         // Reads ToolArguments.name/target from each OperationRecord; clamps `last` to 50.
         // Returns an envelope: { runs: [{atUtc, tool, durationMs, params, outcome}] }.
-        public JObject BuildExecutionHistory(string targetName, int last)
+        public JObject BuildExecutionHistory(string? targetName, int last)
         {
             if (last <= 0) last = 10;
             if (last > 50) last = 50;
@@ -700,7 +701,7 @@ namespace GxMcp.Gateway
         // genexus_run_object / genexus_lifecycle) AND the payload (args + response)
         // mentions <eventName>. Returns the practical proxy promised by tool docs —
         // NOT a real source-level breakpoint (that needs generator changes).
-        public JObject BuildWatchEvent(string targetName, string eventName, int last)
+        public JObject BuildWatchEvent(string? targetName, string? eventName, int last)
         {
             if (last <= 0) last = 10;
             if (last > 50) last = 50;

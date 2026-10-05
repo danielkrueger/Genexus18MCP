@@ -178,7 +178,7 @@ namespace GxMcp.Gateway
         {
             public Dictionary<string, ObjEntry> Objects { get; } = new Dictionary<string, ObjEntry>(StringComparer.OrdinalIgnoreCase);
             public string State { get; set; } = "complete";
-            public string Reason { get; set; }
+            public string? Reason { get; set; }
             public JArray UnreadableObjects { get; } = new JArray();
             public bool Truncated { get; set; }
 
@@ -278,7 +278,7 @@ namespace GxMcp.Gateway
                     var parts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     DateTime maxMtime = DateTime.MinValue;
                     bool partFailed = false;
-                    string partReason = null;
+                    string? partReason = null;
 
                     FileInfo[] files;
                     try { files = objDir.GetFiles("*", SearchOption.TopDirectoryOnly); }
@@ -357,7 +357,7 @@ namespace GxMcp.Gateway
                 sha.TransformBlock(hashBytes, 0, hashBytes.Length, null, 0);
             }
             sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-            return ToHex(sha.Hash);
+            return ToHex(sha.Hash ?? throw new InvalidOperationException("SHA256 produced no hash."));
         }
 
         private static string HashFile(FileInfo file)
@@ -369,7 +369,7 @@ namespace GxMcp.Gateway
             while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
                 sha.TransformBlock(buffer, 0, read, null, 0);
             sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-            return ToHex(sha.Hash);
+            return ToHex(sha.Hash ?? throw new InvalidOperationException("SHA256 produced no hash."));
         }
 
         private static string ToHex(byte[] bytes)

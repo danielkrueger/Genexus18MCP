@@ -90,7 +90,7 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void AnEmptyOrNullListPagesCleanly()
         {
-            foreach (IList<string>? source in new IList<string>?[] { null, new List<string>() })
+            foreach (IList<string> source in new IList<string>[] { null, new List<string>() })
             {
                 var items = BatchService.BuildResultPayload(source!, 1, 10);
                 var warnings = BatchService.BuildStatusPayload(source!, 1, 10);

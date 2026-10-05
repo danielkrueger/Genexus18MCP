@@ -257,9 +257,9 @@ namespace GxMcp.Gateway.Tests
             var mi = typeof(Program).GetMethod("IsIndexUsableForReads",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
             Assert.NotNull(mi);
-            Assert.True((bool)mi!.Invoke(null, new object[] { MakeIndexStateSnapshot("Ready", 0) }));
-            Assert.True((bool)mi.Invoke(null, new object[] { MakeIndexStateSnapshot("LiteReady", 0) }));
-            Assert.True((bool)mi.Invoke(null, new object[] { MakeIndexStateSnapshot("Enriching", 0) }));
+            Assert.True((bool)mi!.Invoke(null, new object[] { MakeIndexStateSnapshot("Ready", 0) })!);
+            Assert.True((bool)mi.Invoke(null, new object[] { MakeIndexStateSnapshot("LiteReady", 0) })!);
+            Assert.True((bool)mi.Invoke(null, new object[] { MakeIndexStateSnapshot("Enriching", 0) })!);
         }
 
         [Fact]
@@ -268,9 +268,9 @@ namespace GxMcp.Gateway.Tests
             var mi = typeof(Program).GetMethod("IsIndexUsableForReads",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
             Assert.NotNull(mi);
-            Assert.False((bool)mi!.Invoke(null, new object[] { MakeIndexStateSnapshot("Cold", 0) }));
-            Assert.False((bool)mi.Invoke(null, new object[] { MakeIndexStateSnapshot("Reindexing", 0) }));
-            Assert.False((bool)mi.Invoke(null, new object[] { null }));
+            Assert.False((bool)mi!.Invoke(null, new object[] { MakeIndexStateSnapshot("Cold", 0) })!);
+            Assert.False((bool)mi.Invoke(null, new object[] { MakeIndexStateSnapshot("Reindexing", 0) })!);
+            Assert.False((bool)mi.Invoke(null, new object?[] { null })!);
         }
 
         // whoami must stop nudging `lifecycle action=index force=true` on a BUILT-empty
@@ -324,7 +324,7 @@ namespace GxMcp.Gateway.Tests
         {
             Assert.Null(Program.BuildIndexSuggestion("Ready", 536));
             Assert.Null(Program.BuildIndexSuggestion("LiteReady", 42));
-            Assert.Null(Program.BuildIndexSuggestion(null, 536));
+            Assert.Null(Program.BuildIndexSuggestion(null!, 536));
         }
 
         private static object MakeIndexStateSnapshot(string status, int totalObjects)
@@ -333,6 +333,7 @@ namespace GxMcp.Gateway.Tests
                 System.Reflection.BindingFlags.NonPublic);
             Assert.NotNull(snapType);
             var snap = System.Activator.CreateInstance(snapType!);
+            Assert.NotNull(snap);
             snapType!.GetField("Status")!.SetValue(snap, status);
             snapType.GetField("TotalObjects")!.SetValue(snap, totalObjects);
             return snap;

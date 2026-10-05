@@ -25,7 +25,7 @@ namespace GxMcp.Gateway
 
         // Crystallized user macros: discovered from <configRoot>/recipes/user-macros/*.json.
         // Built-in recipes win on name collision. Set via ConfigureUserMacroDirectory + Refresh*.
-        private static string _userMacroDirectory;
+        private static string? _userMacroDirectory;
         private static readonly Dictionary<string, RecipeMeta> _userMacros
             = new Dictionary<string, RecipeMeta>(StringComparer.OrdinalIgnoreCase);
         private static readonly object _userMacroLock = new object();
@@ -44,7 +44,7 @@ namespace GxMcp.Gateway
         // without a gateway restart. Built-ins always win on key collision.
         public static void RefreshUserMacros()
         {
-            string dir;
+            string? dir;
             lock (_userMacroLock) { dir = _userMacroDirectory; }
             if (string.IsNullOrEmpty(dir)) return;
 
@@ -101,14 +101,14 @@ namespace GxMcp.Gateway
             }
         }
 
-        public static JObject Get(string name)
+        public static JObject Get(string? name)
         {
             if (string.IsNullOrWhiteSpace(name))
                 return Error("Recipe name is required.", "Pass name='list' to enumerate recipes.");
 
             string raw = name.Trim();
             string keyPart = raw;
-            string requestedVersion = null;
+            string? requestedVersion = null;
             int atIdx = raw.IndexOf('@');
             if (atIdx >= 0)
             {
@@ -136,9 +136,9 @@ namespace GxMcp.Gateway
                 foreach (var pair in grouped)
                 {
                     var versions = new JArray();
-                    string latestVersion = null;
-                    string latestDesc = null;
-                    string latestExample = null;
+                    string? latestVersion = null;
+                    string? latestDesc = null;
+                    string? latestExample = null;
                     foreach (var m in pair.Value)
                     {
                         versions.Add(m.Version);
@@ -168,8 +168,8 @@ namespace GxMcp.Gateway
 
             // Resolve (key, version) → entry. Without an explicit version,
             // pick the lexicographically max version among matching entries.
-            RecipeMeta resolved = null;
-            string resolvedVersion = null;
+            RecipeMeta? resolved = null;
+            string? resolvedVersion = null;
             foreach (var kvp in AllRecipes())
             {
                 string baseName = StripVersion(kvp.Key);
@@ -213,7 +213,7 @@ namespace GxMcp.Gateway
         // Item 47 — dispatch for the new genexus_recipes (plural) tool.
         //   action=list (default) → name, description, example, 1-line step preview.
         //   action=describe       → full playbook (same shape as genexus_recipe).
-        public static JObject Dispatch(string action, string name)
+        public static JObject Dispatch(string? action, string? name)
         {
             string a = (action ?? string.Empty).Trim().ToLowerInvariant();
 
@@ -222,7 +222,7 @@ namespace GxMcp.Gateway
                 var arr = new JArray();
                 foreach (var kvp in AllRecipes())
                 {
-                    JObject body = null;
+                    JObject? body = null;
                     try { body = kvp.Value.Build(); } catch { }
                     var stepSummaries = new JArray();
                     if (body?["steps"] is JArray steps)

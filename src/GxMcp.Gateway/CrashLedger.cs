@@ -41,7 +41,7 @@ namespace GxMcp.Gateway
             get
             {
                 if (_pathOverride != null) return _pathOverride;
-                string scoped = Environment.GetEnvironmentVariable("GXMCP_CRASH_LEDGER_PATH");
+                string? scoped = Environment.GetEnvironmentVariable("GXMCP_CRASH_LEDGER_PATH");
                 if (!string.IsNullOrWhiteSpace(scoped)) return scoped;
                 string baseDir = Environment.GetEnvironmentVariable("LOCALAPPDATA")
                                  ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);

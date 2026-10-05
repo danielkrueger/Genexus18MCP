@@ -25,7 +25,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void UniqueNameMatch_InjectsType_ReturnsTrue()
         {
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("WPMain", "WebPanel"),
                 ("CustomerTransaction", "Transaction"),
@@ -46,10 +46,10 @@ namespace GxMcp.Gateway.Tests
         public void AmbiguousName_NoInject_ReturnsFalse()
         {
             // Two entries with the same name but different types → ambiguous
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("SharedName", "WebPanel"),
-                ("SharedName", null!),       // null signals ambiguous in the map
+                ("SharedName", null),     // null signals ambiguous in the map
             });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_inspect", true);
 
@@ -65,7 +65,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void UnknownName_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("KnownObject", "Procedure"),
             });
@@ -83,7 +83,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ToolDoesNotAcceptType_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("MyProc", "Procedure"),
             });
@@ -101,7 +101,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void CallerSuppliedType_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("MyProc", "Procedure"),
             });
@@ -135,7 +135,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void SkipTool_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("SomeObject", "WebPanel"),
             });
@@ -191,7 +191,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void NullArguments_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(Kb, new[] { ("X", "Procedure") });
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[] { ("X", "Procedure") });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
             bool result = AutoTypeInjector.TryInject(Kb, "genexus_read", null, out _);
@@ -209,7 +209,7 @@ namespace GxMcp.Gateway.Tests
             // the transaction. Injecting "Table" would resolve object tools to
             // the table object (no Source/Rules/Events part) — the observed
             // PatchReadFailed class of failures.
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("TrnShadow", "Table"),
             });
@@ -227,7 +227,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void TransactionType_StillInjects_ReturnsTrue()
         {
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("CustomerTransaction", "Transaction"),
             });
@@ -357,7 +357,7 @@ namespace GxMcp.Gateway.Tests
             // whose Source read falls back to empty Documentation). Injecting
             // "Attribute" would point object tools at a non-source-bearing object
             // — the same PatchReadFailed class as the Table shadow.
-            AutoTypeInjector.PrimeIndex(Kb, new[]
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
             {
                 ("GpBaseId", "Attribute"),
             });

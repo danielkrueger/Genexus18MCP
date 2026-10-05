@@ -275,9 +275,9 @@ namespace GxMcp.Gateway.Tests
                 SdkProbe(active: true, sawProgress: true, lastProgressMs: 7_000, op: "build/run"));
 
             Assert.Equal("build/run", (string?)d["sdkOperation"]);
-            Assert.Equal(7_000L, (long)d["sdkLastProgressMs"]);
-            Assert.Equal(8_000L, (long)d["sdkElapsedMs"]);
-            Assert.Equal(WorkerLivenessClassifier.SdkStallAfterMs, (int)d["sdkStallAfterMs"]);
+            Assert.Equal(7_000L, (long)d["sdkLastProgressMs"]!);
+            Assert.Equal(8_000L, (long)d["sdkElapsedMs"]!);
+            Assert.Equal(WorkerLivenessClassifier.SdkStallAfterMs, (int)d["sdkStallAfterMs"]!);
         }
 
         [Fact]
