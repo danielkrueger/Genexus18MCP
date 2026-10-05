@@ -39,6 +39,8 @@
 
 ### Internal
 
+- Issue bookkeeping, no code change: https://github.com/lennix1337/Genexus18MCP/issues/351 was answered in the v3.11.0 notes (a typed SDK route exists), and https://github.com/lennix1337/Genexus18MCP/issues/385 was an umbrella report split into per-gap issues (#404-#410) that were fixed individually.
+
 ## v3.11.0 - 2026-10-04
 
 
