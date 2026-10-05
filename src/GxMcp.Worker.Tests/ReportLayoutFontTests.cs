@@ -40,6 +40,15 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(style, font.Style);
         }
 
+        // A bare family name keeps the control's size, so verification compares the name only.
+        [Fact]
+        public void Verification_BareFamilyNameIgnoresSize()
+        {
+            Assert.True(Match("Verdana", "[Font: Name=Verdana, Size=9, Units=3, GdiCharSet=1, GdiVerticalFont=False]"));
+            Assert.False(Match("Verdana", "[Font: Name=Arial, Size=9, Units=3, GdiCharSet=1, GdiVerticalFont=False]"));
+            Assert.False(Match("Verdana, 12pt", "[Font: Name=Verdana, Size=9, Units=3, GdiCharSet=1, GdiVerticalFont=False]"));
+        }
+
         // Inside the Worker the GeneXus SDK registers its own Font converter; the
         // invariant "Arial, 12pt" form must not depend on which converter is registered.
         [Fact]

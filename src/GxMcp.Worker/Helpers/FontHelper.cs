@@ -26,6 +26,7 @@ namespace GxMcp.Worker.Helpers
             public GraphicsUnit Unit = GraphicsUnit.Point;
             public FontStyle Style;
             public bool StyleSpecified;
+            public bool SizeSpecified = true;
             public byte GdiCharSet = 1;
             public bool GdiVerticalFont;
         }
@@ -54,6 +55,8 @@ namespace GxMcp.Worker.Helpers
                     Unit = font.Unit,
                     Style = font.Style,
                     StyleSpecified = true,
+                    // A bare family name ("Verdana") states no size; the converter's default is not a request.
+                    SizeSpecified = raw.IndexOf(',') >= 0,
                     GdiCharSet = font.GdiCharSet,
                     GdiVerticalFont = font.GdiVerticalFont
                 };
@@ -117,7 +120,7 @@ namespace GxMcp.Worker.Helpers
         {
             if (!TryParse(a, out var x) || !TryParse(b, out var y)) return false;
             if (!string.Equals(x.Name, y.Name, StringComparison.OrdinalIgnoreCase)) return false;
-            if (x.Unit != y.Unit || Math.Abs(x.Size - y.Size) > 0.01f) return false;
+            if (x.SizeSpecified && y.SizeSpecified && (x.Unit != y.Unit || Math.Abs(x.Size - y.Size) > 0.01f)) return false;
             return !(x.StyleSpecified && y.StyleSpecified) || x.Style == y.Style;
         }
     }
