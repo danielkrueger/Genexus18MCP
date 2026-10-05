@@ -1805,27 +1805,43 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
-        /// IIS virtual directory (generator property "WebRoot", shown as "Web Root"
-        /// in the IDE) of the active environment, or null when the SDK exposes none.
+        /// "Web Root" of the active environment: the generator property "WebRoot"
+        /// (Properties.CSHARP.WebRoot), usually a full URL such as
+        /// http://localhost/SampleApp/. The main generator is read first, then the
+        /// other generators of the target model. Null when the SDK exposes none.
         /// </summary>
         public string GetActiveEnvironmentWebRoot()
         {
             lock (_kbLock)
             {
                 if (_kb == null) return null;
-                object[] candidates =
+                var targetModel = TryGet(() => (object)_kb.DesignModel?.Environment?.TargetModel) as KBModel;
+                var generators = new List<object>();
+                if (targetModel != null)
                 {
-                    TryGet(() => (object)_kb.Environment),
-                    TryGet(() => (object)_kb.UserInterface?.ActiveEnvironment),
-                    TryGet(() => (object)_kb.DesignModel?.Environment),
-                    TryGet(() => (object)_kb.DesignModel?.Environment?.TargetModel),
-                    TryGet(() => (object)_kb.ActiveModel),
-                    TryGet(() => (object)_kb.Environment?.TargetModel)
-                };
-                foreach (var candidate in candidates)
+                    generators.Add(TryGet(() => (object)((dynamic)(targetModel.GetAs<GxModel>() ?? new GxModel(targetModel))).Generator));
+                    try
+                    {
+                        foreach (var p in targetModel.Parts)
+                        {
+                            if (p == null || !string.Equals(p.GetType().Name, "GeneratorsPart", StringComparison.OrdinalIgnoreCase)) continue;
+                            foreach (var g in (System.Collections.IEnumerable)((dynamic)p).Generators)
+                                generators.Add(g);
+                        }
+                    }
+                    catch (Exception ex) { Logger.Warn("Generator WebRoot probe unavailable: " + ex.Message); }
+                }
+                foreach (var generator in generators)
                 {
-                    string value = TryGetPropertyBagValue(candidate, "WebRoot")?.ToString();
-                    if (!string.IsNullOrWhiteSpace(value)) return value.Trim().Trim('/', '\\');
+                    string value = null;
+                    try
+                    {
+                        dynamic properties = ((dynamic)generator)?.Properties;
+                        if (properties != null && properties.ContainsPropertyDefinition("WebRoot"))
+                            value = properties.GetPropertyValueString("WebRoot");
+                    }
+                    catch { }
+                    if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
                 }
                 return null;
             }

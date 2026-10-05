@@ -73,7 +73,7 @@ namespace GxMcp.Worker.Services
                             message: "Could not determine the base URL: no baseUrl in preview.config.json and the active environment exposes no WebRoot.",
                             hint: "Open a KB with an active environment, or set \"baseUrl\" (e.g. http://localhost/<virtual directory>) in preview.config.json.",
                             nextSteps: new JArray { McpResponse.NextStep("genexus_run_object", new JObject { ["name"] = name }, "Retry after the KB is open, or set baseUrl in preview.config.json.") });
-                    baseUrl = "http://localhost/" + webRoot.Trim().Trim('/', '\\');
+                    baseUrl = BaseUrlFromWebRoot(webRoot);
                     baseUrlSource = "environment";
                 }
 
@@ -165,6 +165,17 @@ namespace GxMcp.Worker.Services
             string v = cfg?["baseUrl"]?.ToString()?.Trim().TrimEnd('/');
             if (string.IsNullOrEmpty(v)) return null;
             return string.Equals(v, LegacyAutoBaseUrl, StringComparison.OrdinalIgnoreCase) ? null : v;
+        }
+
+        // The generator's Web Root is normally a full URL (http://host/vdir/);
+        // a bare virtual directory name is served from localhost.
+        internal static string BaseUrlFromWebRoot(string webRoot)
+        {
+            string v = webRoot.Trim().TrimEnd('/', '\\');
+            if (v.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || v.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return v;
+            return "http://localhost/" + v.TrimStart('/', '\\');
         }
 
         // Resolve parm names from the object's Parm rule. Returns null on any
