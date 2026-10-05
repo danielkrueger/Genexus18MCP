@@ -1804,6 +1804,33 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// IIS virtual directory (generator property "WebRoot", shown as "Web Root"
+        /// in the IDE) of the active environment, or null when the SDK exposes none.
+        /// </summary>
+        public string GetActiveEnvironmentWebRoot()
+        {
+            lock (_kbLock)
+            {
+                if (_kb == null) return null;
+                object[] candidates =
+                {
+                    TryGet(() => (object)_kb.Environment),
+                    TryGet(() => (object)_kb.UserInterface?.ActiveEnvironment),
+                    TryGet(() => (object)_kb.DesignModel?.Environment),
+                    TryGet(() => (object)_kb.DesignModel?.Environment?.TargetModel),
+                    TryGet(() => (object)_kb.ActiveModel),
+                    TryGet(() => (object)_kb.Environment?.TargetModel)
+                };
+                foreach (var candidate in candidates)
+                {
+                    string value = TryGetPropertyBagValue(candidate, "WebRoot")?.ToString();
+                    if (!string.IsNullOrWhiteSpace(value)) return value.Trim().Trim('/', '\\');
+                }
+                return null;
+            }
+        }
+
         internal static string ResolveEnvironmentOutputMember(string kbPath, object candidate, string propertyName)
         {
             var value = TryGetMember(candidate, propertyName)?.ToString();

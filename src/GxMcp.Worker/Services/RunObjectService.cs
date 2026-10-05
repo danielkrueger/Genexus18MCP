@@ -13,7 +13,8 @@ namespace GxMcp.Worker.Services
 {
     /// <summary>
     /// Item 11 (improvements 2026-05-22): resolves the runtime URL for a KB
-    /// object — the active Environment's webRoot + the object's generated
+    /// object — the baseUrl set by the user in preview.config.json, else the
+    /// active Environment's WebRoot (IIS virtual directory) + the object's generated
     /// aspx file name + URL-encoded positional parms — without opening a
     /// browser. Optionally performs an HTTP-level GAM login and returns the
     /// resulting cookie set so the agent can pipe the URL into
@@ -28,6 +29,12 @@ namespace GxMcp.Worker.Services
         // going to a live HTTP server. Receives (loginUrl, user, pass), returns
         // (cookieHeader, signedIn, error).
         public Func<string, string, string, (string cookieHeader, bool signedIn, string error)> LoginHook;
+        // Test seam — replaces the KB lookup of the active environment's WebRoot.
+        public Func<string> WebRootHook;
+
+        // preview.config.json used to be auto-created with this value; it is not a
+        // user choice, so it must not shadow the environment's WebRoot.
+        private const string LegacyAutoBaseUrl = "http://localhost/portal3_desenv";
 
         public RunObjectService(ObjectService objectService, KbService kbService, PreviewService previewService)
         {
@@ -50,11 +57,25 @@ namespace GxMcp.Worker.Services
                 // 1) Resolve aspx filename. GeneXus generates lowercase <name>.aspx.
                 string aspxName = name.ToLowerInvariant() + ".aspx";
 
-                // 2) Resolve baseUrl from PreviewService config — single source of truth
-                //    for webRoot + port across run_object and preview.
+                // 2) Resolve baseUrl: explicit user baseUrl in preview.config.json wins,
+                //    else http://localhost/<active environment WebRoot>. No invented default.
                 JObject cfg = null;
                 try { cfg = _previewService?.LoadConfig(); } catch { }
-                string baseUrl = (cfg?["baseUrl"]?.ToString() ?? "http://localhost/portal3_desenv").TrimEnd('/');
+                string baseUrl = ExplicitBaseUrl(cfg);
+                string baseUrlSource = "config";
+                if (baseUrl == null)
+                {
+                    string webRoot = null;
+                    try { webRoot = WebRootHook != null ? WebRootHook() : _kbService?.GetActiveEnvironmentWebRoot(); } catch { }
+                    if (string.IsNullOrWhiteSpace(webRoot))
+                        return McpResponse.Err(
+                            code: "BaseUrlUnresolved",
+                            message: "Could not determine the base URL: no baseUrl in preview.config.json and the active environment exposes no WebRoot.",
+                            hint: "Open a KB with an active environment, or set \"baseUrl\" (e.g. http://localhost/<virtual directory>) in preview.config.json.",
+                            nextSteps: new JArray { McpResponse.NextStep("genexus_run_object", new JObject { ["name"] = name }, "Retry after the KB is open, or set baseUrl in preview.config.json.") });
+                    baseUrl = "http://localhost/" + webRoot.Trim().Trim('/', '\\');
+                    baseUrlSource = "environment";
+                }
 
                 // 3) Build positional query string. Signature lookup is best-effort:
                 //    when ObjectService is unavailable (tests) or the object has no
@@ -84,6 +105,7 @@ namespace GxMcp.Worker.Services
                                 ["url"] = url,
                                 ["aspxName"] = aspxName,
                                 ["baseUrl"] = baseUrl,
+                                ["baseUrlSource"] = baseUrlSource,
                                 ["note"] = "dryRun=true: GAM login not performed.",
                                 ["deploymentNote"] = deploymentNote
                             }
@@ -93,6 +115,7 @@ namespace GxMcp.Worker.Services
                 var resultPayload = new JObject
                 {
                     ["url"] = url,
+                    ["baseUrlSource"] = baseUrlSource,
                     ["signedIn"] = false,
                     ["hint"] = "Pass the url to `chrome-devtools-axi open <url>` to drive the object in a browser.",
                     ["deploymentNote"] = deploymentNote
@@ -135,6 +158,13 @@ namespace GxMcp.Worker.Services
                     message: ex.Message,
                     nextSteps: new JArray { McpResponse.NextStep("genexus_run_object", new JObject { ["name"] = name }, "Retry after checking the object exists and the KB is open.") });
             }
+        }
+
+        internal static string ExplicitBaseUrl(JObject cfg)
+        {
+            string v = cfg?["baseUrl"]?.ToString()?.Trim().TrimEnd('/');
+            if (string.IsNullOrEmpty(v)) return null;
+            return string.Equals(v, LegacyAutoBaseUrl, StringComparison.OrdinalIgnoreCase) ? null : v;
         }
 
         // Resolve parm names from the object's Parm rule. Returns null on any

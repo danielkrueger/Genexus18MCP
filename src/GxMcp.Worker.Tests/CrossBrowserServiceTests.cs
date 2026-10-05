@@ -18,10 +18,10 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void Run_UnknownBrowser_ReturnsPerBrowserUnknownBrowserError()
         {
-            // RunObjectService with null deps still resolves a URL (PreviewService?.LoadConfig() is null-safe).
+            // RunObjectService with null deps resolves a URL from the WebRootHook seam (no KB).
             // CrossBrowserService already reads result.url; URL resolves, then the unknown browser
             // is reported as UnknownBrowser in the per-browser results array.
-            var runObj = new RunObjectService(objectService: null, kbService: null, previewService: null);
+            var runObj = new RunObjectService(objectService: null, kbService: null, previewService: null) { WebRootHook = () => "sample_app_env" };
             var svc = new CrossBrowserService(runObj);
 
             var j = JObject.Parse(svc.Run("MyPanel", new JArray("explorer42"), null));
