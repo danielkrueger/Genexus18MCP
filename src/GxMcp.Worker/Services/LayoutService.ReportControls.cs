@@ -54,13 +54,16 @@ namespace GxMcp.Worker.Services
             string stale = CheckExpectedVersion(expected, version);
             if (stale != null) return stale;
 
+            string typeName = ResolveReportControlType(kind, requestedType);
+            string requestedControlName = controlName;
+            controlName = EffectiveReportControlName(typeName, controlName, binding);
+
             XElement block = FindPrintBlock(context.Document, blockName);
             if (block == null) return ReportBlockNotFound(target, blockName);
             if (FindReportControls(block, controlName).Count > 0)
                 return Models.McpResponse.Err(code: "ReportControlAlreadyExists", message: "A report control with that name already exists in this print block.", target: target,
                     extra: new JObject { ["controlName"] = controlName, ["printBlockName"] = blockName });
 
-            string typeName = ResolveReportControlType(kind, requestedType);
             XElement control = CreateReportControl(typeName, controlName, kind, binding, caption, args);
             string afterName = Text(args, "after");
             string belowName = Text(args, "below");
@@ -107,9 +110,22 @@ namespace GxMcp.Worker.Services
                     persisted: true, rolledBack: rolledBack, rollbackRequested: rollback);
             }
 
-            return ReportMutationSuccess(target, "add_report_control", controlName, blockName, diff,
+            string success = ReportMutationSuccess(target, "add_report_control", controlName, blockName, diff,
                 postVersion ?? version, true);
+            if (string.Equals(controlName, requestedControlName, StringComparison.Ordinal)) return success;
+            var named = JObject.Parse(success);
+            named["result"]["requestedControlName"] = requestedControlName;
+            named["result"]["note"] = "GeneXus names an attribute or variable report control after its reference; use controlName to address it.";
+            return named.ToString(Newtonsoft.Json.Formatting.None);
         }
+
+        // GeneXus names a ReportAttribute (attribute or variable) control after its
+        // reference and ignores any other name on save, so the control is created,
+        // checked for duplicates and verified under that name.
+        internal static string EffectiveReportControlName(string typeName, string controlName, string binding)
+            => string.Equals(typeName, "ReportAttribute", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(binding)
+                ? binding.Trim()
+                : controlName;
 
         public string MoveReportControl(string target, JObject args)
         {

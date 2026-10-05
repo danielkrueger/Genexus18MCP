@@ -31,6 +31,19 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(expected, (string)Call("ResolveReportControlType", kind, requestedType));
         }
 
+        // GeneXus renames a ReportAttribute control after its reference on save
+        // (VarTexto bound to &Texto persists as "&Texto"), so it is created and
+        // verified under that name; other controls keep the requested name.
+        [Theory]
+        [InlineData("ReportAttribute", "VarTexto", "&Texto", "&Texto")]
+        [InlineData("ReportAttribute", "AttCode", "SampleCode", "SampleCode")]
+        [InlineData("ReportLabel", "LblTitle", null, "LblTitle")]
+        [InlineData("ReportAttribute", "AttCode", "", "AttCode")]
+        public void AttributeControlIsNamedAfterItsReference(string type, string name, string binding, string expected)
+        {
+            Assert.Equal(expected, (string)Call("EffectiveReportControlName", type, name, binding));
+        }
+
         [Fact]
         public void VariableControlIsBoundThroughAttributeReference()
         {
