@@ -129,6 +129,18 @@ namespace GxMcp.Worker.Tests
             Assert.Empty(SpecificationDiagnostics.GetWarnings("nope"));
         }
 
+        // The compact status polled after an edit empties warnings and carries the
+        // lines in newWarnings (shape observed on a live specify task).
+        [Fact]
+        public void GetWarnings_ReadsTheCompactStatusNewWarnings()
+        {
+            string json = "{\"Status\":\"Failed\",\"compact\":true,\"warnings\":[],\"warningCount\":1,"
+                + "\"newWarnings\":[\"warning : changed since the last build: SampleProc. GeneXus specifies the environment's copy of an object\"]}";
+            var warnings = SpecificationDiagnostics.GetWarnings(json);
+            Assert.Single(warnings);
+            Assert.True(SpecificationDiagnostics.HasStaleEnvironmentCopy(warnings));
+        }
+
         [Fact]
         public void Parse_Unparseable_ReturnsEmptyArray()
         {

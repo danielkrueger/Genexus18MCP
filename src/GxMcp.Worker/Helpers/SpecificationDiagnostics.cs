@@ -123,6 +123,8 @@ namespace GxMcp.Worker.Helpers
 
         /// <summary>
         /// Warning lines of a build-status envelope (<c>warnings</c> array of strings).
+        /// The compact status the orchestrator polls moves them to <c>newWarnings</c>
+        /// and leaves <c>warnings</c> empty, so both are read.
         /// </summary>
         public static JArray GetWarnings(string statusJson)
         {
@@ -131,12 +133,16 @@ namespace GxMcp.Worker.Helpers
             try
             {
                 var jo = JObject.Parse(statusJson);
-                if (Get(jo, "Warnings", "warnings") is JArray arr)
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var source in new[] { Get(jo, "Warnings", "warnings"), Get(jo, "NewWarnings", "newWarnings") })
+                {
+                    if (!(source is JArray arr)) continue;
                     foreach (var w in arr)
                     {
                         string text = w?.ToString();
-                        if (!string.IsNullOrWhiteSpace(text)) result.Add(text);
+                        if (!string.IsNullOrWhiteSpace(text) && seen.Add(text)) result.Add(text);
                     }
+                }
             }
             catch { }
             return result;
