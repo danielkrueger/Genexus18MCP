@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_lifecycle action=build dryRun=true` now reports how the build plan was expanded instead of only `wouldBuild`: `seeds`, `callees` (callees and `_bc` variants the real build adds ahead of the targets), `seedCount`, `calleeCount`, `totalCount`, `truncated`, `indexLoaded` and `callerGraphAvailable`. When callee expansion is requested but the index is not loaded, the caller graph is missing, or no callees were found, the preview adds a `warnings` entry instead of silently listing only the requested target. `includeCallees` still defaults to `transitive`.
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).

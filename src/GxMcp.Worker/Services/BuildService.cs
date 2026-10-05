@@ -999,6 +999,12 @@ namespace GxMcp.Worker.Services
             public int NodeCap { get; set; }
             public int RequestedNodes { get; set; }
             public string IncludeCallees { get; set; }
+            // Requested targets (seeds) vs the callees/BC variants the expansion added.
+            // Expanded == Callees + Seeds (callees first); kept separate for previews.
+            public List<string> Seeds { get; set; } = new List<string>();
+            public List<string> Callees { get; set; } = new List<string>();
+            public bool IndexLoaded { get; set; }
+            public bool CallerGraphAvailable { get; set; }
         }
 
         private sealed class CompileCheckPlan
@@ -1024,8 +1030,11 @@ namespace GxMcp.Worker.Services
                 .ToList();
             var originalSet = new HashSet<string>(originalList, StringComparer.OrdinalIgnoreCase);
 
+            plan.Seeds = originalList;
+            plan.CallerGraphAvailable = _callerGraphService != null;
             var index = _indexCacheService?.TryGetLoadedIndex();
             plan.TargetResolutionAvailable = index != null;
+            plan.IndexLoaded = index != null;
             if (index != null)
             {
                 foreach (var target in originalList)
@@ -1049,6 +1058,7 @@ namespace GxMcp.Worker.Services
             if (_callerGraphService == null || string.Equals(plan.IncludeCallees, "none", StringComparison.OrdinalIgnoreCase))
             {
                 var bcOnly = CollectBcVariants(originalList, originalSet, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                plan.Callees = bcOnly;
                 plan.Expanded.AddRange(bcOnly);
                 plan.Expanded.AddRange(originalList);
                 return plan;
@@ -1109,6 +1119,7 @@ namespace GxMcp.Worker.Services
                 calleeOrder.InsertRange(0, bcPrefix);
             }
 
+            plan.Callees = calleeOrder;
             plan.Expanded.AddRange(calleeOrder);
             plan.Expanded.AddRange(originalList);
             return plan;
@@ -1533,19 +1544,39 @@ namespace GxMcp.Worker.Services
                     }
                     targets = plan.Expanded;
                 }
+                var preview = new JObject
+                {
+                    ["action"] = action,
+                    ["wouldBuild"] = new JArray(targets.ToArray()),
+                    ["includeCallees"] = includeCallees ?? "transitive",
+                    ["buildPlanCap"] = buildPlanCap,
+                    ["targetResolutionAvailable"] = plan?.TargetResolutionAvailable ?? false
+                };
+                if (plan != null)
+                {
+                    // Same plan the real build would dispatch: callees (and BC variants)
+                    // first, then the requested seeds. Counts let callers see the blast radius.
+                    preview["seeds"] = JArray.FromObject(plan.Seeds);
+                    preview["callees"] = JArray.FromObject(plan.Callees);
+                    preview["seedCount"] = plan.Seeds.Count;
+                    preview["calleeCount"] = plan.Callees.Count;
+                    preview["totalCount"] = plan.Expanded.Count;
+                    preview["truncated"] = plan.Truncated;
+                    preview["indexLoaded"] = plan.IndexLoaded;
+                    preview["callerGraphAvailable"] = plan.CallerGraphAvailable;
+                    var warnings = new JArray();
+                    bool expands = !string.Equals(plan.IncludeCallees, "none", StringComparison.OrdinalIgnoreCase);
+                    if (expands && !plan.IndexLoaded)
+                        warnings.Add("Index is not loaded yet: target resolution is unverified and the callee list may be incomplete. Run genexus_lifecycle action=index and retry the preview.");
+                    if (expands && !plan.CallerGraphAvailable)
+                        warnings.Add("Caller graph is unavailable: callees were not expanded; wouldBuild lists only the requested targets.");
+                    else if (expands && plan.Callees.Count == 0)
+                        warnings.Add("No callees found for the requested targets in the index; wouldBuild lists only the requested targets. The target may have no indexed calls, or the index may be stale.");
+                    if (warnings.Count > 0) preview["warnings"] = warnings;
+                }
                 return McpResponse.Ok(
                     code: "DryRun",
-                    result: new JObject
-                    {
-                        ["preview"] = new JObject
-                        {
-                            ["action"] = action,
-                            ["wouldBuild"] = new JArray(targets.ToArray()),
-                            ["includeCallees"] = includeCallees ?? "transitive",
-                            ["buildPlanCap"] = buildPlanCap,
-                            ["targetResolutionAvailable"] = plan?.TargetResolutionAvailable ?? false
-                        }
-                    });
+                    result: new JObject { ["preview"] = preview });
             }
             catch (Exception ex)
             {

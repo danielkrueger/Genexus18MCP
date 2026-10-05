@@ -170,6 +170,52 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void BuildDryRun_WithGraph_ReportsSeedsCalleesAndCounts()
+        {
+            var fx = TestFixtures.SmallCallGraph();
+            var svc = new BuildService();
+            svc.SetCallerGraphService(new CallerGraphService(fx.Index));
+
+            var preview = JObject.Parse(svc.BuildDryRun("Build", "A", "transitive", 200))["result"]?["preview"];
+
+            Assert.Equal(new[] { "A" }, preview?["seeds"]?.ToObject<string[]>());
+            Assert.Equal(new[] { "C", "B" }, preview?["callees"]?.ToObject<string[]>());
+            Assert.Equal(1, preview?["seedCount"]?.ToObject<int>());
+            Assert.Equal(2, preview?["calleeCount"]?.ToObject<int>());
+            Assert.Equal(3, preview?["totalCount"]?.ToObject<int>());
+            Assert.False(preview?["truncated"]?.ToObject<bool>());
+            Assert.True(preview?["callerGraphAvailable"]?.ToObject<bool>());
+            // No IndexCacheService is wired here, so only the index warning is expected.
+            var warnings = preview?["warnings"]?.ToObject<string[]>() ?? new string[0];
+            Assert.DoesNotContain(warnings, w => w.Contains("Caller graph") || w.Contains("No callees"));
+        }
+
+        [Fact]
+        public void BuildDryRun_NoGraph_WarnsInsteadOfSilentlyListingOnlyTarget()
+        {
+            var svc = new BuildService();
+
+            var preview = JObject.Parse(svc.BuildDryRun("Build", "A", "transitive", 200))["result"]?["preview"];
+
+            Assert.False(preview?["callerGraphAvailable"]?.ToObject<bool>());
+            Assert.False(preview?["indexLoaded"]?.ToObject<bool>());
+            var warnings = preview?["warnings"]?.ToObject<string[]>();
+            Assert.NotNull(warnings);
+            Assert.Contains(warnings, w => w.Contains("Caller graph is unavailable"));
+        }
+
+        [Fact]
+        public void BuildDryRun_IncludeCalleesNone_NoExpansionWarning()
+        {
+            var svc = new BuildService();
+
+            var preview = JObject.Parse(svc.BuildDryRun("Build", "A", "none", 200))["result"]?["preview"];
+
+            Assert.Equal(0, preview?["calleeCount"]?.ToObject<int>());
+            Assert.Null(preview?["warnings"]);
+        }
+
+        [Fact]
         public void BuildDryRun_Truncated_ReturnsErrEnvelope()
         {
             var fx = TestFixtures.LargeCallChain(depth: 250);
