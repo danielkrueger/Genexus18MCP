@@ -195,6 +195,14 @@ namespace GxMcp.Worker.Helpers
                             }
                         }
 
+                        // The SDK exposes the font as a single Font object; project its parts so
+                        // callers can read and write them as FontName/FontSize.
+                        if (iType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance)?.GetValue(item, null) is System.Drawing.Font sdkFont)
+                        {
+                            el.SetAttributeValue("FontName", sdkFont.Name);
+                            el.SetAttributeValue("FontSize", sdkFont.Size.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                        }
+
                         var currentName = AttributeTypeApplier.GetPropertyUnambiguous(iType, "Name")?.GetValue(item, null)?.ToString();
                         var ctrlName = (AttributeTypeApplier.GetPropertyUnambiguous(iType, "ControlName")?.GetValue(item, null) ?? currentName)?.ToString();
                         if (!string.IsNullOrEmpty(ctrlName)) el.SetAttributeValue("ControlName", ctrlName);
@@ -1227,12 +1235,46 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
+        // FontName/FontSize (and a plain family name given as Font) rebuild the control's single
+        // Font object from its current one. Returns null when the request is not a font part or
+        // is unusable, so the caller falls through to the generic property path.
+        internal static System.Drawing.Font ComposeFont(System.Drawing.Font current, string propertyName, string rawValue)
+        {
+            if (string.IsNullOrWhiteSpace(rawValue)) return null;
+            string name = current?.Name ?? "MS Sans Serif";
+            float size = current?.Size ?? 8f;
+            var style = current?.Style ?? System.Drawing.FontStyle.Regular;
+            var unit = current?.Unit ?? System.Drawing.GraphicsUnit.Point;
+            if (string.Equals(propertyName, "FontSize", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!float.TryParse(rawValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out size) || size <= 0) return null;
+            }
+            else if (string.Equals(propertyName, "FontName", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(propertyName, "Font", StringComparison.OrdinalIgnoreCase) && !rawValue.TrimStart().StartsWith("[", StringComparison.Ordinal)))
+            {
+                name = rawValue.Trim();
+            }
+            else return null;
+            return new System.Drawing.Font(name, size, style, unit);
+        }
+
         private static bool TrySetProperty(object instance, Type instanceType, string sdkPropertyName, string rawValue)
         {
             if (instance == null || instanceType == null || string.IsNullOrWhiteSpace(sdkPropertyName))
             {
                 return false;
             }
+            var fontProp = instanceType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance);
+            if (fontProp != null && fontProp.CanWrite && fontProp.PropertyType == typeof(System.Drawing.Font))
+            {
+                var composed = ComposeFont(fontProp.GetValue(instance, null) as System.Drawing.Font, sdkPropertyName, rawValue);
+                if (composed != null)
+                {
+                    fontProp.SetValue(instance, composed);
+                    return true;
+                }
+            }
+
             string normalizedForSdk = ColorHelper.IsColorAttributeName(sdkPropertyName)
                 ? ColorHelper.NormalizeColorTokenForSdkWrite(rawValue)
                 : rawValue;
@@ -1324,6 +1366,21 @@ namespace GxMcp.Worker.Helpers
                             break;
                         }
                     }
+                }
+            }
+
+            // The requested type must win over "any control in the band": cloning a
+            // different type silently produced a ReportLabel for a requested ReportAttribute.
+            if (template == null && !string.IsNullOrWhiteSpace(typeName))
+            {
+                try
+                {
+                    var exactType = FindSdkControlType(typeName);
+                    if (exactType != null) return Activator.CreateInstance(exactType);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"ReportLayoutHelper.CreateBandControlClone: direct construction of '{typeName}' failed: {ex.Message}");
                 }
             }
 

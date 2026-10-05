@@ -11,6 +11,11 @@
 
 ### Fixed
 
+- `genexus_layout action=add_report_control` (and `move_report_control`) no longer report `ReportControlWriteVerificationFailed` for controls the SDK persisted exactly as requested: geometry is now verified against the `Left`/`Top` projection of the SDK read-back instead of `X`/`Y`, and `font`/`fontName`/`fontSize` against the read-back `FontName`/`FontSize`.
+- `kind=variable` now creates the control GeneXus really uses for a variable, a `ReportAttribute` bound through `AttributeReference` (`&Name`); the `ReportVariable` type does not exist in the SDK, so the control used to be cloned from another type and left unbound. `controlType=ReportVariable` is accepted as an alias. The requested control type is also no longer replaced by a clone of whatever control the print block already had.
+- `fontName`/`fontSize` are now applied to report controls (the SDK exposes a single `Font` object, which is rebuilt from the current one) and projected back as `FontName`/`FontSize`.
+- A report-control verification failure with `rollbackOnFailure=true` now actually restores the original layout and reports `rolledBack:true`: the rollback fence is checked against the state read right after the write (not the candidate XML, which the SDK always normalizes), and the restore uses that state as its baseline so controls added by the failed write are removed.
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
