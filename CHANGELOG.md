@@ -7,6 +7,48 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.11.1 - 2026-10-05
+
+
+### Tracked issues
+
+- [#351](https://github.com/lennix1337/Genexus18MCP/issues/351) — [Feature] Há caminho SDK para acrescentar filtros de seleção ao WorkWith padrão no GeneXus 18?
+- [#361](https://github.com/lennix1337/Genexus18MCP/issues/361) — [Bug] Report (Procedure) Layout: import_part leaves variable-bound controls "(none)", re-import duplicates them, PrintBlock Height is ignored; add_report_control / set_property cannot fix it
+- [#367](https://github.com/lennix1337/Genexus18MCP/issues/367) — [Bug] Capacity eviction can still stop a Worker running an async build or a timed-out command
+- [#372](https://github.com/lennix1337/Genexus18MCP/issues/372) — [Perf] Worker memory budgets for large KBs are still missing (second half of #344)
+- [#375](https://github.com/lennix1337/Genexus18MCP/issues/375) — [Reliability] A valid shared Worker response above 16 MiB still stops the broker for every client (deferred part of #347)
+- [#385](https://github.com/lennix1337/Genexus18MCP/issues/385) — [Feature/Bug] Lacunas que obrigaram trabalho manual na IDE: Query, coleção, save_as, modo texto de relatório, WWP, diagnósticos de build
+- [#404](https://github.com/lennix1337/Genexus18MCP/issues/404) — [Feature] A Query object's structure cannot be read or written (parameters/query elements/output formats)
+- [#406](https://github.com/lennix1337/Genexus18MCP/issues/406) — [Bug] save_as fails cloning part 'Layout' for a report Procedure (regression from the #118 hardening)
+- [#408](https://github.com/lennix1337/Genexus18MCP/issues/408) — [Feature] WorkWithPlus/PatternInstance: a new control element (combo, query viewer) cannot be added via import_part
+- [#411](https://github.com/lennix1337/Genexus18MCP/issues/411) — [Enhancement] A build does not warn that an internal callee's generated .cs is stale (deferred item from #409)
+- [#414](https://github.com/lennix1337/Genexus18MCP/issues/414) — [Bug] User action gxobject is written as <object GUID>-<bare name>; the IDE stores <type GUID>-<qualified name>
+- [#415](https://github.com/lennix1337/Genexus18MCP/issues/415) — [Bug] add_user_action only finds TableActions or a table that already holds an action, and TableActions is always ambiguous on a transaction WWP
+- [#416](https://github.com/lennix1337/Genexus18MCP/issues/416) — [Bug] genexus_versioning undo reports UndoFailed for a part it restored
+- [#417](https://github.com/lennix1337/Genexus18MCP/issues/417) — [Bug] Variables DSL drops decimals: NUMERIC(19,2) is written as NUMERIC(19)
+- [#418](https://github.com/lennix1337/Genexus18MCP/issues/418) — [Bug] A build the Worker already finished can keep the lifecycle FIFO blocked; later builds stay queued indefinitely
+- [#419](https://github.com/lennix1337/Genexus18MCP/issues/419) — [Bug] A failed native WorkWithPlus write reports only "Exception has been thrown by the target of an invocation"
+- [#420](https://github.com/lennix1337/Genexus18MCP/issues/420) — [Feature] genexus_wwp: add a grid over an SDT collection to a WorkWithPlus instance (with the typed attributes it needs)
+- [#421](https://github.com/lennix1337/Genexus18MCP/issues/421) — [Feature] genexus_wwp add_user_action: a button that opens an object (callObject, popup, parameters)
+- [#422](https://github.com/lennix1337/Genexus18MCP/issues/422) — [Feature] genexus_dfd: entity-relationship diagram of a Transaction/Table from the SDK's own table relations
+- [#423](https://github.com/lennix1337/Genexus18MCP/issues/423) — [Feature] genexus_impact: affected set with a dependencies-first rebuild order and cycle detection, instead of a heuristic risk score
+- [#424](https://github.com/lennix1337/Genexus18MCP/issues/424) — [Feature] genexus_object_context: one object's identity, references and data model in a single call
+- [#425](https://github.com/lennix1337/Genexus18MCP/issues/425) — [Feature] genexus_structure: read and set "Show in Default Forms" per Transaction attribute
+- [#426](https://github.com/lennix1337/Genexus18MCP/issues/426) — [Feature] genexus_wwp list_tabs / tab_schema: what a WWP instance has and what the pattern allows, before add_tab
+- [#427](https://github.com/lennix1337/Genexus18MCP/issues/427) — [Feature] genexus_security audit_object: fast, in-memory OWASP surface audit of a single object
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
 - `genexus_read` / `genexus_edit part=QueryStructure` (or the default `Source`) now read and write a Query object's structure as text: one `[Elements]`, `[Parameters]`, `[Filters]` and `[Orders]` section, one SDK-serialized item per line, through the part's own `ToSerializedStrings`/`FromSerializedStrings`. A write is saved on the part itself and reported only when the re-read has the same item counts. `export_kb_to_text format=native` carries the same text. Output formats are not covered. https://github.com/lennix1337/Genexus18MCP/issues/404
 - A WorkWithPlus/PatternInstance `import_part` can now insert a `<data attribute="&Var" ...>` leaf element (the form PopupLayoutBuilder emits for a combo, radio or edit control bound to a variable, with `PATTERN_ELEMENT_CUSTOM_PROPERTIES`). Children and attributes outside its list are still refused. Query viewer and SDT grid elements, and exposing `patternEditMode`, are not covered: they cannot be verified without the WorkWithPlus package. https://github.com/lennix1337/Genexus18MCP/issues/408
 - `genexus_wwp action=add_grid` writes a grid over an SDT collection variable the way WorkWithPlus's own wizard does: `collection` (`&Lines`), `sdt`, `containerName` (a table), `columns` (item names or `{item, description}`) and an optional `deleteAction` (a `UDelete` image action). Every column is a `gridVariable` named after the collection and bound to an SDT item through `sdtItem`, with `domain = <SDT type GUID>-<Module.Sdt>`. The native write sets the typed attributes with their types (`domain` as the SDT `KBObject`, `cellThemeClass`/`imageClass` as `DropDownValueOptionCustomType`), shares the form-action path (snapshots, save, re-read of every column in order, projection, rollback) and fails when the parent WebForm is unchanged after projection. Refused: a missing or invalid collection, SDT, container or columns, a repeated item, an item that is not in the SDT, an action group as container, and a second grid over the same collection. A typed `page` parameter and generating `&UDelete.Click` are not covered, and the native write was not exercised against a live WorkWithPlus instance. https://github.com/lennix1337/Genexus18MCP/issues/420
