@@ -1250,7 +1250,9 @@ namespace GxMcp.Worker.Helpers
                 if (!float.TryParse(rawValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out size) || size <= 0) return null;
             }
             else if (string.Equals(propertyName, "FontName", StringComparison.OrdinalIgnoreCase)
-                || (string.Equals(propertyName, "Font", StringComparison.OrdinalIgnoreCase) && !rawValue.TrimStart().StartsWith("[", StringComparison.Ordinal)))
+                || (string.Equals(propertyName, "Font", StringComparison.OrdinalIgnoreCase)
+                    && !rawValue.TrimStart().StartsWith("[", StringComparison.Ordinal)
+                    && rawValue.IndexOf(',') < 0))
             {
                 name = rawValue.Trim();
             }

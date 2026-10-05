@@ -98,6 +98,10 @@ namespace GxMcp.Worker.Tests
             Assert.Null(ReportLayoutHelper.ComposeFont(current, "FontSize", "not-a-number"));
             Assert.Null(ReportLayoutHelper.ComposeFont(current, "Font", "[Font: Name=Arial, Size=12]"));
             Assert.Null(ReportLayoutHelper.ComposeFont(current, "Width", "10"));
+            // A full font spec ("Arial, 12pt") is not a family name; it falls through
+            // to the generic Font conversion instead of becoming a substituted family.
+            Assert.Null(ReportLayoutHelper.ComposeFont(current, "Font", "Arial, 12pt"));
+            Assert.Equal("Arial", ReportLayoutHelper.ComposeFont(current, "Font", "Arial").Name);
         }
     }
 }
