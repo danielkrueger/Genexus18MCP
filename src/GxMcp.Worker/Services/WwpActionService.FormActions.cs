@@ -18,6 +18,20 @@ namespace GxMcp.Worker.Services
         private string RunFormUserActionOperation(string target, KBObject requestedObject, KBObject instance,
             KBObjectPart instancePart, string xml, JObject args)
         {
+            JObject callObjectError = ValidateCallObjectArgs(args);
+            if (callObjectError != null)
+                return McpResponse.Err(code: callObjectError["code"].ToString(), message: callObjectError["error"].ToString(), target: target);
+            KBObject callObject = null;
+            if (HasCallObject(args))
+            {
+                callObject = ResolveCallObject(args["callObject"].ToString());
+                if (callObject == null)
+                    return McpResponse.Err(code: "CallObjectNotFound",
+                        message: "callObject '" + args["callObject"] + "' is not a WebPanel, Procedure, Transaction, SDPanel or WebComponent in this KB.",
+                        hint: "Use Name or Type:Name.", target: target);
+                args["_callObjectReference"] = GxObjectReference(callObject);
+            }
+
             XDocument beforeDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
             XDocument previewDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
             JObject previewMutation = Apply(previewDocument, "add_user_action", args, ResolveProcedure);
@@ -89,7 +103,7 @@ namespace GxMcp.Worker.Services
                 JObject lockedAfterProjection = Project(lockedAfter);
                 diff = new JObject { ["before"] = lockedBeforeProjection, ["after"] = lockedAfterProjection };
 
-                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects);
+                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects, currentXml);
                 string parentWebFormBefore = ReadPart(parent, "WebForm");
                 byte[] nativeBytes = ReadPartBytes(currentPart);
                 SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
@@ -109,7 +123,7 @@ namespace GxMcp.Worker.Services
                 bool persistenceStarted = false;
                 try
                 {
-                    JObject nativeMutation = ApplyNativeFormUserAction(currentPart, args);
+                    JObject nativeMutation = ApplyNativeFormUserAction(currentPart, args, callObject);
                     if (nativeMutation["error"] != null)
                         throw new WwpTabException(nativeMutation["code"]?.ToString() ?? "WwpNativeMutationRejected",
                             nativeMutation["error"].ToString());
@@ -126,7 +140,9 @@ namespace GxMcp.Worker.Services
 
                     XDocument persistedDocument = XDocument.Parse(persistedXml, LoadOptions.PreserveWhitespace);
                     JObject verification = VerifyFormUserAction(
-                        lockedBefore, persistedDocument, containerName, actionName, caption);
+                        lockedBefore, persistedDocument, containerName, actionName, caption,
+                        args?["_callObjectReference"]?.ToString(), TryReadPopup(args, out bool? wantedPopup) ? wantedPopup : null,
+                        TryReadParameters(args, out List<string> wantedParameters) ? wantedParameters : null);
                     if (verification["confirmed"]?.ToObject<bool?>() != true)
                         throw new WwpTabException("WwpFormActionNotPersisted",
                             verification["message"]?.ToString()
@@ -198,9 +214,12 @@ namespace GxMcp.Worker.Services
                             ["skipped"] = true,
                             ["exact"] = false
                         };
-                    return McpResponse.Err(code: typed?.Code ?? "WwpFormActionFailed", message: ex.Message,
+                    ExceptionRoot.Log("[WWP-FORMACTION] failed", ex);
+                    return McpResponse.Err(code: typed?.Code ?? "WwpFormActionFailed", message: ExceptionRoot.Message(ex),
                         target: target, extra: new JObject
                         {
+                            ["exceptionType"] = ExceptionRoot.Unwrap(ex)?.GetType().Name,
+                            ["failureTrace"] = ExceptionRoot.FailureTrace(ex),
                             ["persisted"] = false,
                             ["saved"] = false,
                             ["partialPersistenceDetected"] = persistenceStarted,
@@ -220,7 +239,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private static JObject ApplyNativeFormUserAction(KBObjectPart part, JObject args)
+        private static JObject ApplyNativeFormUserAction(KBObjectPart part, JObject args, KBObject callObject = null)
         {
             object root = GetProperty(part, "RootElement");
             if (root == null) return FormActionError("WwpNativeRootUnavailable", "PatternInstance RootElement is unavailable.");
@@ -232,16 +251,8 @@ namespace GxMcp.Worker.Services
             string actionName = args?["actionName"]?.ToString()?.Trim();
             string caption = args?["caption"]?.ToString() ?? args?["description"]?.ToString();
 
-            List<object> containers = Walk(root).Where(IsNativeTable)
-                .Where(table => string.Equals(NativeAttribute(table, "name"), containerName, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(NativeAttribute(table, "controlName"), containerName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (containers.Count > 1)
-                return FormActionError("FormActionContainerAmbiguous", "Form action container '" + containerName + "' matched more than one native table.");
-            if (containers.Count == 0)
-                return FormActionError("FormActionContainerNotFound", "Form action container '" + containerName + "' was not found in the native PatternInstance.");
-
-            object container = containers[0];
+            JObject containerError = ResolveNativeContainer(root, containerName, out object container);
+            if (containerError != null) return containerError;
             if (NativeChildren(container).Any(child =>
                 NativeType(child).Equals("userAction", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(NativeAttribute(child, "name"), actionName, StringComparison.OrdinalIgnoreCase)))
@@ -251,6 +262,7 @@ namespace GxMcp.Worker.Services
             SetNativeAttribute(created, "name", actionName);
             SetNativeAttribute(created, "caption", caption);
             ApplyNativeFormActionProperties(created, args);
+            if (callObject != null) ApplyCallObjectNative(created, args, callObject);
 
             MethodInfo executeUpdate = part.GetType().GetMethod("ExecuteUpdate",
                 BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(string), typeof(Action) }, null);
@@ -265,7 +277,7 @@ namespace GxMcp.Worker.Services
                 ["changed"] = true,
                 ["containerName"] = containerName,
                 ["actionName"] = actionName,
-                ["event"] = "Do" + actionName,
+                ["event"] = callObject == null ? new JValue("Do" + actionName) : JValue.CreateNull(),
                 ["sdkOperation"] = "CreateChildElement(userAction) + AddElementCommand"
             };
         }
@@ -308,7 +320,8 @@ namespace GxMcp.Worker.Services
         }
 
         internal static JObject VerifyFormUserAction(XDocument before, XDocument after,
-            string containerName, string actionName, string caption)
+            string containerName, string actionName, string caption,
+            string callObjectReference = null, bool? popup = null, IList<string> parameters = null)
         {
             List<XElement> containers = FindFormContainers(after, containerName).ToList();
             if (containers.Count != 1)
@@ -329,13 +342,19 @@ namespace GxMcp.Worker.Services
                 return FormActionError("WwpFormActionIntegrityFailed",
                     "The persisted UserAction contains an unsupported event XML attribute.");
 
+            if (!string.IsNullOrEmpty(callObjectReference))
+            {
+                JObject callError = VerifyCallObject(action, callObjectReference, popup, parameters);
+                if (callError != null) return callError;
+            }
+
             return new JObject
             {
                 ["confirmed"] = true,
                 ["containerName"] = containerName,
                 ["actionName"] = actionName,
                 ["caption"] = caption,
-                ["event"] = "Do" + actionName,
+                ["event"] = string.IsNullOrEmpty(callObjectReference) ? new JValue("Do" + actionName) : JValue.CreateNull(),
                 ["beforeAvailable"] = before != null
             };
         }

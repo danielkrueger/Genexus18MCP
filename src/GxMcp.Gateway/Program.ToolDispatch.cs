@@ -1110,6 +1110,13 @@ namespace GxMcp.Gateway
             bool serialize = !string.Equals(
                 Environment.GetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS"),
                 "1", StringComparison.OrdinalIgnoreCase);
+            // A finished build whose poller never completed its job would keep every later
+            // build queued; ask the Worker about the scope's running jobs first (#418).
+            if (serialize)
+            {
+                foreach (var stale in JobRegistry.GetReconciliationCandidates(workerScope, ownership))
+                    await ReconcileJobWithWorkerAsync(stale, tName, tArgs);
+            }
             var admission = JobRegistry.AdmitLifecycle(
                 sessionId,
                 $"lifecycle/{lcAction}",

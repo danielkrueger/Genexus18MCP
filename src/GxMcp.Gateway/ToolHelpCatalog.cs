@@ -378,7 +378,7 @@ namespace GxMcp.Gateway
                 "Read or write the structure/data-model of GeneXus objects.\n\n" +
                 "## Actions\n" +
                 "- `get_visual` — returns logical hierarchy of Transaction levels/attributes or SDT structure. Use `type` (e.g. `Transaction`) to disambiguate name collisions.\n" +
-                "- `update_visual` — replace complete logical structure of a Transaction or SDT. Atomic snapshot, verification, and rollback on divergence.\n" +
+                "- `update_visual` — replace complete logical structure of a Transaction or SDT. Atomic snapshot, verification, and rollback on divergence. A Transaction attribute item carries `showInDefaultForms` (boolean: the row's \"Show in Default Forms\"); `get_visual` reports it and `update_visual` changes it only when it differs.\n" +
                 "- `move_attribute` — reorder an attribute within a Transaction level using `before`, `after`, or `position`. Nested levels supported via `levelPath`.\n" +
                 "- `remove_attribute` — remove an attribute from a Transaction level by name.\n" +
                 "- `get_indexes` / `create_index` / `drop_index` — inspect and manage indexes on physical tables or transactions.\n" +
@@ -536,6 +536,23 @@ namespace GxMcp.Gateway
                 "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection (set_default with persist: false acts like select).\n\n" +
                 "Use an explicit `kb` alias when a call must target a different open KB; do not rely on shared server-side selection between independent clients. In strict mode, `open`/`close` without the caller's lease fail with `KB_NOT_OWNED`; `select` is session-only and sessionless HTTP returns `KB_SESSION_UNAVAILABLE`.\n",
 
+            ["genexus_dfd"] =
+                "# genexus_dfd\n\n" +
+                "Read-only entity-relationship diagram of a Transaction or Table.\n\n" +
+                "`name`, optional `maxDepth` (1-6, default 3). Returns `tables`, `edges` (`from`, `to`, `kind` extends|subordinates, `joinOn`), a Mermaid `mermaid` erDiagram and `stats.truncated`/`truncatedBy` (maxDepth, maxTables).\n" +
+                "Built only from the relations the SDK reports; no relation is inferred and normalization is not judged. A Transaction without an associated table gets `NoAssociatedTable`, not an empty diagram.\n",
+
+            ["genexus_impact"] =
+                "# genexus_impact\n\n" +
+                "Read-only affected set of an object over the caller/callee graph.\n\n" +
+                "Select the object with `name` (optionally `type`), `guid`, `entityKey` or `path`; a bare name shared by several objects is refused with each guid/path. `direction` up (callers, default) | down | both; `maxDepth` 1-6 (2); `maxNodes` 1-2000 (200); `typeFilter` narrows the report without changing the traversal.\n" +
+                "Returns `affected` (with depth), `countsByType`, `order` (a topological sort: an object comes after everything it calls), `hasCycle`/`cycleNodes`, `stats.truncated`/`truncatedBy` naming the cap hit, and `fieldTrust`: callers/callees come from index enrichment, so `partial:<pct>` means part of the graph was not read - an empty set is then not a confirmed zero. No risk score.\n",
+
+            ["genexus_object_context"] =
+                "# genexus_object_context\n\n" +
+                "Read-only context of one object in one call.\n\n" +
+                "Selectors as `genexus_impact`. Returns `object` (identity from the index, no SDK open), `references.callers`/`callees` (depth 1, 100 nodes by default; `fieldTrust` partial with an empty list means not read, `read:false`), and `dataModel` (the ER diagram for a Transaction/Table, the index tables otherwise) or the reason it was omitted in `suppressed[]` with the call that unlocks it.\n",
+
             ["genexus_data_view"] =
                 "# genexus_data_view\n\n" +
                 "Author a root-only Business Component Transaction mapped through a native Data View.\n\n" +
@@ -597,7 +614,8 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `audit_gam` — inspect GAM and environment security configuration.\n" +
                 "- `scan_secrets` — scan source for credential-like values.\n" +
-                "- `scan_native` — invoke the installed native GeneXus Security Scanner when available.\n\n" +
+                "- `scan_native` — invoke the installed native GeneXus Security Scanner when available.\n" +
+                "- `audit_object` \u2014 fast in-memory audit of one object (`name`, optional `type`/`guid`/`entityKey`/`path`) against the IDE rules it knows (#100 URL parameter encryption, #108 native code); `rulesNotEvaluated` lists the IDE rules it does not run. Complements `scan_native`, does not replace it.\n\n" +
                 "All actions are read-only audits. Findings may contain sensitive locations or snippets; keep them in the current response and do not copy secrets into logs or commits.\n",
 
             ["genexus_edit_form"] =
@@ -723,6 +741,9 @@ namespace GxMcp.Gateway
                 "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children; pass the PatternInstance `baseVersion` even for dryRun.\n" +
                 "- `move_grid_column` — move an existing attribute/variable column by verified identity, with optional `before`, position, caption and `baseVersion` (required even for dryRun).\n" +
                 "- `add_grid_variable` — add a presentation variable with a verified `variableReference` (`GUID-Name`), caption, Character/VarChar length and optional placement; unrelated bindings and metadata are preserved.\n\n" +
+                "- `add_grid` — add a grid over an SDT collection variable: `collection` (`&Lines`), `sdt`, `containerName` (a table), `columns` (item names or `{item, description}`), optional `deleteAction`. Every column is a `gridVariable` bound to an SDT item; the written grid is re-read and projected, and rolls back if a column, the SDT reference or the delete action is lost.\n" +
+                "- `add_user_action` — with `callObject` (`Name` or `Type:Name`), optional `popup` and ordered `parameters`, the form button that opens another object; it has no derived `Do<actionName>` event and cannot be combined with `procedure`. `containerName` may be a path of named ancestors (`General/Table/Actions`) when a bare name repeats across tabs.\n" +
+                "- `list_tabs` / `tab_schema` — read-only: the instance's tabs (kind, position, key attributes, and the attributes all tabs of a kind share) and the pattern's own schema for `kind` grid|tabular|webcomponent; a missing pattern definition is a typed error, never an empty schema.\n" +
                 "- `replace_web_component_with_user_action` — use the U16 Patterns SDK to replace one existing form-level WebComponent with a UserAction DropDownComponent at an explicit path. The operation preserves the referenced Gxobject, snapshots the complete PatternInstance and parent projection, saves through the native element commands, re-reads, and rolls back on divergence.\n\n" +
                 "- `settings_templates` includes embedded Settings templates and separate WorkWithPlus for Web Template objects linked to Settings/Main. `guid` identifies Settings; `template=wwp:<guid>` selects a separate template. Use returned paths, offset/limit, and the same baseVersion on subsequent pages.\n" +
                 "- `settings_read` returns separate templates' stored XML attributes; offset=0, limit=0 also includes the exact XML. WWP default resolvers are not invoked. Embedded templates retain the SDK property projection.\n" +

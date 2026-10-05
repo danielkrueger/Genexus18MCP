@@ -65,6 +65,11 @@ namespace GxMcp.Worker.Services.Structure
                 Logger.Error($"[VisualStructureMapper] Fatal error mapping {name}: {ex.Message}");
             }
 
+            // Only a Transaction row has it; an unreadable value is omitted, not defaulted.
+            bool showInForms = false;
+            if (attr is TransactionAttribute && TransactionAttributeFormsProperty.TryRead((object)attr, out showInForms))
+                item[TransactionAttributeFormsProperty.JsonName] = showInForms;
+
             item["type"] = typeStr;
             item["description"] = desc;
             item["formula"] = formula;
@@ -138,6 +143,20 @@ namespace GxMcp.Worker.Services.Structure
                     // by the SDK and also leaks the setting to unrelated transactions.
                     targetAttr.IsNullable = (Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue)val;
                     isModified = true;
+                }
+            }
+
+            if (vItem[TransactionAttributeFormsProperty.JsonName] != null)
+            {
+                if (!TransactionAttributeFormsProperty.TryParse(vItem[TransactionAttributeFormsProperty.JsonName], out bool wantedShow))
+                    throw new ArgumentException("showInDefaultForms must be a boolean.");
+                bool currentShow;
+                if (!TransactionAttributeFormsProperty.TryRead((object)targetAttr, out currentShow))
+                    throw new InvalidOperationException("ShowInDefaultFormsUnsupported: this GeneXus SDK cannot read 'Show in Default Forms'.");
+                if (currentShow != wantedShow)
+                {
+                    if (!TransactionAttributeFormsProperty.TryWrite((object)targetAttr, wantedShow))
+                        throw new InvalidOperationException("ShowInDefaultFormsUnsupported: this GeneXus SDK cannot write 'Show in Default Forms'.");
                 }
             }
 

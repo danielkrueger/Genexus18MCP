@@ -1967,7 +1967,7 @@ namespace GxMcp.Gateway
             // write verification failed" with no clue what was rejected.
             // Allowlist these when present — they're small structured objects.
             string[] diagnosticKeys = {
-                "details", "verifyDiff", "suggestion", "persistedSnippet", "requestedSnippet",
+                "details", "exceptionType", "failureTrace", "verifyDiff", "suggestion", "persistedSnippet", "requestedSnippet",
                 "availableParts", "part", "objectName", "objectType",
                 // Patch persistence receipt: these fields must survive terse error
                 // projection so WriteNotPersisted still tells the caller what the SDK

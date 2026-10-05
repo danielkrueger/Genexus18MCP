@@ -491,6 +491,9 @@ in GeneXus first.
 
 **Analysis, docs & API**
 - `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …). `mode=explain` is compatibility-only: it preserves the legacy response envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` instead.
+- `genexus_dfd` - read-only ER diagram of a Transaction/Table (`extends`/`subordinates` edges + Mermaid `erDiagram`) built only from the SDK table relations
+- `genexus_impact` - read-only affected set of an object over the caller graph: counts by type, a dependencies-first rebuild `order`, cycles and the cap that truncated it (no risk score)
+- `genexus_object_context` - read-only identity + callers/callees (with coverage) + data model of one object; a name shared by several objects is refused with their guids and paths
 - `genexus_doc` — generate wiki / dependency graphs / health reports
 - `genexus_api` — introspect REST endpoints exposed by HTTP procedures
 - `genexus_security` — audit KB security: `audit_gam` (env/GAM props), `scan_secrets` (regex over Source), `scan_native` (the SDK's own Security Scanner, `ISecurityScannerService`)

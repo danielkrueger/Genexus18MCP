@@ -180,7 +180,12 @@ namespace GxMcp.Gateway.Routers
                     return new
                     {
                         module = "Security",
-                        action = args?["action"]?.ToString() ?? "audit_gam"
+                        action = args?["action"]?.ToString() ?? "audit_gam",
+                        target = args?["name"]?.ToString(),
+                        type = args?["type"]?.ToString(),
+                        guid = args?["guid"]?.ToString(),
+                        entityKey = args?["entityKey"]?.ToString(),
+                        path = args?["path"]?.ToString()
                     };
 
                 // Database umbrella: drift_check|drift_report|optimize_*|sql_*|sample_data|types_*.
@@ -476,6 +481,14 @@ namespace GxMcp.Gateway.Routers
                         target = args?["name"]?.ToString(),
                         @params = args
                     };
+
+                // Read-only graph views (#422-#424): every selector travels in @params.
+                case "genexus_dfd":
+                    return new { module = "Dfd", action = "Run", target = args?["name"]?.ToString(), @params = args };
+                case "genexus_impact":
+                    return new { module = "Impact", action = "Run", target = args?["name"]?.ToString(), @params = args };
+                case "genexus_object_context":
+                    return new { module = "ObjectContext", action = "Run", target = args?["name"]?.ToString(), @params = args };
 
                 // genexus_types — Domain/SDT introspection + value validation.
                 default:

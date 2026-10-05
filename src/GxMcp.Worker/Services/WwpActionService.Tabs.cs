@@ -90,7 +90,7 @@ namespace GxMcp.Worker.Services
                         message: lockedMutation["error"].ToString(), target: target, extra: lockedMutation);
                 JObject expectedTabs = ProjectTabs(lockedAfter);
 
-                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects);
+                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects, currentXml);
                 string parentWebFormBefore = ReadPart(parent, "WebForm");
                 byte[] nativeBytes = ReadPartBytes(currentPart);
                 SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
@@ -176,9 +176,12 @@ namespace GxMcp.Worker.Services
                     WwpTabException typed = ex as WwpTabException;
                     JObject rollback = RestoreSnapshots(currentInstance, currentPart, nativeBytes,
                         currentXml, parent, parentWebFormBefore, applyOnSaveBefore);
-                    return McpResponse.Err(code: typed?.Code ?? "WwpTabFailed", message: ex.Message,
+                    ExceptionRoot.Log("[WWP-TAB] failed", ex);
+                    return McpResponse.Err(code: typed?.Code ?? "WwpTabFailed", message: ExceptionRoot.Message(ex),
                         target: target, extra: new JObject
                         {
+                            ["exceptionType"] = ExceptionRoot.Unwrap(ex)?.GetType().Name,
+                            ["failureTrace"] = ExceptionRoot.FailureTrace(ex),
                             ["persisted"] = false,
                             ["patternReReadConfirmed"] = false,
                             ["webFormProjectionConfirmed"] = false,
@@ -481,6 +484,19 @@ namespace GxMcp.Worker.Services
                 foreach (object descendant in Walk(child)) yield return descendant;
         }
 
+        // Walk with the named ancestors of each element (for path-qualified containers).
+        private static IEnumerable<KeyValuePair<object, List<string>>> WalkWithPath(object element, List<string> ancestors)
+        {
+            if (element == null) yield break;
+            string label = NativeAttribute(element, "name");
+            if (string.IsNullOrWhiteSpace(label)) label = NativeAttribute(element, "controlName");
+            var path = new List<string>(ancestors);
+            if (!string.IsNullOrWhiteSpace(label)) path.Add(label);
+            yield return new KeyValuePair<object, List<string>>(element, path);
+            foreach (object child in NativeChildren(element))
+                foreach (var descendant in WalkWithPath(child, path)) yield return descendant;
+        }
+
         private static List<object> NativeChildren(object element)
         {
             object children = GetProperty(element, "Children");
@@ -572,7 +588,7 @@ namespace GxMcp.Worker.Services
                 {
                     JObject response = JObject.Parse(_write.WriteObject(parent.Name, new JObject
                     {
-                        ["part"] = "WebForm", ["mode"] = "full", ["content"] = webForm,
+                        ["type"] = parent.TypeDescriptor?.Name, ["part"] = "WebForm", ["mode"] = "full", ["content"] = webForm,
                         ["validate"] = true, ["rollbackOnFailure"] = true
                     }));
                     string restored = ReadPart(parent, "WebForm");

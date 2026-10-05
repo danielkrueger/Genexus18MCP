@@ -226,7 +226,13 @@ namespace GxMcp.Gateway.Tests
             //   can report an unqualified Success over an inventory it could not
             //   read, which is the false confidence the issue is about. Measured
             //   ~34135 tokens; ~365 headroom.
-            Assert.True(approxTokens < 34500, $"tool_definitions.json is ~{approxTokens} tokens; budget 34500.");
+            //   2026-10-05 (issues #420-#427): 34500 -> 36000 for three new read-only tools
+            //   (genexus_dfd, genexus_impact, genexus_object_context: each needs its own
+            //   selector/limit schema), genexus_wwp add_grid / list_tabs / tab_schema and the
+            //   add_user_action callObject/popup/parameters inputs, and genexus_security
+            //   audit_object. The alternative was leaving those capabilities to free-text
+            //   arguments that clients cannot validate. Measured ~35685 tokens; ~315 headroom.
+            Assert.True(approxTokens < 36000, $"tool_definitions.json is ~{approxTokens} tokens; budget 36000.");
         }
 
         [Theory]
@@ -238,7 +244,11 @@ namespace GxMcp.Gateway.Tests
         // the mode=callers half of `cursor`). Without the two budget arguments the
         // documented resume hint on `cursor` is unreachable, so this is the schema cost of
         // making caller paging usable rather than new surface. Measured 82572 bytes.
-        [InlineData("all", 83000)]
+        //
+        // 83000 -> 86500 for issues #420-#427 (see the token budget above: three read-only
+        // tools, the genexus_wwp add_grid/list_tabs/tab_schema/callObject inputs and
+        // genexus_security audit_object). Measured 86107 bytes.
+        [InlineData("all", 86500)]
         [InlineData("core", 25000)]
         [InlineData("standard", 60000)]
         [InlineData("authoring", 60000)]

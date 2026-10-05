@@ -47,6 +47,9 @@ namespace GxMcp.Gateway
             "genexus_compare",
             "genexus_format",
             "genexus_kb_diff",
+            "genexus_dfd",
+            "genexus_impact",
+            "genexus_object_context",
             "genexus_logs" // legacy alias
         };
 
@@ -134,7 +137,7 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "list_actions" },
                     mutating: new[] { "add_grid_action", "add_user_action", "update_action", "move_action", "remove_action" }),
                 ["genexus_security"] = Contract(
-                    readOnly: new[] { "audit_gam", "scan_secrets", "scan_native" },
+                    readOnly: new[] { "audit_gam", "scan_secrets", "scan_native", "audit_object" },
                     mutating: Array.Empty<string>()),
                 ["genexus_edit_form"] = Contract(
                     readOnly: Array.Empty<string>(),
@@ -182,10 +185,10 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "list", "dry_run_add", "dry_run_remove" },
                     mutating: new[] { "add", "remove" }),
                 ["genexus_wwp"] = Contract(
-                    readOnly: new[] { "list", "settings_templates", "settings_read" },
+                    readOnly: new[] { "list", "settings_templates", "settings_read", "list_tabs", "tab_schema" },
                     mutating: new[] { "add_action", "add_user_action", "update_action", "move_action", "remove_action",
                         "add_tab", "move_tab", "remove_tab", "set_table_type", "add_grid_attribute",
-                        "move_grid_column", "add_grid_variable",
+                        "move_grid_column", "add_grid_variable", "add_grid",
                         "replace_web_component_with_user_action", "settings_edit" }),
                 ["genexus_sandbox"] = Contract(
                     readOnly: Array.Empty<string>(),
@@ -271,6 +274,7 @@ namespace GxMcp.Gateway
             "genexus_wwp:add_grid_attribute",
             "genexus_wwp:move_grid_column",
             "genexus_wwp:add_grid_variable",
+            "genexus_wwp:add_grid",
             "genexus_wwp:replace_web_component_with_user_action",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"

@@ -99,7 +99,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_navigation` | — | `view` |
 | `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline`, `export_openapi`, `import_openapi` | `routes_clone`, `routes_update`, `snapshot` |
 | `genexus_apply_pattern` | `list_actions` | `add_grid_action`, `add_user_action`, `update_action`, `move_action`, `remove_action` |
-| `genexus_security` | `audit_gam`, `scan_secrets`, `scan_native` | — |
+| `genexus_security` | `audit_gam`, `scan_secrets`, `scan_native`, `audit_object` | — |
 | `genexus_sandbox` | — | `create`, `remove` |
 | `genexus_worker_pool` | — | `warm_spares` |
 | `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
@@ -117,7 +117,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_transfer` | `inspect` | `export`, `import` |
 | `genexus_deploy` | `list_targets` | `deploy` |
 | `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
-| `genexus_wwp` | `list`, `settings_templates`, `settings_read` | `add_action`, `add_user_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `set_table_type`, `add_grid_attribute`, `move_grid_column`, `add_grid_variable`, `replace_web_component_with_user_action`, `settings_edit` |
+| `genexus_wwp` | `list`, `settings_templates`, `settings_read`, `list_tabs`, `tab_schema` | `add_action`, `add_user_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `set_table_type`, `add_grid_attribute`, `move_grid_column`, `add_grid_variable`, `add_grid`, `replace_web_component_with_user_action`, `settings_edit` |
 
 Real-KB validation gate: `genexus_structure action=get_visual` with a homonymous
 target must be exercised against a KB that contains the relevant Transaction/Table
@@ -154,6 +154,9 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_edit` | active | Full Source forwards `verifyMode`/`requireObjectSave`, verifies public-read text, and separates physical save from comparison evidence; `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or `Patch -> Apply` (mode=patch + string, and the abbreviated `patch={find,replace}` form that additionally accepts `patch.scope` / `patch.indentation`); `targets[]` plural form routes to `Batch -> MultiEdit`, `parts[]` to `Batch -> BatchEdit`, `changeSet` to `Mutation -> ChangeSet`; full persisted `source`/`content` is omitted by default across successful writes; `return_post_state` controls only the `post_state` object; `includePersistedText=true` restores full text for `genexus_edit`, `genexus_edit_and_build`, `genexus_io`, and `genexus_variable`, with omitted paths in MCP `_meta.omittedFields`; oversized `post_state.diff` is capped at 40 lines with `diffTruncated`; variable add/modify returns changed declarations and persisted count |
 | `genexus_inspect` | active | `Analyze -> GetConversionContext` |
 | `genexus_analyze` | active | `Analyze`, `Linter`, or `UI` depending on mode |
+| `genexus_dfd` | active (read-only) | `Dfd` - ER diagram (Mermaid) of a Transaction/Table from the SDK table relations only |
+| `genexus_impact` | active (read-only) | `Impact` - affected set, counts by type, dependencies-first rebuild order and cycles over the caller graph; no risk score |
+| `genexus_object_context` | active (read-only) | `ObjectContext` - identity + callers/callees with coverage + data model in one call |
 | `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action (specify, compile_check, build, build_all, rebuild, index, status, result, reorg, validate); index `status` waits accept `wait`/`since`/`freshness` and report `waitSatisfied` |
 | `genexus_create` | active | Object creation umbrella: Transaction, Procedure, WebPanel, SDT, API, Domain, Popup, SDPanel, SaveAs, Template, `object_atomic` |
 | `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure | CheckSubtypes`; supports `type` disambiguation, `remove_attribute`, `move_attribute` |
@@ -167,7 +170,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_edit_form` | active | Semantic WebForm element manipulation |
 | `genexus_apply_pattern` | active | Pattern application for any installed pattern (registry discovered from `Packages\Patterns`), diagnose, and reapply on WorkWithPlus instances only (with no implicit WorkWithPlus fallback when `pattern` is omitted - headless reapply of any other pattern is refused as `PatternRouteUnsupported`), and WorkWithPlus action-group/form-action configuration |
 | `genexus_wwp` | active | Typed WorkWithPlus grid/form actions, tabs, nested controls, native table-type changes, grid attributes/variables, and native WebComponent-to-DropDownComponent replacement with preview, physical KB identity, parent/PatternInstance projection checks, concurrency checks, verification, and conditional rollback; an existing object without a WorkWithPlus instance returns `WWPInstanceNotFound` with `detectedPatterns` |
-| `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native` (native SDK scanner) |
+| `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native | audit_object` (native SDK scanner; in-memory single-object audit) |
 | `genexus_kb` | active | Multi-KB pool management, startup object, and environment switching |
 | `genexus_kb_version` | active | SDK `KBVersionHelper` model version tree and branch management; `changed_objects` provides a read-only Design-vs-frozen NEW/CHANGED inventory or stable `ChangedObjectsNotSupported` when the SDK surface is unavailable |
 | `genexus_gam` | active | SDK `IIntegratedSecurityService` GAM provisioning and deploy |

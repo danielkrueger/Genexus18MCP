@@ -6,6 +6,7 @@ using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Helpers;
 
 namespace GxMcp.Worker.Services
 {
@@ -331,6 +332,10 @@ namespace GxMcp.Worker.Services
                 _patterns.BuildPatternPartEnvelope(requestedObject, "PatternInstance", xml, PatternRegistry.WorkWithPlusPatternId,
                     out _, out KBObjectPart instancePart);
 
+                if (IsTabRead(operation))
+                    return RunTabRead(target, instance, instancePart, xml, operation, args);
+                if (IsAddGridOperation(operation))
+                    return RunAddGridOperation(target, requestedObject, instance, instancePart, xml, args);
                 if (IsFormUserActionOperation(operation))
                     return RunFormUserActionOperation(target, requestedObject, instance, instancePart, xml, args);
                 if (IsWebComponentReplacementOperation(operation))
@@ -721,6 +726,11 @@ namespace GxMcp.Worker.Services
                 return Error("MissingActionCaption", "caption is required for a form-level user action.");
             if (args?["procedure"] != null && !string.IsNullOrWhiteSpace(args["procedure"]?.ToString()))
                 return Error("FormActionProcedureConflict", "A form-level user action derives its event as Do<actionName>; omit procedure when the action should fire that event.");
+            JObject callObjectError = ValidateCallObjectArgs(args);
+            if (callObjectError != null) return callObjectError;
+            bool callsObject = HasCallObject(args);
+            if (callsObject && string.IsNullOrWhiteSpace(args["_callObjectReference"]?.ToString()))
+                return Error("CallObjectUnresolved", "callObject was not resolved to a KB object.");
 
             List<XElement> matchingContainers = FindFormContainers(document, containerName).ToList();
             if (matchingContainers.Count > 1)
@@ -738,11 +748,13 @@ namespace GxMcp.Worker.Services
                 foreach (string availableName in GetFormActionContainers(document)
                     .Select(e => Attr(e, "name")).Where(n => !string.IsNullOrWhiteSpace(n)))
                     available.Add(availableName);
+                var availablePaths = new JArray(GetFormActionContainers(document).Select(ContainerPath).Where(n => n.Length > 0).Distinct());
                 return new JObject
                 {
                     ["code"] = "FormActionContainerNotFound",
                     ["error"] = "Form action container '" + containerName + "' was not found.",
-                    ["availableContainers"] = available
+                    ["availableContainers"] = available,
+                    ["availablePaths"] = availablePaths
                 };
             }
 
@@ -756,6 +768,7 @@ namespace GxMcp.Worker.Services
                 new XAttribute("caption", caption));
             container.Add(action);
             ApplyProperties(action, args, procedureResolver);
+            if (callsObject) ApplyCallObjectXml(action, args);
 
             return new JObject
             {
@@ -763,8 +776,8 @@ namespace GxMcp.Worker.Services
                 ["actionName"] = actionName,
                 ["caption"] = caption,
                 ["containerName"] = containerName,
-                ["event"] = "Do" + actionName,
-                ["eventBinding"] = "derived-from-user-action-name"
+                ["event"] = callsObject ? JValue.CreateNull() : new JValue("Do" + actionName),
+                ["eventBinding"] = callsObject ? "opens-object" : "derived-from-user-action-name"
             };
         }
 
@@ -799,11 +812,19 @@ namespace GxMcp.Worker.Services
                 string procedure = args["procedure"].ToString();
                 KBObject obj = procedureResolver?.Invoke(procedure);
                 if (obj == null) throw new InvalidOperationException("Procedure '" + procedure + "' was not found.");
-                action.SetAttributeValue("gxobject", obj.Guid + "-" + obj.Name);
+                action.SetAttributeValue("gxobject", GxObjectReference(obj));
             }
             // Do not set SecFuntionKey or call the WWP permission-creation services.
             // Editing the public PatternInstance contract alone has no permission side effect.
         }
+
+        // The IDE stores gxobject as <type GUID>-<qualified name>, the type GUID being
+        // shared by every object of the type, not the object's own GUID (#414).
+        internal static string GxObjectReference(KBObject obj)
+            => FormatGxObjectReference(KbEntityIdentity.TypeGuid(obj), obj.QualifiedName?.ToString(), obj.Name);
+
+        internal static string FormatGxObjectReference(string typeGuid, string qualifiedName, string name)
+            => typeGuid + "-" + (string.IsNullOrEmpty(qualifiedName) ? name : qualifiedName);
 
         private static JObject Project(XDocument document)
         {
@@ -881,30 +902,66 @@ namespace GxMcp.Worker.Services
                 ["confirmation"] = Attr(action, "confirmMessage"),
                 ["multipleSelection"] = Attr(action, "multiRowSelection")
             };
-            if (deriveEvent && Is(action, "userAction")) result["event"] = "Do" + name;
+            if (deriveEvent && Is(action, "userAction"))
+            {
+                if (string.IsNullOrEmpty(Attr(action, "gxobject"))) result["event"] = "Do" + name;
+                else
+                {
+                    // A form button that opens an object fires no derived event.
+                    result["callsObject"] = Attr(action, "gxobject");
+                    result["popup"] = Attr(action, "popup");
+                    result["parameters"] = new JArray(action.Elements().Where(e => Is(e, "parameters"))
+                        .SelectMany(p => p.Elements().Where(e => Is(e, "parameter"))).Select(e => Attr(e, "name")));
+                }
+            }
             return result;
         }
 
+        // Every table and action group can hold a form action (#415); a bare name that
+        // repeats across tabs is disambiguated by a path of named ancestors.
         private static IEnumerable<XElement> GetFormActionContainers(XDocument document) =>
-            document?.Descendants().Where(e => Is(e, "table") &&
-                (Attr(e, "name").Equals("TableActions", StringComparison.OrdinalIgnoreCase) ||
-                 e.Elements().Any(child => Is(child, "userAction") || Is(child, "standardAction"))))
+            document?.Descendants().Where(e => Is(e, "table") || Is(e, "actionGroup"))
             ?? Enumerable.Empty<XElement>();
+
+        private static string ContainerLabel(XElement e)
+        {
+            string name = Attr(e, "name");
+            return string.IsNullOrWhiteSpace(name) ? Attr(e, "controlName") : name;
+        }
+
+        internal static List<string> ContainerPathSegments(XElement container) =>
+            container.AncestorsAndSelf().Reverse().Select(ContainerLabel).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+
+        internal static string ContainerPath(XElement container) => string.Join("/", ContainerPathSegments(container));
+
+        // A bare name matches the container's own name/controlName; "A/B/C" matches when the
+        // container's named ancestors end with exactly those segments.
+        internal static bool ContainerPathMatches(IList<string> segments, string own, string controlName, string requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested)) return false;
+            if (requested.IndexOf('/') < 0)
+                return string.Equals(own, requested, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(controlName, requested, StringComparison.OrdinalIgnoreCase);
+            string[] wanted = requested.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (wanted.Length == 0 || wanted.Length > segments.Count) return false;
+            for (int i = 0; i < wanted.Length; i++)
+                if (!string.Equals(segments[segments.Count - wanted.Length + i], wanted[i].Trim(), StringComparison.OrdinalIgnoreCase))
+                    return false;
+            return true;
+        }
 
         private static IEnumerable<XElement> FindFormContainers(XDocument document, string name)
         {
             if (string.IsNullOrWhiteSpace(name)) return Enumerable.Empty<XElement>();
             return GetFormActionContainers(document).Where(e =>
-                (!string.IsNullOrWhiteSpace(Attr(e, "name")) &&
-                 Attr(e, "name").Equals(name, StringComparison.OrdinalIgnoreCase)) ||
-                (!string.IsNullOrWhiteSpace(Attr(e, "controlName")) &&
-                 Attr(e, "controlName").Equals(name, StringComparison.OrdinalIgnoreCase)));
+                ContainerPathMatches(ContainerPathSegments(e), Attr(e, "name"), Attr(e, "controlName"), name.Trim()));
         }
 
         private static JObject DescribeFormContainer(XElement container) => new JObject
         {
             ["name"] = Attr(container, "name"),
-            ["controlName"] = Attr(container, "controlName")
+            ["controlName"] = Attr(container, "controlName"),
+            ["path"] = ContainerPath(container)
         };
 
         private static XElement FindGroup(XDocument doc, string name) => string.IsNullOrWhiteSpace(name) ? null

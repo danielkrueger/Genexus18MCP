@@ -1190,6 +1190,35 @@
     {
       "annotations": {
         "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Full guidance: genexus://kb/tool-help/genexus_dfd",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "maxDepth": {
+            "description": "Relation hops from the root (default 3).",
+            "maximum": 6,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Transaction or Table name.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_dfd"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
@@ -2003,6 +2032,70 @@
         "type": "object"
       },
       "name": "genexus_gxserver"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Full guidance: genexus://kb/tool-help/genexus_impact",
+      "inputSchema": {
+        "properties": {
+          "direction": {
+            "description": "up: callers (default); down: callees.",
+            "enum": [
+              "up",
+              "down",
+              "both"
+            ],
+            "type": "string"
+          },
+          "entityKey": {
+            "description": "Object entity key.",
+            "type": "string"
+          },
+          "guid": {
+            "description": "Object GUID.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "maxDepth": {
+            "description": "Default 2.",
+            "maximum": 6,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxNodes": {
+            "description": "Default 200.",
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Object name; a name shared by several…",
+            "type": "string"
+          },
+          "path": {
+            "description": "Object path, with or without the Root…",
+            "type": "string"
+          },
+          "type": {
+            "description": "Object type, to narrow a bare name.",
+            "type": "string"
+          },
+          "typeFilter": {
+            "description": "Only report objects of this type; the…",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_impact"
     },
     {
       "annotations": {
@@ -3353,6 +3446,57 @@
     {
       "annotations": {
         "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Full guidance: genexus://kb/tool-help/genexus_object_context",
+      "inputSchema": {
+        "properties": {
+          "entityKey": {
+            "description": "Object entity key.",
+            "type": "string"
+          },
+          "guid": {
+            "description": "Object GUID.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "maxDepth": {
+            "description": "Default 1.",
+            "maximum": 6,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxNodes": {
+            "description": "Default 100.",
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Object name; a name shared by several…",
+            "type": "string"
+          },
+          "path": {
+            "description": "Object path, with or without the Root…",
+            "type": "string"
+          },
+          "type": {
+            "description": "Object type, to narrow a bare name.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_object_context"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
@@ -3996,12 +4140,33 @@
             "enum": [
               "audit_gam",
               "scan_secrets",
-              "scan_native"
+              "scan_native",
+              "audit_object"
             ],
+            "type": "string"
+          },
+          "entityKey": {
+            "description": "audit_object: object entity key.",
+            "type": "string"
+          },
+          "guid": {
+            "description": "audit_object: object GUID.",
             "type": "string"
           },
           "kb": {
             "description": "KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "audit_object: object name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "audit_object: object path.",
+            "type": "string"
+          },
+          "type": {
+            "description": "audit_object: object type, to…",
             "type": "string"
           }
         },
@@ -4733,6 +4898,9 @@
               "add_grid_attribute",
               "move_grid_column",
               "add_grid_variable",
+              "add_grid",
+              "list_tabs",
+              "tab_schema",
               "replace_web_component_with_user_action",
               "settings_templates",
               "settings_read",
@@ -4762,6 +4930,10 @@
           },
           "buttonClass": {
             "description": "add/update: theme button class.",
+            "type": "string"
+          },
+          "callObject": {
+            "description": "add_user_action: object the button…",
             "type": "string"
           },
           "caption": {
@@ -4834,6 +5006,17 @@
             },
             "type": "array"
           },
+          "collection": {
+            "description": "add_grid: SDT collection variable, e.g.…",
+            "type": "string"
+          },
+          "columns": {
+            "description": "add_grid: SDT items shown, in order; a…",
+            "items": {
+              "description": "An SDT item name, or {item,…"
+            },
+            "type": "array"
+          },
           "confirm": {
             "description": "Confirmation prompt; required to delete…",
             "type": "boolean"
@@ -4852,6 +5035,10 @@
               "DropDownComponent"
             ],
             "type": "string"
+          },
+          "deleteAction": {
+            "description": "add_grid: add a UDelete image action to…",
+            "type": "boolean"
           },
           "description": {
             "description": "add/update: tooltip or description.",
@@ -4900,6 +5087,15 @@
             "description": "KB alias.",
             "type": "string"
           },
+          "kind": {
+            "description": "tab_schema: tab kind to read the…",
+            "enum": [
+              "grid",
+              "tabular",
+              "webcomponent"
+            ],
+            "type": "string"
+          },
           "length": {
             "description": "add_grid_variable: Character/VarChar…",
             "minimum": 1,
@@ -4922,6 +5118,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "parameters": {
+            "description": "add_user_action with callObject:…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "popup": {
+            "description": "add_user_action with callObject: open…",
+            "type": "boolean"
+          },
           "position": {
             "description": "Zero-based action or tab index.",
             "minimum": 0,
@@ -4939,6 +5146,10 @@
             "default": true,
             "description": "On a failed write or post-save…",
             "type": "boolean"
+          },
+          "sdt": {
+            "description": "add_grid: the SDT the collection is…",
+            "type": "string"
           },
           "selection": {
             "description": "add/update: execution scope for grid…",

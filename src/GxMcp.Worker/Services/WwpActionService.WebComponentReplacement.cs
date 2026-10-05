@@ -147,7 +147,7 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Err(code: lockedPreview["code"]?.ToString() ?? "WwpReplacementInvalid",
                         message: lockedPreview["error"].ToString(), target: target, extra: lockedPreview);
 
-                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects);
+                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects, currentXml);
                 string parentWebFormBefore = parent == null ? null : ReadPart(parent, "WebForm");
                 string parentEventsBefore = parent == null ? null : ReadPart(parent, "Events");
                 byte[] nativeBytes = ReadPartBytes(currentPart);
@@ -258,9 +258,12 @@ namespace GxMcp.Worker.Services
                     Logger.Warn("[WWP-REPLACE] save/projection failed: " + ex);
                     JObject rollback = RestoreReplacementSnapshots(currentInstance, currentPart, nativeBytes,
                         currentXml, parent, parentWebFormBefore, applyOnSaveBefore);
-                    return McpResponse.Err(code: typed?.Code ?? "WwpReplacementFailed", message: ex.Message,
+                    ExceptionRoot.Log("[WWP-REPLACE] failed", ex);
+                    return McpResponse.Err(code: typed?.Code ?? "WwpReplacementFailed", message: ExceptionRoot.Message(ex),
                         target: target, extra: new JObject
                         {
+                            ["exceptionType"] = ExceptionRoot.Unwrap(ex)?.GetType().Name,
+                            ["failureTrace"] = ExceptionRoot.FailureTrace(ex),
                             ["saved"] = false,
                             ["persisted"] = false,
                             ["patternReReadConfirmed"] = false,
@@ -448,6 +451,15 @@ namespace GxMcp.Worker.Services
             if (type.Equals("table", StringComparison.OrdinalIgnoreCase)
                 || type.Equals("WPTable", StringComparison.OrdinalIgnoreCase)) return true;
             return NativeElementXml(element)?.Name.LocalName.Equals("table", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        // A native action group is listed by type id (e.g. "2;88;Actions"), not by the word
+        // "actionGroup", so it is recognised by Type or by its XML element name (#415).
+        private static bool IsNativeActionGroup(object element)
+        {
+            if (element == null) return false;
+            if (NativeType(element).Equals("actionGroup", StringComparison.OrdinalIgnoreCase)) return true;
+            return NativeElementXml(element)?.Name.LocalName.Equals("actionGroup", StringComparison.OrdinalIgnoreCase) == true;
         }
 
         private static bool TryFindXmlTarget(XDocument document, WebComponentReplacementRequest request,

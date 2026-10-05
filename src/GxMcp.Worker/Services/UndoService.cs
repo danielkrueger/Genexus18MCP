@@ -167,9 +167,7 @@ namespace GxMcp.Worker.Services
                     }
                     string writeResult = _writeService.WriteObject(objectName, meta.Part, content);
                     var writeJson = TryParseJson(writeResult);
-                    bool success = writeJson != null
-                        && (string.Equals(writeJson["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase)
-                            || (writeJson["error"] == null && writeJson["message"] == null));
+                    bool success = IsWriteSuccess(writeJson);
 
                     if (success)
                     {
@@ -323,6 +321,19 @@ namespace GxMcp.Worker.Services
                 return new SnapshotMeta { RawGuid = guid, Part = part, Timestamp = timestamp };
             }
             catch { return null; }
+        }
+
+        // A write answers with the canonical status ("ok", legacy "Success"); only a
+        // response without one is judged structurally. A success may carry a message
+        // or an explicit null error, so presence of those fields is not a failure (#416).
+        internal static bool IsWriteSuccess(JObject writeJson)
+        {
+            if (writeJson == null) return false;
+            string status = writeJson["status"]?.ToString();
+            if (!string.IsNullOrEmpty(status))
+                return status.Equals("ok", StringComparison.OrdinalIgnoreCase)
+                    || status.Equals("Success", StringComparison.OrdinalIgnoreCase);
+            return writeJson["error"] == null && writeJson["message"] == null;
         }
 
         private static JObject TryParseJson(string s)

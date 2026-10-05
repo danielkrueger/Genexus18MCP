@@ -113,7 +113,7 @@ namespace GxMcp.Worker.Services
                         ["lifecycleExecuted"] = false
                     });
 
-                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects);
+                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects, currentXml);
                 string parentWebFormBefore = ReadPart(parent, "WebForm");
                 byte[] nativeBytes = ReadPartBytes(currentPart);
                 SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
@@ -232,9 +232,12 @@ namespace GxMcp.Worker.Services
                     WwpTabException typed = ex as WwpTabException;
                     JObject rollback = RestoreSnapshots(currentInstance, currentPart, nativeBytes,
                         currentXml, parent, parentWebFormBefore, applyOnSaveBefore);
-                    return McpResponse.Err(code: typed?.Code ?? "WwpTableTypeFailed", message: ex.Message,
+                    ExceptionRoot.Log("[WWP-TABLE] failed", ex);
+                    return McpResponse.Err(code: typed?.Code ?? "WwpTableTypeFailed", message: ExceptionRoot.Message(ex),
                         target: target, extra: new JObject
                         {
+                            ["exceptionType"] = ExceptionRoot.Unwrap(ex)?.GetType().Name,
+                            ["failureTrace"] = ExceptionRoot.FailureTrace(ex),
                             ["persisted"] = false,
                             ["patternReReadConfirmed"] = false,
                             ["webFormProjectionConfirmed"] = false,

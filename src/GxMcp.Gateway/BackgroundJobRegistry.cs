@@ -318,6 +318,23 @@ namespace GxMcp.Gateway
             }
         }
 
+        /// <summary>
+        /// The running jobs of a Worker scope that already hold a Worker task id: the only
+        /// ones whose real state can be asked of the Worker before admitting a new one (#418).
+        /// Queued jobs, other scopes and jobs without a task id yet are not candidates.
+        /// </summary>
+        internal List<JobEntry> GetReconciliationCandidates(string? workerScope, OwnershipFence? ownership = null)
+        {
+            string scope = NormalizeQueueScope(workerScope, ownership ?? new OwnershipFence(string.Empty, string.Empty, 0));
+            lock (_lifecycleQueueLock)
+            {
+                return _jobs.Values.Where(j =>
+                    string.Equals(j.Status, "running", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrEmpty(j.WorkerTaskId)
+                    && string.Equals(j.QueueScope, scope, StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+        }
+
         private static string NormalizeQueueScope(string? workerScope, OwnershipFence ownership)
         {
             if (!string.IsNullOrWhiteSpace(workerScope)) return workerScope.Trim();

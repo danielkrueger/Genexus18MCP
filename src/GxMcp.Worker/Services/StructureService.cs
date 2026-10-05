@@ -116,6 +116,12 @@ namespace GxMcp.Worker.Services
                     hint: "Pass a JSON object with a 'children' array describing the Transaction structure.",
                     target: targetName);
 
+                string invalidShowInForms = TransactionAttributeFormsProperty.FindInvalid(children);
+                if (invalidShowInForms != null) return Models.McpResponse.Err(
+                    code: "InvalidShowInDefaultForms",
+                    message: "showInDefaultForms of '" + invalidShowInForms + "' must be true or false.",
+                    target: targetName, extra: new JObject { ["persisted"] = false });
+
                 JArray before = _visualStructureService.SerializeVisualLevel(trn.Structure.Root);
                 TransactionSnapshot snapshot;
                 try { snapshot = CaptureTransactionSnapshot(trn); }
@@ -2065,7 +2071,7 @@ namespace GxMcp.Worker.Services
                     diff.Add(new JObject { ["path"] = itemPath, ["requested"] = wanted.DeepClone(), ["persisted"] = JValue.CreateNull() });
                     continue;
                 }
-                foreach (string property in new[] { "nullable", "type", "description", "formula", "isKey", "basedOnDomain", "basedOnAttribute", "isCollection", "isLevel", "referencedType" })
+                foreach (string property in new[] { "nullable", "type", "description", "formula", "isKey", "basedOnDomain", "basedOnAttribute", "isCollection", "isLevel", "referencedType", "showInDefaultForms" })
                     if (wanted[property] != null && !string.Equals(wanted[property].ToString().Trim(), actual[property]?.ToString().Trim(), StringComparison.OrdinalIgnoreCase))
                         diff.Add(new JObject { ["path"] = itemPath + "/" + property, ["requested"] = wanted[property].DeepClone(), ["persisted"] = actual[property]?.DeepClone() ?? JValue.CreateNull() });
                 if (wanted["children"] is JArray requestedChildren)

@@ -124,6 +124,9 @@ namespace GxMcp.Worker.Services
         private readonly KbStatsService _kbStatsService;
         // genexus_security action=scan_native — native Security Scanner over ISecurityScannerService.
         private readonly SecurityScanService _securityScanService;
+        private readonly SecurityObjectAuditService _securityObjectAuditService;
+        // genexus_dfd / genexus_impact / genexus_object_context — read-only views over the table relations and the caller graph.
+        private readonly GraphToolsService _graphToolsService;
         // genexus_gxserver action=pipeline_* — CI pipelines over IContinuousIntegrationService.
         private readonly CiPipelineService _ciPipelineService;
         // genexus_analyze mode=table_relations — table↔transaction relations over ITablesService.
@@ -200,6 +203,7 @@ namespace GxMcp.Worker.Services
             var callerGraphService = new CallerGraphService(_indexCacheService, _objectService);
             _analyzeService = new AnalyzeService(_kbService, _objectService, _indexCacheService, _navigationService, _uiService, callerGraphService);
             _buildService.SetCallerGraphService(callerGraphService);
+            _graphToolsService = new GraphToolsService(_kbService, _objectService, _indexCacheService, callerGraphService);
             _summarizeService = new SummarizeService(_kbService, _objectService);
             _injectionService = new InjectionService(_kbService, _objectService, _analyzeService);
             _patternAnalysisService = new PatternAnalysisService(_objectService);
@@ -276,6 +280,7 @@ namespace GxMcp.Worker.Services
             _dbDriftService.SetReorgImpact(_reorgImpactService);
             _kbStatsService = new KbStatsService(_kbService);
             _securityScanService = new SecurityScanService(_kbService);
+            _securityObjectAuditService = new SecurityObjectAuditService(_objectService);
             _ciPipelineService = new CiPipelineService(_kbService);
             _tableRelationsService = new TableRelationsService(_kbService, _objectService);
             _themeClassCatalogService = new ThemeClassCatalogService(_objectService);
@@ -970,6 +975,9 @@ namespace GxMcp.Worker.Services
                 ["reorgimpact"] = Handle_ReorgImpact,
                 ["kbstats"] = Handle_KbStats,
                 ["tablerelations"] = Handle_TableRelations,
+                ["dfd"] = (request, method, action, target, payload, args) => _graphToolsService.Dfd(args ?? new JObject()),
+                ["impact"] = (request, method, action, target, payload, args) => _graphToolsService.Impact(args ?? new JObject()),
+                ["objectcontext"] = (request, method, action, target, payload, args) => _graphToolsService.ObjectContext(args ?? new JObject()),
                 ["themeclasses"] = Handle_ThemeClasses,
                 ["usercontrols"] = Handle_UserControls,
                 ["wwpaction"] = Handle_WwpAction,
@@ -2734,6 +2742,8 @@ namespace GxMcp.Worker.Services
                 return _securityAuditService.ScanSecrets();
             if (string.Equals(action, "scan_native", StringComparison.OrdinalIgnoreCase))
                 return _securityScanService.Run(args ?? new JObject());
+            if (string.Equals(action, "audit_object", StringComparison.OrdinalIgnoreCase))
+                return _securityObjectAuditService.Run(args ?? new JObject());
             return UnsupportedAction("security", action, target);
                     // Item 65 — genexus_orient welcome card
         }

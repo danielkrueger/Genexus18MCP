@@ -610,6 +610,7 @@ namespace GxMcp.Worker.Helpers
                     {
                         v.Type = dbType;
                         v.Length = length;
+                        v.Decimals = decimals; // always assigned so NUMERIC(19) clears a previous ,2 (#417)
                         v.DomainBasedOn = null;
                         try { DomainPropertyApplier.ClearAttributeBasedOn((object)v); } catch { }
                         v.SetPropertyValue("DataType", null); // Reset user type if it was set

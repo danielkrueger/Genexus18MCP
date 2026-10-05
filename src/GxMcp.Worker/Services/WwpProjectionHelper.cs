@@ -285,27 +285,67 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Only these types can parent a WorkWithPlus instance. A Folder, Table, Module,
+        // Attribute or Domain may share the bare name and has no WebForm (#413).
+        private static readonly string[] ParentTypeNames = { "Transaction", "WebPanel" };
+
+        internal static bool IsAcceptedParentType(string typeName)
+        {
+            foreach (var accepted in ParentTypeNames)
+                if (string.Equals(accepted, typeName, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         /// <summary>
-        /// Resolve the parent KBObject for a WorkWithPlus host. Convention:
-        /// `WorkWithPlus&lt;X&gt;` host → parent named `X`. Falls back to reading
-        /// the host's PatternInstance XML for a SecFuntionKey / transaction ref
-        /// if the name strip doesn't resolve.
+        /// Names to try for the host's parent, best first: the root <c>transaction</c>
+        /// attribute (<c>&lt;type GUID&gt;-&lt;Name&gt;</c>), then the
+        /// <c>WorkWithPlus&lt;X&gt;</c> convention. A WebPanel instance has no such attribute.
         /// </summary>
-        public static KBObject ResolveHostParent(KBObject host, ObjectService objectService)
+        internal static System.Collections.Generic.List<string> ParentNameCandidates(string hostName, string instanceXml)
+        {
+            var names = new System.Collections.Generic.List<string>();
+            string fromInstance = null;
+            if (!string.IsNullOrWhiteSpace(instanceXml))
+            {
+                try
+                {
+                    string value = System.Xml.Linq.XDocument.Parse(instanceXml).Root?.Attribute("transaction")?.Value;
+                    // "<36-char GUID>-<Name>"
+                    if (value != null && value.Length > 37 && value[36] == '-' && Guid.TryParse(value.Substring(0, 36), out _))
+                        fromInstance = value.Substring(37);
+                }
+                catch (System.Xml.XmlException) { }
+            }
+            if (!string.IsNullOrEmpty(fromInstance)) names.Add(fromInstance);
+
+            const string prefix = "WorkWithPlus";
+            if (hostName != null && hostName.StartsWith(prefix, StringComparison.Ordinal) && hostName.Length > prefix.Length)
+            {
+                string byConvention = hostName.Substring(prefix.Length);
+                if (!names.Contains(byConvention)) names.Add(byConvention);
+            }
+            return names;
+        }
+
+        /// <summary>
+        /// Resolve the parent KBObject for a WorkWithPlus host by type (Transaction, then
+        /// WebPanel) and never by bare name alone, so a same-named Folder/Table is not taken.
+        /// </summary>
+        public static KBObject ResolveHostParent(KBObject host, ObjectService objectService, string instanceXml = null)
         {
             if (host == null || objectService == null) return null;
-            const string prefix = "WorkWithPlus";
-            string hostName = host.Name ?? string.Empty;
-            if (!hostName.StartsWith(prefix, StringComparison.Ordinal)) return null;
-            string parentName = hostName.Substring(prefix.Length);
-            if (string.IsNullOrEmpty(parentName)) return null;
-
-            try
+            foreach (string name in ParentNameCandidates(host.Name, instanceXml))
             {
-                var parent = objectService.FindObject(parentName);
-                if (parent != null) return parent;
+                foreach (string type in ParentTypeNames)
+                {
+                    try
+                    {
+                        var parent = objectService.FindObject(name, type);
+                        if (parent != null && IsAcceptedParentType(parent.TypeDescriptor?.Name)) return parent;
+                    }
+                    catch { }
+                }
             }
-            catch { }
             return null;
         }
     }

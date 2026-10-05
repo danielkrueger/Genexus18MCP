@@ -4,8 +4,8 @@
     "src/GxMcp.Gateway/tool_definitions.json",
     "src/GxMcp.Gateway/OperationClassifier.cs"
   ],
-  "toolCount": 54,
-  "actionCount": 275,
+  "toolCount": 57,
+  "actionCount": 282,
   "tools": [
     {
       "tool": "genexus_data_view",
@@ -1791,6 +1791,16 @@
         },
         {
           "action": "scan_native",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
+          "previewSupported": false
+        },
+        {
+          "action": "audit_object",
           "kind": "readOnly",
           "effects": "kb.read",
           "execution": "worker",
@@ -3690,6 +3700,40 @@
           "previewSupported": true
         },
         {
+          "action": "add_grid",
+          "kind": "mutating",
+          "effects": "kb.write",
+          "execution": "worker",
+          "retry": "operation_key",
+          "cache": "never",
+          "invalidation": [
+            "kb",
+            "dependents",
+            "collections"
+          ],
+          "previewSupported": true
+        },
+        {
+          "action": "list_tabs",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
+          "previewSupported": false
+        },
+        {
+          "action": "tab_schema",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
+          "previewSupported": false
+        },
+        {
           "action": "replace_web_component_with_user_action",
           "kind": "mutating",
           "effects": "kb.write",
@@ -3833,6 +3877,60 @@
             "dependents",
             "collections"
           ],
+          "previewSupported": false
+        }
+      ],
+      "inputExamples": 0,
+      "outputSchema": false
+    },
+    {
+      "tool": "genexus_dfd",
+      "router": "OperationsRouter",
+      "actions": [
+        {
+          "action": null,
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
+          "previewSupported": false
+        }
+      ],
+      "inputExamples": 0,
+      "outputSchema": false
+    },
+    {
+      "tool": "genexus_impact",
+      "router": "OperationsRouter",
+      "actions": [
+        {
+          "action": null,
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
+          "previewSupported": false
+        }
+      ],
+      "inputExamples": 0,
+      "outputSchema": false
+    },
+    {
+      "tool": "genexus_object_context",
+      "router": "OperationsRouter",
+      "actions": [
+        {
+          "action": null,
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
           "previewSupported": false
         }
       ],
