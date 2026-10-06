@@ -114,6 +114,53 @@ namespace GxMcp.Worker.Helpers
             return false;
         }
 
+        // The specifier's "[SampleProc, line 1]" location suffix.
+        private static readonly Regex _rxObjectLine = new Regex(
+            @"\[(?<obj>[^\],]+),\s*line\s+(?<line>\d+)\]",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private const string StaleCopyMarker = "changed since the last build";
+
+        /// <summary>
+        /// Warning lines of a build-status envelope (<c>warnings</c> array of strings).
+        /// The compact status the orchestrator polls moves them to <c>newWarnings</c>
+        /// and leaves <c>warnings</c> empty, so both are read.
+        /// </summary>
+        public static JArray GetWarnings(string statusJson)
+        {
+            var result = new JArray();
+            if (string.IsNullOrWhiteSpace(statusJson)) return result;
+            try
+            {
+                var jo = JObject.Parse(statusJson);
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var source in new[] { Get(jo, "Warnings", "warnings"), Get(jo, "NewWarnings", "newWarnings") })
+                {
+                    if (!(source is JArray arr)) continue;
+                    foreach (var w in arr)
+                    {
+                        string text = w?.ToString();
+                        if (!string.IsNullOrWhiteSpace(text) && seen.Add(text)) result.Add(text);
+                    }
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>
+        /// True when a warning says the specifier read the environment's copy of an object
+        /// that changed since the last build, so the diagnostics may describe stale source.
+        /// </summary>
+        public static bool HasStaleEnvironmentCopy(JArray warnings)
+        {
+            if (warnings == null) return false;
+            foreach (var w in warnings)
+                if ((w?.ToString() ?? string.Empty).IndexOf(StaleCopyMarker, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            return false;
+        }
+
         /// <summary>
         /// Parse a build-status envelope into structured diagnostics.
         /// Returns an empty array for unparseable input.
@@ -190,12 +237,21 @@ namespace GxMcp.Worker.Helpers
             if (mm.Success) member = mm.Groups["m"].Value;
 
             string obj = string.IsNullOrWhiteSpace(gxObject) ? null : gxObject;
+            int? srcLine = null;
+            var ol = _rxObjectLine.Match(line);
+            if (ol.Success)
+            {
+                if (obj == null) obj = ol.Groups["obj"].Value.Trim();
+                srcLine = int.Parse(ol.Groups["line"].Value);
+            }
 
             var diag = new JObject();
             if (!string.IsNullOrEmpty(code)) diag["code"] = code;
             if (!string.IsNullOrEmpty(obj)) diag["object"] = obj;
+            if (srcLine.HasValue) diag["line"] = srcLine.Value;
             if (!string.IsNullOrEmpty(member)) diag["member"] = member;
             diag["message"] = message;
+            diag["raw"] = line.Trim();
             return diag;
         }
     }

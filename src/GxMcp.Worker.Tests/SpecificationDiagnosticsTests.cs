@@ -107,6 +107,41 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Parse_ItemizesRawCodeObjectAndLine()
+        {
+            string json = "{\"Status\":\"Failed\",\"Errors\":[\"error spc0010: Type mismatch in assignment [SampleProc, line 1]\"]}";
+            var diags = SpecificationDiagnostics.Parse(json);
+            Assert.Single(diags);
+            Assert.Equal("spc0010", diags[0]["code"]?.ToString());
+            Assert.Equal("SampleProc", diags[0]["object"]?.ToString());
+            Assert.Equal(1, diags[0]["line"]?.ToObject<int>());
+            Assert.Equal("error spc0010: Type mismatch in assignment [SampleProc, line 1]", diags[0]["raw"]?.ToString());
+        }
+
+        [Fact]
+        public void GetWarnings_AndStaleDetection_ReadWarningsArray()
+        {
+            string json = "{\"Status\":\"Failed\",\"warnings\":[\"warning : changed since the last build: SampleProc. GeneXus specifies the environment's copy of an object\",\"other\"]}";
+            var warnings = SpecificationDiagnostics.GetWarnings(json);
+            Assert.Equal(2, warnings.Count);
+            Assert.True(SpecificationDiagnostics.HasStaleEnvironmentCopy(warnings));
+            Assert.False(SpecificationDiagnostics.HasStaleEnvironmentCopy(new JArray("other")));
+            Assert.Empty(SpecificationDiagnostics.GetWarnings("nope"));
+        }
+
+        // The compact status polled after an edit empties warnings and carries the
+        // lines in newWarnings (shape observed on a live specify task).
+        [Fact]
+        public void GetWarnings_ReadsTheCompactStatusNewWarnings()
+        {
+            string json = "{\"Status\":\"Failed\",\"compact\":true,\"warnings\":[],\"warningCount\":1,"
+                + "\"newWarnings\":[\"warning : changed since the last build: SampleProc. GeneXus specifies the environment's copy of an object\"]}";
+            var warnings = SpecificationDiagnostics.GetWarnings(json);
+            Assert.Single(warnings);
+            Assert.True(SpecificationDiagnostics.HasStaleEnvironmentCopy(warnings));
+        }
+
+        [Fact]
         public void Parse_Unparseable_ReturnsEmptyArray()
         {
             Assert.Empty(SpecificationDiagnostics.Parse("nope"));

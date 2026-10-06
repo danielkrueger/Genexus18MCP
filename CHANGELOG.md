@@ -5,15 +5,19 @@
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
-### Added
-
-### Changed
-
 ### Fixed
+
+- Spec-checks of never-built objects no longer blocked the Worker, and typed Transaction targets retained their type when a Table shared the name. Thanks to @danielkrueger ([#403](https://github.com/lennix1337/Genexus18MCP/pull/403)).
+
+- Write-failure traces retained method names with localized .NET UI resources, including Portuguese, without exposing source paths or arguments ([#437](https://github.com/lennix1337/Genexus18MCP/issues/437)).
+
+- `genexus_edit validationMode="specify"` now returns the itemized diagnostics (raw line, code, object, line) in the `SpecificationFailed` error instead of only a count, because the Gateway terse error projection dropped them. The edit response (error and `_meta.specification`) also carries the specify pass warnings and `staleEnvironmentCopy: true` when GeneXus specified the environment copy that changed since the last build. Thanks to @danielkrueger ([#428](https://github.com/lennix1337/Genexus18MCP/pull/428)).
 
 - `genexus_edit` full-mode writes of an XML part (Structure, WebForm) with `verifyMode` omitted no longer fail with `WriteNotPersisted` / `reason: lineEndings` when only the line endings differ from the SDK re-read (the SDK always stores CRLF). The gateway forwards an omitted `verifyMode` as a blank string, which was resolved to a strict `exact` check for XML parts; blank now means omitted (`normalized`). An explicit `verifyMode: "exact"` is unchanged and genuine content differences still report `contentMismatch`.
 
 ### Internal
+
+- Removed trailing whitespace from the build-diagnostic regression fixture ([#438](https://github.com/lennix1337/Genexus18MCP/issues/438)).
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
 

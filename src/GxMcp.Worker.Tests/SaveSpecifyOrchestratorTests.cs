@@ -24,5 +24,24 @@ namespace GxMcp.Worker.Tests
         {
             Assert.Equal(expected, SaveSpecifyOrchestrator.ExtractTaskId(json));
         }
+
+        [Fact]
+        public void AddSpecifyWarnings_FlagsStaleEnvironmentCopy()
+        {
+            var target = new Newtonsoft.Json.Linq.JObject();
+            SaveSpecifyOrchestrator.AddSpecifyWarnings(target, new Newtonsoft.Json.Linq.JArray(
+                "warning : changed since the last build: SampleProc. GeneXus specifies the environment's copy"));
+            Assert.Single(target["warnings"]);
+            Assert.True((bool)target["staleEnvironmentCopy"]);
+        }
+
+        [Fact]
+        public void AddSpecifyWarnings_NoWarnings_AddsNothing()
+        {
+            var target = new Newtonsoft.Json.Linq.JObject();
+            SaveSpecifyOrchestrator.AddSpecifyWarnings(target, new Newtonsoft.Json.Linq.JArray());
+            Assert.Null(target["warnings"]);
+            Assert.Null(target["staleEnvironmentCopy"]);
+        }
     }
 }
