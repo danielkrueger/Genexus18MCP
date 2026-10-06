@@ -1116,6 +1116,10 @@ namespace GxMcp.Worker.Services
         {
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
             if (requireObjectSave) preferFastSourceSave = false;
+            // A blank verifyMode means "omitted": the gateway serializes an absent argument as a
+            // JSON null whose JToken.ToString() is "", and resolving that for an XML part
+            // (Structure, WebForm) would silently turn it into a strict exact verification.
+            if (string.IsNullOrWhiteSpace(verifyMode)) verifyMode = null;
             if (verifyMode != null)
             {
                 try { verifyMode = TextPersistenceVerifier.ResolveMode(verifyMode, partName); }
