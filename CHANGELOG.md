@@ -17,6 +17,7 @@
 
 ### Internal
 
+- Fixed fork-PR submission on the installed GitHub CLI by deriving the base repository from the verified GitHub PR URL instead of requesting an unsupported JSON field; clean-tree, fresh-base, preflight and explicit-ref guards remained enforced.
 - Removed trailing whitespace from the build-diagnostic regression fixture ([#438](https://github.com/lennix1337/Genexus18MCP/issues/438)).
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).

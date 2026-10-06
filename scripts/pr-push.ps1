@@ -50,7 +50,7 @@ if ($dirty.Count -gt 0) {
 
 $pr = Get-GhJson @(
     'pr', 'view', $PullRequest.ToString(),
-    '--json', 'number,state,baseRefName,baseRepository,headRefName,headRefOid,headRepository,url'
+    '--json', 'number,state,baseRefName,headRefName,headRefOid,headRepository,url'
 )
 if ($pr.state -ne 'OPEN') {
     Fail-Push "PR #$PullRequest must be OPEN; current state is '$($pr.state)'."
@@ -59,7 +59,13 @@ if ($pr.state -ne 'OPEN') {
 $headRepo = $pr.headRepository.nameWithOwner
 $headRef = $pr.headRefName
 $headOid = $pr.headRefOid
-$baseRepo = $pr.baseRepository.nameWithOwner
+$prUri = $null
+if (-not [Uri]::TryCreate([string]$pr.url, [UriKind]::Absolute, [ref]$prUri) -or
+    $prUri.Scheme -ne 'https' -or $prUri.Host -ne 'github.com' -or
+    $prUri.AbsolutePath -notmatch '^/([^/]+)/([^/]+)/pull/\d+/?$') {
+    Fail-Push "PR #$PullRequest did not expose a valid GitHub pull request URL."
+}
+$baseRepo = "$($Matches[1])/$($Matches[2])"
 $baseRef = $pr.baseRefName
 if ([string]::IsNullOrWhiteSpace($headRepo) -or
     [string]::IsNullOrWhiteSpace($headRef) -or
