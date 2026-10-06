@@ -71,17 +71,20 @@ namespace GxMcp.Worker.Services
                 int maxWaitSec = ClampSpecifyTimeout(args["specifyTimeoutSec"]?.ToObject<int?>() ?? 90);
 
                 var (ok, diagArr, statusJson, waitedSec, timedOut, taskId) = RunSpecifyCheck(target, maxWaitSec);
+                var specWarnings = SpecificationDiagnostics.GetWarnings(statusJson);
                 if (ok)
                 {
                     // Clean — decorate the write envelope with the specification block.
                     var meta = writeEnv["_meta"] as JObject;
                     if (meta == null) { meta = new JObject(); writeEnv["_meta"] = meta; }
-                    meta["specification"] = new JObject
+                    var spec = new JObject
                     {
                         ["status"] = "ok",
                         ["diagnostics"] = diagArr,
                         ["elapsedSec"] = waitedSec
                     };
+                    AddSpecifyWarnings(spec, specWarnings);
+                    meta["specification"] = spec;
                     return writeEnv.ToString(Newtonsoft.Json.Formatting.None);
                 }
 
@@ -101,12 +104,16 @@ namespace GxMcp.Worker.Services
                     ["rollbackOnFailure"] = rollbackOnFailure,
                     ["rolledBack"] = rolledBack
                 };
+                AddSpecifyWarnings(errExtra, specWarnings);
                 if (rollbackNote != null) errExtra["rollbackNote"] = rollbackNote;
                 if (!string.IsNullOrWhiteSpace(taskId)) errExtra["taskId"] = taskId;
 
                 string message = timedOut
                     ? $"The write persisted but the specify pass did not finish within {maxWaitSec}s; the last status was '{SpecificationDiagnostics.GetStatus(statusJson)}'. Poll task '{taskId ?? "<taskId>"}' with genexus_lifecycle action=status to see the final result."
-                    : $"The write persisted but the specify pass reported {diagArr.Count} diagnostic(s). The object may fail to build.";
+                    : $"The write persisted but the specify pass reported {diagArr.Count} diagnostic(s). The object may fail to build."
+                        + (SpecificationDiagnostics.HasStaleEnvironmentCopy(specWarnings)
+                            ? " The environment's copy was specified (changed since the last build), so these diagnostics may describe the source as of the last build."
+                            : string.Empty);
                 string hint = rollbackOnFailure && rolledBack
                     ? "rollbackOnFailure was set and the pre-write state was restored; re-read the object to confirm the pre-edit content."
                     : rollbackOnFailure && !rolledBack
@@ -131,6 +138,16 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("[SAVE-SPECIFY] " + ex.Message);
                 return writeResponse;
             }
+        }
+
+        // Surface the specify task's warnings; the stale-copy one also gets a flag because
+        // GeneXus specifies the environment's copy, which only a build refreshes.
+        internal static void AddSpecifyWarnings(JObject target, JArray warnings)
+        {
+            if (warnings == null || warnings.Count == 0) return;
+            target["warnings"] = warnings;
+            if (SpecificationDiagnostics.HasStaleEnvironmentCopy(warnings))
+                target["staleEnvironmentCopy"] = true;
         }
 
         // A result is clean only when it reached the Succeeded terminal state without

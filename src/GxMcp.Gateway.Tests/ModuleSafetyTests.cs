@@ -83,6 +83,19 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void SpecificationFailed_terse_envelope_keeps_itemized_diagnostics_and_stale_flag()
+        {
+            var input = JObject.Parse(@"{status:'error',error:{code:'SpecificationFailed',message:'The write persisted but the specify pass reported 1 diagnostic(s).',
+                diagnostics:[{code:'spc0010',object:'SampleProc',line:1,message:'Type mismatch',raw:'error spc0010: Type mismatch [SampleProc, line 1]'}],
+                warnings:['warning : changed since the last build: SampleProc.'],staleEnvironmentCopy:true,timedOut:false,taskId:'t1'}}");
+            var output = McpRouter.TrimErrorEnvelope((JObject)input["error"]!, verbose: false);
+            Assert.Equal("spc0010", (string?)output["diagnostics"]?[0]?["code"]);
+            Assert.Equal(1, (int?)output["diagnostics"]?[0]?["line"]);
+            Assert.True((bool?)output["staleEnvironmentCopy"]);
+            Assert.Single(output["warnings"]!);
+        }
+
+        [Fact]
         public void Module_only_receipts_are_not_added_to_unrelated_errors()
         {
             var input = JObject.Parse("{error:{code:'OtherFailure',message:'failure'},inventory:[1],plan:[2],diagnostic:{parameter:'path'}}");

@@ -12,7 +12,9 @@ foreach ($requiredText in @(
     'PreflightTimeoutSeconds',
     'git status --porcelain=v1 --untracked-files=all',
     'baseRefName',
-    'baseRepository',
+    '$pr.url',
+    '$prUri.Host -ne ''github.com''',
+    'did not expose a valid GitHub pull request URL',
     'git fetch --no-tags',
     'refs/remotes/codex-pr-base/',
     'git merge-base --is-ancestor',
@@ -25,6 +27,10 @@ foreach ($requiredText in @(
     if ($source -notmatch [regex]::Escape($requiredText)) {
         throw "pr-push lost required preflight guard: $requiredText"
     }
+}
+
+if ($source -match "'--json',\s*'[^']*baseRepository") {
+    throw 'pr-push must not request the unsupported gh pr view baseRepository field.'
 }
 
 $preflightIndex = $source.IndexOf('integration-preflight.ps1', [StringComparison]::Ordinal)

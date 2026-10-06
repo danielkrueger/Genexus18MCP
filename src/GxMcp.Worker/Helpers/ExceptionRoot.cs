@@ -1,5 +1,7 @@
 using System;
 using System.Linq;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Reflection;
 
 namespace GxMcp.Worker.Helpers
@@ -34,11 +36,22 @@ namespace GxMcp.Worker.Helpers
         internal static string FailureTrace(Exception ex)
         {
             var root = Unwrap(ex);
-            if (root?.StackTrace == null) return null;
+            if (root == null) return null;
+            var methods = (new StackTrace(root, false).GetFrames() ?? new StackFrame[0])
+                .Select(frame => frame.GetMethod())
+                .Where(method => method != null)
+                .Select(method => method.DeclaringType == null ? method.Name : method.DeclaringType.FullName + "." + method.Name)
+                .Take(MaxFrames).ToArray();
+            if (methods.Length > 0) return string.Join(" <- ", methods);
+
+            // Serialized/remote exceptions can retain only text, with no runtime frames.
+            // Accept only qualified method signatures, never paths or arbitrary messages;
+            // the single-word frame prefix is intentionally not tied to a UI language.
+            if (root.StackTrace == null) return null;
             var frames = root.StackTrace.Split('\n')
-                .Select(line => line.Trim())
-                .Where(line => line.StartsWith("at ", StringComparison.Ordinal))
-                .Select(line => { int paren = line.IndexOf('('); return (paren > 0 ? line.Substring(3, paren - 3) : line.Substring(3)).Trim(); })
+                .Select(line => Regex.Match(line, @"^\s*\S+\s+([\w+`<>]+(?:\.[\w+`<>]+)+)\s*\("))
+                .Where(match => match.Success)
+                .Select(match => match.Groups[1].Value)
                 .Take(MaxFrames);
             return string.Join(" <- ", frames);
         }

@@ -31,7 +31,7 @@ namespace GxMcp.Worker.Tests
     {
         // ── Dropped severity ──────────────────────────────────────────────────
 
-        
+
 
         private static void InvokeHandleLine(
             BuildService service, BuildService.BuildTaskStatus status, string line, bool isError)
